@@ -1,0 +1,14 @@
+# build output
+helper/build/
+*.o
+node_modules/
+app/dist/
+# recordings & spike artifacts
+sessions/
+scratch/out*/
+scratch/*.app/
+scratch/cammotion
+scratch/gen
+scratch/encbench
+scratch/smoke
+.DS_Store

@@ -1,0 +1,537 @@
+<!doctype html><html><head><meta charset="utf-8"><title>STC spike harness</title>
+<script src="mp4box.min.js"></script>
+<script src="mp4-muxer.min.js"></script>
+<style>
+.steps{background:#0f2233;border-left:3px solid #6cf;padding:10px 14px;margin:0 0 12px;border-radius:0 4px 4px 0}
+.steps b{color:#6cf}
+.banner{background:#3a1a1a;border-left:3px solid #f77;padding:10px 14px;margin:0 0 12px;border-radius:0 4px 4px 0;color:#fbb}
+.big{font-size:15px;padding:9px 16px;background:#1d4a63;border-color:#6cf;color:#cfe}
+.dim{opacity:.32}
+.na{background:#2a2410;border-left:3px solid #ca4;padding:9px 14px;margin:0 0 10px;border-radius:0 4px 4px 0;color:#eda}
+.next{background:#12331c;border-left:3px solid #7d5;padding:10px 14px;margin:10px 0 0;border-radius:0 4px 4px 0;color:#cfc;font-size:14px}
+.verdict{font-size:15px;font-weight:bold;padding:8px 0}
+*{box-sizing:border-box}
+body{background:#111;color:#ddd;font:13px/1.5 ui-monospace,Menlo,monospace;margin:0;padding:16px}
+h2{font-size:14px;color:#6cf;margin:20px 0 8px;border-bottom:1px solid #333;padding-bottom:4px}
+.panel{background:#181818;border:1px solid #2a2a2a;padding:12px;margin-bottom:14px;border-radius:6px}
+canvas{background:#000;max-width:100%;display:block;border:1px solid #333}
+button{background:#2a2a2a;color:#ddd;border:1px solid #444;padding:5px 10px;border-radius:4px;cursor:pointer;font:inherit;margin:2px}
+button:hover{background:#3a3a3a}
+input[type=range]{width:420px;vertical-align:middle}
+.kv{color:#8f8}.warn{color:#fc6}.bad{color:#f77}.ok{color:#7f7}
+pre{background:#0d0d0d;padding:8px;border-radius:4px;overflow:auto;max-height:280px;font-size:12px;white-space:pre-wrap}
+.row{display:flex;gap:14px;flex-wrap:wrap;align-items:flex-start}
+label{color:#999}
+#drop{border:2px dashed #444;padding:20px;text-align:center;border-radius:6px}
+</style></head><body>
+<div id="errbox"></div>
+<h2>0 — load spike output</h2>
+<div class="panel">
+  <div id="drop">
+    <div style="margin-bottom:10px"><b>Pick the output FOLDER</b> (easiest — click, then choose <code>out</code> or <code>out-synth</code>, then "Upload"):<br>
+      <input type="file" id="dirpick" webkitdirectory directory></div>
+    <div style="color:#666">— or select the individual files —<br>
+      <input type="file" id="files" multiple></div>
+  </div>
+  <pre id="loadlog">nothing loaded</pre>
+</div>
+
+<h2 id="h1">1 — clock model (computed, no eyeballs)</h2>
+<div class="panel" id="p1"><pre id="clock">load files first</pre></div>
+
+<h2 id="h2x">2 — alignment viewer &nbsp;<span style="color:#666;font-weight:normal">(gate 1)</span></h2>
+<div class="panel" id="p2">
+  <div class="steps"><b>What to do:</b> click a <b>#1 / #2 / #3</b> button below to jump to a moment you clicked
+  something. The <b>magenta/green crosshair</b> is where the cursor was, per the clock model. Drag the
+  <b>offset</b> slider until the crosshair sits exactly on the thing you clicked. Then check the LAST click
+  button — <b>if it needs a different offset, that's drift and gate 1 fails.</b> ←/→ step one frame.</div>
+  <div id="stale"></div>
+  <div class="row">
+    <div>
+      <canvas id="cv" width="1280" height="720"></canvas>
+      <div>
+        <label>offset</label> <input type="range" id="off" min="-200" max="200" step="1" value="0">
+        <span class="kv" id="offv">0 ms</span>
+        <button onclick="nudge(-1)">-1ms</button><button onclick="nudge(1)">+1ms</button>
+      </div>
+      <div>
+        <label>frame</label> <input type="range" id="fr" min="0" max="0" step="1" value="0">
+        <span class="kv" id="frv">0</span>
+        <button onclick="step(-1)">← frame</button><button onclick="step(1)">frame →</button>
+      </div>
+      <div id="clicks"></div>
+    </div>
+    <pre id="alignlog" style="flex:1;min-width:320px"></pre>
+  </div>
+</div>
+
+<h2 id="h3">3 — A/V alignment &nbsp;<span style="color:#666;font-weight:normal">(gate 2)</span></h2>
+<div class="panel" id="p3">
+  <div class="steps"><b>This runs automatically on load.</b> The clap is auto-detected in the mic track
+  (magenta line on the waveform). If it picked the wrong transient, click the correct spot on the waveform.
+  The verdict is printed below.</div>
+  <div class="row">
+    <div><canvas id="camcv" width="480" height="270"></canvas></div>
+    <div><canvas id="wave" width="760" height="140"></canvas>
+      <div><button onclick="autoClap()">auto-detect clap</button> <span class="kv" id="clapv">—</span>
+      <span class="warn">(or click the waveform to set it manually)</span></div>
+    </div>
+  </div>
+  <pre id="avlog"></pre>
+</div>
+
+<h2 id="h4">4 — performance &nbsp;<span style="color:#666;font-weight:normal">(gates 3 + 4)</span></h2>
+<div class="panel" id="p4">
+  <div class="steps"><b>What to do:</b> just press the buttons, left to right, and wait. <b>A</b> decodes the
+  whole clip to canvas as fast as possible (gate 3 wants ≥60 fps). <b>B</b> re-encodes 10 s and offers a
+  download (gate 4 wants &lt;30 s). Use the <code>out-synth</code> folder for these — it is a true 4K60 clip.</div>
+  <button class="big" onclick="perfDecode()">A · decode→canvas full clip</button>
+  <button class="big" onclick="perfEncode('prefer-hardware')">B · encode 10s (prefer-hardware)</button>
+  <button onclick="perfEncode('prefer-software')">B' · encode 10s (prefer-software)</button>
+  <pre id="perflog"></pre>
+</div>
+<script>
+const $ = s => document.querySelector(s);
+function fail(msg){
+  const d=document.createElement("div"); d.className="banner";
+  d.innerHTML = "<b>ERROR:</b> " + String(msg).replace(/</g,"&lt;");
+  document.getElementById("errbox").appendChild(d);
+  console.error(msg);
+}
+addEventListener("error", e => fail((e.message||e.error) + "  @" + (e.filename||"?") + ":" + (e.lineno||"?")));
+addEventListener("unhandledrejection", e => fail("unhandled rejection: " + (e.reason && e.reason.message || e.reason)));
+addEventListener("DOMContentLoaded", () => {
+  if (typeof MP4Box === "undefined")
+    fail("mp4box.min.js did not load — demuxing is impossible, so every panel will stay empty. "
+       + "It must sit next to harness.html.");
+  if (typeof Mp4Muxer === "undefined")
+    fail("mp4-muxer.min.js did not load — the gate 4 encode button cannot mux its output.");
+  if (typeof VideoDecoder === "undefined")
+    fail("This browser has no WebCodecs (VideoDecoder). Use Chrome.");
+});
+const F = {};              // loaded files by name
+const D = {};              // parsed data
+let NSPT = 125/3;          // ns per mach tick, overwritten from anchors
+
+function log(el, s){ $(el).textContent += s + "\n"; }
+function setlog(el, s){ $(el).textContent = s; }
+const f2 = n => (Math.round(n*100)/100);
+
+async function loadFiles(list){
+  for (const f of list) F[f.name] = f;
+  let out = "";
+  for (const n of ["display.mp4","display-frames.json","anchors.json","events.json","camera.mp4","mic.wav"]) {
+    out += (F[n] ? "  loaded  " : "  absent  ") + n.padEnd(20) + (F[n] ? (F[n].size/1048576).toFixed(1)+" MB" : "") + "\n";
+  }
+  const g34 = !!F["display.mp4"];
+  const g1  = g34 && F["display-frames.json"] && F["events.json"] && F["anchors.json"];
+  const g2  = g1 && F["camera.mp4"] && (F["mic.wav"]||F["mic.m4a"]);
+  out += "\nGATES READY:\n";
+  out += (g34?"  YES":"  no ") + "  gates 3+4 (performance)   — needs display.mp4 only\n";
+  out += (g1 ?"  YES":"  no ") + "  gate 1 (cursor alignment) — needs display.mp4 + the 3 json files\n";
+  out += (g2 ?"  YES":"  no ") + "  gate 2 (clap/click)       — also needs camera.mp4 + mic.wav\n";
+  if (g34 && !g1) out += "\n  (out-synth/ is the SYNTHETIC clip: it has no camera/mic/events by design.\n   Use it for gates 3+4 only. Use out/ for gates 1+2.)\n";
+  setlog("#loadlog", out);
+
+  // Grey out what this file set cannot answer, and say why — rather than leaving stale placeholder text.
+  const na = (panel, head, msg) => {
+    const p = $(panel); if(!p) return;
+    p.querySelectorAll(".na").forEach(e=>e.remove());
+    p.classList.toggle("dim", !msg ? false : true);
+    $(head).classList.toggle("dim", !!msg);
+    if (msg) { const d=document.createElement("div"); d.className="na"; d.innerHTML=msg; p.prepend(d); }
+  };
+  const need = "Not available with the files you loaded — needs <b>";
+  na("#p1","#h1", F["anchors.json"] ? null : need+"anchors.json</b>. Expected if you loaded <code>out-synth</code>; the synthetic clip has no clock data.");
+  na("#p2","#h2x", g1 ? null : need+"display.mp4 + display-frames.json + events.json + anchors.json</b> from a real capture.");
+  na("#p3","#h3", g2 ? null : need+"camera.mp4 + mic.wav + events.json + anchors.json</b> from a real capture.");
+  na("#p4","#h4", g34 ? null : need+"display.mp4</b>.");
+  if (!F["anchors.json"]) setlog("#clock", "No anchors.json loaded — clock model not applicable to this file set.");
+
+  const nx = document.createElement("div"); nx.className = "next";
+  nx.innerHTML = g2 ? "<b>NEXT:</b> gate 2 has already been computed for you — scroll to <b>panel 3</b>. "
+                    + "Then panel 2 for gate 1, and panel 4 for gates 3+4."
+               : g1 ? "<b>NEXT:</b> scroll to <b>panel 2</b> and press a click button, and <b>panel 4</b> for gates 3+4."
+               : g34 ? "<b>NEXT:</b> scroll to <b>panel 4</b> and press the two big buttons. That is all this file set can do."
+                     : "<b>NEXT:</b> no display.mp4 loaded — pick the folder again.";
+  $("#loadlog").parentNode.querySelectorAll(".next").forEach(e=>e.remove());
+  $("#loadlog").after(nx);
+
+  for (const n of ["display-frames.json","events.json","anchors.json"]) {
+    if (F[n]) D[n.replace(".json","")] = JSON.parse(await F[n].text());
+  }
+  if (D.anchors) { NSPT = D.anchors.nsPerMachTick; analyzeClock(); }
+  if (F["display.mp4"]) {
+    try { await initVideo(); }
+    catch (err) { fail("could not demux display.mp4 — " + (err && err.message || err)); }
+  }
+  if (F["camera.mp4"]) await initCamera();
+  if ((F["mic.wav"]||F["mic.m4a"])) await initAudio();   // last: auto-detects the clap and prints the gate 2 verdict
+}
+$("#files").onchange   = e => loadFiles(e.target.files).catch(fail);
+$("#dirpick").onchange = e => loadFiles(e.target.files).catch(fail);
+
+/* ─────────────── panel 1: clock model ─────────────── */
+function analyzeClock(){
+  const a = D.anchors, ev = D.events || [], fr = D.display_frames || D["display-frames"] || [];
+  if (a.aborted) {
+    const b=document.createElement("div"); b.className="banner";
+    b.innerHTML = "<b>These anchors are from an ABORTED run</b> (" + a.abortReason + "). Panels 2 and 3 "
+                + "will not produce meaningful results until you load an anchors.json from a completed capture.";
+    $("#clock").parentNode.prepend(b);
+  }
+  let s = "";
+  s += `mach_timebase        numer=${a.machTimebaseNumer} denom=${a.machTimebaseDenom}  → 1 tick = ${a.nsPerMachTick} ns\n`;
+  s += `display px           ${a.displayPixelWidth}x${a.displayPixelHeight}  (points ${a.displayPointWidth}x${a.displayPointHeight}, scale ${a.displayBackingScale})\n`;
+  s += `frames               real=${a.screenFramesReal} repeat=${a.screenFramesRepeat} dropped=${a.screenFramesDropped}\n`;
+  s += `events               ${a.eventCount}  tapReenables=${a.eventTapReenables}\n\n`;
+
+  // --- Q1: units of CGEvent.timestamp ---
+  if (ev.length) {
+    const dTicks = ev.map(e => Number(e.recvMachRaw) - Number(e.tNs));       // if tNs is mach ticks
+    const dNs    = ev.map(e => Number(e.recvMachNs)  - Number(e.tNs));       // if tNs is nanoseconds
+    const med = arr => { const b=[...arr].sort((x,y)=>x-y); return b[b.length>>1]; };
+    const mTicks = med(dTicks), mNs = med(dNs);
+    s += `Q1 CGEvent.timestamp units\n`;
+    s += `  hypothesis A (tNs is MACH TICKS): median(recvMachRaw - tNs) = ${f2(mTicks)} ticks = ${f2(mTicks*NSPT/1e6)} ms\n`;
+    s += `  hypothesis B (tNs is NANOSECONDS): median(recvMachNs  - tNs) = ${f2(mNs/1e6)} ms\n`;
+    const aPlaus = mTicks > 0 && mTicks*NSPT/1e6 < 50;
+    const bPlaus = mNs > 0 && mNs/1e6 < 50;
+    s += `  → ${aPlaus && !bPlaus ? "A WINS: CGEvent.timestamp is mach absolute ticks; ns = t * numer/denom"
+          : bPlaus && !aPlaus ? "B WINS: CGEvent.timestamp really is nanoseconds"
+          : "AMBIGUOUS — inspect manually"}\n`;
+    s += `  event-tap delivery latency (winner) = ${f2((aPlaus?mTicks*NSPT:mNs)/1e6)} ms\n\n`;
+    window.EVENT_IS_TICKS = aPlaus && !bPlaus;
+  }
+
+  // --- displayTime units + capture latency ---
+  const real = fr.filter(f => f.kind === "real");
+  if (real.length) {
+    const lat = real.map(f => (Number(f.recvMachRaw) - Number(f.displayTimeRaw)) * NSPT / 1e6);
+    const latSorted=[...lat].sort((a,b)=>a-b);
+    s += `displayTime → mach ticks check: median(recvMachRaw - displayTimeRaw) = ${f2(latSorted[latSorted.length>>1])} ms  (SCK capture latency; small+positive ⇒ displayTime IS mach ticks)\n`;
+    const drift = real.map(f => Number(f.driftNs)/1e6);
+    const first10 = drift.slice(0,10), last10 = drift.slice(-10);
+    const avg = x => x.reduce((p,c)=>p+c,0)/x.length;
+    s += `CFR drift (real frame displayTime vs perfect 60Hz grid): first10 avg=${f2(avg(first10))} ms  last10 avg=${f2(avg(last10))} ms  max|drift|=${f2(Math.max(...drift.map(Math.abs)))} ms\n\n`;
+  }
+
+  // --- Q2: camera/mic clock ---
+  s += `Q2 camera/mic clock vs mach\n`;
+  const camPtsNs = Number(a.cameraFirstPtsNs), camRecvNs = Number(a.cameraFirstRecvMachRaw)*NSPT;
+  const micPtsNs = Number(a.micFirstPtsNs),    micRecvNs = Number(a.micFirstRecvMachRaw)*NSPT;
+  if (a.cameraFirstPtsTimescale) s += `  camera firstPTS ts=${a.cameraFirstPtsTimescale} pts=${f2(camPtsNs/1e6)} ms ; concurrent mach=${f2(camRecvNs/1e6)} ms ; delta=${f2((camRecvNs-camPtsNs)/1e6)} ms\n`;
+  else s += `  camera: NO SAMPLES (authorized=${a.cameraAuthorized}, device=${a.cameraDevice})\n`;
+  if (a.micFirstPtsTimescale) s += `  mic    firstPTS ts=${a.micFirstPtsTimescale} pts=${f2(micPtsNs/1e6)} ms ; concurrent mach=${f2(micRecvNs/1e6)} ms ; delta=${f2((micRecvNs-micPtsNs)/1e6)} ms\n`;
+  else s += `  mic: NO SAMPLES (authorized=${a.micAuthorized}, device=${a.micDevice})\n`;
+  s += `  small positive deltas ⇒ AVFoundation PTS is on the same mach host clock as displayTime.\n`;
+  if (a.notes && a.notes.length) s += `\nCAPTURE NOTES:\n  ` + a.notes.join("\n  ") + "\n";
+  setlog("#clock", s);
+}
+/* convert a CGEvent timestamp to mach-nanoseconds */
+const evNs = e => window.EVENT_IS_TICKS ? Number(e.tNs)*NSPT : Number(e.tNs);
+
+/* ─────────────── demux + seekable decoder ─────────────── */
+const DS = () => (typeof MP4Box !== "undefined" && MP4Box.DataStream) ? MP4Box.DataStream
+              : (typeof DataStream !== "undefined") ? DataStream : null;
+function demux(file){
+  return new Promise(async (res, rej) => {
+   try {
+    if (typeof MP4Box === "undefined") throw new Error("MP4Box global missing (mp4box.min.js not loaded)");
+    if (!DS()) throw new Error("mp4box DataStream global missing");
+    const mp4 = MP4Box.createFile();
+    let info = null, samples = [], desc = null, trk = null;
+    mp4.onError = e => rej(new Error("mp4box: " + e));
+    mp4.onReady = i => {
+      info = i;
+      trk = i.videoTracks[0];
+      const t = mp4.getTrackById(trk.id);
+      for (const e of t.mdia.minf.stbl.stsd.entries) {
+        const b = e.avcC || e.hvcC;
+        if (b) { const D = DS(); const s = new D(undefined,0,D.BIG_ENDIAN); b.write(s); desc = new Uint8Array(s.buffer,8); }
+      }
+      mp4.setExtractionOptions(trk.id, null, {nbSamples: 1e9});
+      mp4.start();
+    };
+    mp4.onSamples = (id,u,ss) => { for (const s of ss) samples.push({data:s.data,key:s.is_sync,cts:s.cts,ts:s.timescale,dur:s.duration}); };
+    const buf = await file.arrayBuffer(); buf.fileStart = 0;
+    mp4.appendBuffer(buf); mp4.flush();
+    setTimeout(() => {
+      if (!trk) return rej(new Error("no video track in " + file.name));
+      // The capture writes VFR (gaps where the screen was idle), so a sample's ORDINAL is not its
+      // position on the 60 Hz timeline. Derive the timeline index from cts.
+      const tsc = trk.timescale;
+      let prev = -1;
+      for (const s of samples) {
+        s.tsec = s.cts / tsc;                       // true presentation time
+        let k = Math.round(s.tsec * 60);
+        if (k <= prev) k = prev + 1;                // keep the decode tag strictly monotonic
+        s.idx = k; prev = k;
+      }
+      res({ codec: trk.codec, width: trk.video.width, height: trk.video.height,
+            description: desc, samples, timescale: tsc, count: samples.length,
+            maxIdx: samples.length ? samples[samples.length-1].idx : 0 });
+    }, 0);
+   } catch (err) { rej(err); }
+  });
+}
+const TSU = 16667; // µs tag per frame
+class Seeker {
+  // Retains AT MOST ONE decoded frame. Decodes forward from the keyframe at or before the target and
+  // drops everything else in the output callback, so memory is O(1) regardless of resolution.
+  constructor(m){ this.m=m; this.dec=null; this.next=-1; this.target=null; this.hit=null; }
+  async reset(from){
+    if(this.dec){ try{ this.dec.close(); }catch(e){} }
+    if(this.hit){ this.hit.close(); this.hit=null; }
+    this.dec = new VideoDecoder({
+      output: f => {
+        if(this.target!==null && Math.round(f.timestamp/TSU)===this.target){
+          if(this.hit) this.hit.close();
+          this.hit = f;
+        } else f.close();
+      },
+      error: e => fail("VideoDecoder: "+(e&&e.message||e))
+    });
+    this.dec.configure({ codec:this.m.codec, description:this.m.description,
+                         codedWidth:this.m.width, codedHeight:this.m.height,
+                         hardwareAcceleration:"prefer-hardware", optimizeForLatency:true });
+    this.next = from;
+  }
+  keyBefore(i){ for(let k=i;k>=0;k--) if(this.m.samples[k].key) return k; return 0; }
+  posFor(t){ const s=this.m.samples; if(!s.length) return 0; if(t<s[0].idx) return 0;
+    let lo=0, hi=s.length-1;
+    while(lo<hi){ const mid=(lo+hi+1)>>1; if(s[mid].idx<=t) lo=mid; else hi=mid-1; }
+    return lo; }
+  async frame(tIdx){
+    if(!this.m.samples.length) return null;
+    const pos = this.posFor(tIdx), want = this.m.samples[pos].idx;
+    const key = this.keyBefore(pos);
+    // rewind only when we have overshot, or are not yet at the governing keyframe
+    if(this.next < 0 || this.next > pos || this.next < key) await this.reset(key);
+    if(this.hit){ this.hit.close(); this.hit=null; }
+    this.target = want;
+    while(this.next <= pos){                       // strictly advancing: cannot loop forever
+      const s = this.m.samples[this.next];
+      this.dec.decode(new EncodedVideoChunk({ type:s.key?"key":"delta",
+        timestamp:s.idx*TSU, duration:TSU, data:s.data }));
+      this.next++;
+    }
+    await this.dec.flush();
+    const f = this.hit; this.hit=null; this.target=null;
+    return f;
+  }
+}
+/* ─────────────── panel 2: alignment viewer ─────────────── */
+let VID=null, SEEK=null, curFrame=0, offMs=0, clickIdx=[];
+async function initVideo(){
+  VID = await demux(F["display.mp4"]);
+  SEEK = new Seeker(VID);
+  $("#fr").max = VID.maxIdx;
+  clickIdx = (D.events||[]).map((e,i)=>[e,i]).filter(([e])=>e.typeName==="leftMouseDown").map(([e,i])=>i);
+  const holder = $("#clicks"); holder.innerHTML = "<label>jump to click:</label> ";
+  clickIdx.forEach((ei,n) => {
+    const b=document.createElement("button"); b.textContent="#"+(n+1);
+    b.onclick=()=>{ const k=frameOfMach(evNs(D.events[ei])); $("#fr").value=k; requestDraw(k); };
+    holder.appendChild(b);
+  });
+  log("#alignlog", `display.mp4 ${VID.width}x${VID.height} codec=${VID.codec} samples=${VID.count} timeline=0..${VID.maxIdx} (${f2(VID.maxIdx/60)} s)`);
+  if (VID.width > 3840 || VID.height > 2160)
+    fail(`This clip is ${VID.width}x${VID.height}, above 4K. Chrome's hardware H.264 decoder tops out near `
+       + `3840x2160 (the same ceiling VideoToolbox has when encoding), so decoding may fall back to software, `
+       + `run very slowly, or kill the tab. Gates 3 and 4 are specified at 4K — use the <b>out-synth</b> folder for them.`);
+  // Diagnose the killer case: the click landed in a dropped-frame gap, so no amount of slider fixes it.
+  const realIdx = (D["display-frames"]||[]).filter(f=>f.kind==="real").map(f=>f.frameIndex);
+  if (realIdx.length && clickIdx.length) {
+    let worst=0, rows="";
+    clickIdx.forEach((ei,n)=>{
+      const k=frameOfMach(evNs(D.events[ei]));
+      let best=-1; for(const r of realIdx) if(r<=k) best=r;
+      const stale=(k-best)/60; worst=Math.max(worst,stale);
+      rows += `  click #${n+1}: frame ${k}, newest real frame ${best} → ${stale.toFixed(2)}s stale\n`;
+    });
+    // A gap is only a problem if frames were DROPPED. With a change-driven capture, a gap where
+    // nothing was dropped means the screen genuinely did not change — the last frame IS what was on
+    // screen, so the crosshair is still correct.
+    if (worst > 0.1 && (D.anchors.screenFramesDropped|0) > 0) {
+      const b=document.createElement("div"); b.className="banner";
+      b.innerHTML = `<b>Gate 1 cannot be judged from this capture.</b> ${D.anchors.screenFramesDropped} frames were dropped, and clicks landed in the gaps — `
+                  + "gap — the video shows stale content at the exact moments you clicked, so the crosshair "
+                  + "can never line up no matter what the offset is. This is an encoder-saturation artefact, "
+                  + "not a clock error. Re-capture at 3840&times;2160.<pre style=\"margin:6px 0 0\">"+rows+"</pre>";
+      $("#stale").appendChild(b);
+    }
+  }
+  if (VID.count <= VID.maxIdx*0.9) log("#alignlog", `NOTE: VFR — ${VID.count} samples across ${VID.maxIdx+1} timeline slots; idle/dropped slots hold the previous frame.`);
+  requestDraw(0);
+}
+const t0 = () => D.anchors ? Number(D.anchors.screenFirstDisplayTimeNs) : 0;
+const machOfFrame = k => t0() + k*(1e9/60);
+const frameOfMach = ns => Math.max(0, Math.min(VID.maxIdx, Math.round((ns - t0())/(1e9/60))));
+
+function cursorAt(machNs){
+  const ev = D.events||[]; if(!ev.length || !D.anchors) return null;
+  const t = machNs + offMs*1e6;
+  let lo=0, hi=ev.length-1;
+  if (evNs(ev[0])>t || evNs(ev[hi])<t) return null;
+  while(hi-lo>1){ const m=(lo+hi)>>1; if(evNs(ev[m])<=t) lo=m; else hi=m; }
+  const a=ev[lo], b=ev[hi], ta=evNs(a), tb=evNs(b);
+  const u = tb>ta ? (t-ta)/(tb-ta) : 0;
+  return { x: a.x+(b.x-a.x)*u, y: a.y+(b.y-a.y)*u,
+           down: ev.slice(Math.max(0,lo-40),lo+1).some(e=>e.typeName==="leftMouseDown") &&
+                 !ev.slice(Math.max(0,lo-40),lo+1).some(e=>e.typeName==="leftMouseUp") };
+}
+async function draw(k){
+  if(!SEEK) return;
+  curFrame=k; $("#frv").textContent = k + "  (t=" + f2(k/60*1000) + " ms)";
+  const f = await SEEK.frame(k); if(!f) return;
+  const cv=$("#cv"), g=cv.getContext("2d");
+  g.drawImage(f,0,0,cv.width,cv.height); f.close();
+  const a=D.anchors, c=a ? cursorAt(machOfFrame(k)) : null;
+  if(c){
+    // normalise in display POINTS — correct whether or not SCK downscaled the capture
+    const X=(c.x-a.displayBounds.x)/a.displayBounds.w*cv.width, Y=(c.y-a.displayBounds.y)/a.displayBounds.h*cv.height;
+    g.strokeStyle=c.down?"#0f0":"#f0f"; g.lineWidth=2;
+    g.beginPath(); g.moveTo(X-14,Y); g.lineTo(X+14,Y); g.moveTo(X,Y-14); g.lineTo(X,Y+14); g.stroke();
+    g.beginPath(); g.arc(X,Y,c.down?9:5,0,7); g.stroke();
+  }
+}
+// One decoder, one in-flight decode. Slider drags coalesce to the latest requested frame.
+let drawBusy=false, drawWant=null;
+async function requestDraw(k){
+  drawWant=k;
+  if(drawBusy) return;
+  drawBusy=true;
+  try{
+    while(drawWant!==null){ const t=drawWant; drawWant=null; await draw(t); }
+  }catch(err){ fail("alignment viewer: "+(err&&err.message||err)); }
+  finally{ drawBusy=false; }
+}
+$("#off").oninput = e => { offMs=+e.target.value; $("#offv").textContent=offMs+" ms"; requestDraw(curFrame); };
+$("#fr").oninput  = e => requestDraw(+e.target.value);
+function nudge(d){ offMs+=d; $("#off").value=offMs; $("#offv").textContent=offMs+" ms"; requestDraw(curFrame); }
+function step(d){ const k=Math.max(0,Math.min(VID.maxIdx,curFrame+d)); $("#fr").value=k; requestDraw(k); }
+addEventListener("keydown", e => { if(e.key==="ArrowLeft")step(-1); if(e.key==="ArrowRight")step(1); });
+
+/* ─────────────── panel 3: A/V ─────────────── */
+let AUD=null, CAM=null, CAMSEEK=null, clapSec=null;
+async function initAudio(){
+  const ctx = new AudioContext();
+  AUD = await ctx.decodeAudioData(await (F["mic.wav"]||F["mic.m4a"]).arrayBuffer());
+  drawWave(); autoClap();
+}
+function drawWave(){
+  const cv=$("#wave"), g=cv.getContext("2d"); g.fillStyle="#000"; g.fillRect(0,0,cv.width,cv.height);
+  const d=AUD.getChannelData(0), n=cv.width, step=Math.floor(d.length/n);
+  g.strokeStyle="#6cf"; g.beginPath();
+  for(let i=0;i<n;i++){ let mx=0; for(let j=0;j<step;j++) mx=Math.max(mx,Math.abs(d[i*step+j]||0));
+    g.moveTo(i,cv.height/2-mx*cv.height/2); g.lineTo(i,cv.height/2+mx*cv.height/2); }
+  g.stroke();
+  if(clapSec!=null){ const x=clapSec/AUD.duration*cv.width; g.strokeStyle="#f0f"; g.lineWidth=2;
+    g.beginPath(); g.moveTo(x,0); g.lineTo(x,cv.height); g.stroke(); }
+}
+$("#wave").onclick = e => { const r=e.target.getBoundingClientRect();
+  clapSec=(e.clientX-r.left)/r.width*AUD.duration; drawWave(); reportAV(); };
+function autoClap(){
+  const d=AUD.getChannelData(0), sr=AUD.sampleRate, win=Math.round(sr*0.005);
+  let best=0,bi=0, prev=0;
+  for(let i=Math.round(sr*0.5); i<d.length-win; i+=win){
+    let e=0; for(let j=0;j<win;j++) e+=d[i+j]*d[i+j];
+    e=Math.sqrt(e/win); const rise=e-prev; if(rise>best){best=rise;bi=i;} prev=e;
+  }
+  clapSec=bi/sr; drawWave(); reportAV();
+}
+async function initCamera(){
+  try{ CAM=await demux(F["camera.mp4"]); CAMSEEK=new Seeker(CAM);
+    log("#avlog",`camera.mp4 ${CAM.width}x${CAM.height} frames=${CAM.count}`); }
+  catch(err){ log("#avlog","camera demux failed: "+err.message); }
+}
+async function reportAV(){
+  const a=D.anchors; if(!a||clapSec==null) return;
+  const micT0=Number(a.micFirstPtsNs);
+  const clapMach = micT0 + clapSec*1e9;
+  const clicks=(D.events||[]).filter(e=>e.typeName==="leftMouseDown");
+  let s = `clap at ${f2(clapSec*1000)} ms into mic.m4a → mach ${f2(clapMach/1e6)} ms\n`;
+  s += `clap on display timeline = frame ${f2((clapMach-t0())/(1e9/60))}\n`;
+  if(clicks.length){
+    let best=clicks[0], bd=Infinity;
+    for(const c of clicks){ const d=Math.abs(evNs(c)-clapMach); if(d<bd){bd=d;best=c;} }
+    const delta=(clapMach-evNs(best))/1e6;
+    s += `nearest click: mach ${f2(evNs(best)/1e6)} ms\n`;
+    s += `CLAP−CLICK DELTA = ${f2(delta)} ms = ${f2(delta/16.667)} frames @60fps\n`;
+    s += `\nGATE 2: ${Math.abs(delta)<=16.7?"PASS":"FAIL"}  (needs |delta| <= 16.7 ms)\n`;
+  } else s += "no click events\n";
+  $("#clapv").textContent = f2(clapSec*1000)+" ms";
+  $("#avlog").textContent = s;
+  if(CAMSEEK){
+    const camT0=Number(a.cameraFirstPtsNs);
+    const want=(clapMach-camT0)/1e9;             // seconds into the camera track
+    let bp=0; for(let i=0;i<CAM.samples.length;i++)
+      if(Math.abs(CAM.samples[i].tsec-want)<Math.abs(CAM.samples[bp].tsec-want)) bp=i;
+    const ci=CAM.samples[bp].idx;
+    const f=await CAMSEEK.frame(ci);
+    if(f){ const cv=$("#camcv"); cv.getContext("2d").drawImage(f,0,0,cv.width,cv.height); f.close(); }
+    $("#avlog").textContent += `camera frame shown: ${f2(CAM.samples[bp].tsec)} s into the camera track (wanted ${f2(want)} s)\n`;
+  }
+}
+
+/* ─────────────── panel 4: performance ─────────────── */
+let perfBusy=false;
+async function perfDecode(){
+  if(perfBusy) return log("#perflog","already running — wait for it to finish");
+  if(!VID) return log("#perflog", F["display.mp4"]
+      ? "display.mp4 was loaded but failed to demux — see the red ERROR box at the top of the page."
+      : "no display.mp4 loaded — use the folder picker in section 0.");
+  log("#perflog", `\n--- decode→canvas, ${VID.count} frames @ ${VID.width}x${VID.height} ---`);
+  const cv=document.createElement("canvas"); cv.width=1280; cv.height=720; const g=cv.getContext("2d");
+  let n=0; const t=performance.now(); perfBusy=true;
+  const dec=new VideoDecoder({ output:f=>{ g.drawImage(f,0,0,cv.width,cv.height); f.close(); n++; }, error:e=>console.error(e) });
+  dec.configure({codec:VID.codec,description:VID.description,codedWidth:VID.width,codedHeight:VID.height,hardwareAcceleration:"prefer-hardware"});
+  for(let i=0;i<VID.count;i++){
+    const s=VID.samples[i];
+    dec.decode(new EncodedVideoChunk({type:s.key?"key":"delta",timestamp:i*TSU,duration:TSU,data:s.data}));
+    while(dec.decodeQueueSize>4) await new Promise(r=>setTimeout(r,0));
+  }
+  await dec.flush(); dec.close(); perfBusy=false;
+  const ms=performance.now()-t;
+  log("#perflog", `decoded+drew ${n} frames in ${f2(ms)} ms → ${f2(n/(ms/1000))} fps  → gate 3 ${n/(ms/1000)>=60?"PASS":"FAIL"}`);
+}
+async function perfEncode(mode){
+  if(perfBusy) return log("#perflog","already running — wait for it to finish");
+  if(!VID) return log("#perflog", F["display.mp4"]
+      ? "display.mp4 was loaded but failed to demux — see the red ERROR box at the top of the page."
+      : "no display.mp4 loaded — use the folder picker in section 0.");
+  const N=Math.min(600,VID.count);
+  // Cap the encode at 4K: gate 4 is a 4K gate, and a 6K canvas + 6K encoder is a reliable way to
+  // exhaust the tab. Scale down rather than refuse.
+  const sc=Math.min(1, 3840/VID.width, 2160/VID.height);
+  const EW=Math.round(VID.width*sc/2)*2, EH=Math.round(VID.height*sc/2)*2;
+  log("#perflog", `\n--- encode ${N} frames (${f2(N/60)} s) @ ${EW}x${EH} ${mode}`
+    + (sc<1?` [scaled down from ${VID.width}x${VID.height}]`:``) + ` ---`);
+  const muxer=new Mp4Muxer.Muxer({target:new Mp4Muxer.ArrayBufferTarget(),
+    video:{codec:"avc",width:EW,height:EH},fastStart:"in-memory"});
+  const enc=new VideoEncoder({output:(c,m)=>muxer.addVideoChunk(c,m),error:e=>log("#perflog","ENCODER ERROR: "+e)});
+  enc.configure({codec:"avc1.640034",width:EW,height:EH,bitrate:40_000_000,
+                 framerate:60,hardwareAcceleration:mode,latencyMode:"quality"});
+  const cv=document.createElement("canvas"); cv.width=EW; cv.height=EH;
+  const g=cv.getContext("2d",{alpha:false});
+  const t=performance.now(); let n=0; perfBusy=true;
+  const dec=new VideoDecoder({ output:async f=>{
+      g.drawImage(f,0,0,EW,EH); f.close();
+      const vf=new VideoFrame(cv,{timestamp:n*TSU,duration:TSU});
+      enc.encode(vf,{keyFrame:n%60===0}); vf.close(); n++;
+    }, error:e=>console.error(e)});
+  dec.configure({codec:VID.codec,description:VID.description,codedWidth:VID.width,codedHeight:VID.height,hardwareAcceleration:"prefer-hardware"});
+  for(let i=0;i<N;i++){
+    const s=VID.samples[i];
+    dec.decode(new EncodedVideoChunk({type:s.key?"key":"delta",timestamp:i*TSU,duration:TSU,data:s.data}));
+    while(dec.decodeQueueSize>4 || enc.encodeQueueSize>4) await new Promise(r=>setTimeout(r,0));
+  }
+  await dec.flush(); dec.close(); await enc.flush(); enc.close(); muxer.finalize(); perfBusy=false;
+  const ms=performance.now()-t;
+  const buf=muxer.target.buffer;
+  log("#perflog", `encoded ${n} frames in ${f2(ms/1000)} s (${f2(n/(ms/1000))} fps), output ${(buf.byteLength/1048576).toFixed(1)} MB → gate 4 ${ms<30000?"PASS":"FAIL"}`);
+  const url=URL.createObjectURL(new Blob([buf],{type:"video/mp4"}));
+  const a=document.createElement("a"); a.href=url; a.download=`reencode-${mode}.mp4`; a.textContent="download re-encoded mp4";
+  a.style.cssText="display:inline-block;margin:6px;color:#6cf"; $("#perflog").after(a);
+}
+</script></body></html>
