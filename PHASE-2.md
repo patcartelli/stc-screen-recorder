@@ -71,9 +71,12 @@ Two things this settles:
 1. **Take library** *(done)* — list recordings with duration, size, date, resolution, event count,
    read from the sidecars. Gate: a take recorded by the app appears with correct metadata, and a
    directory that is not a valid session is reported as such rather than crashing the list.
-2. **Seeking frame source** — the scrub-safe decoder. Gate: forward, backward, repeated and
-   out-of-range seeks all terminate and return the frame `frameIndexAt` names; buffered frames
-   stay bounded under a sustained synthetic scrub; no `VideoFrame` is leaked.
+2. **Seeking frame source** *(done — `npm run gate:seek`)* — the scrub-safe decoder. Gate:
+   forward, backward, repeated and out-of-range seeks all terminate and return the frame
+   `frameIndexAt` names; buffered frames stay bounded under a sustained synthetic scrub; no
+   `VideoFrame` is leaked. Verification pixel-probes the 12-bit index block row that
+   `fixtures/gen-display.swift` draws into every frame, so a seek proves it returned the frame
+   asked for rather than a plausible neighbour.
 3. **Preview player** — canvas + transport, every frame from `render()` and the shared
    compositor. **Gate: preview at time `t` is byte-identical to export at time `t`, measured in
    the app.** This is the increment-0 gate re-run against the real product rather than a harness,

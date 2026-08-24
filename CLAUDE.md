@@ -194,6 +194,11 @@ reachable via KVC (`setValue(3, forKey: "captureResolution")`, verified in phase
   SecurityAgent prompt, and an unattended build then hangs *forever* rather than failing. If a
   build wedges, look for the dialog (and answer "Always Allow", not "Allow"). A `timeout` around
   codesign kills the dialog before a human can find it.
+- **A `VideoDecoder` can swallow input and emit nothing** — it buffers before its first output,
+  so waiting for output when the queue has drained deadlocks on a perfectly healthy decoder. Feed
+  more, flush only when there is nothing left to feed, and never wait unbounded. Related: flushing
+  mid-stream to force output leaves it demanding a keyframe (`a key frame is required after
+  configure() or flush()`), which breaks the next forward continue.
 - **A stray `~/node_modules` hijacks module resolution** — the home directory holds a broken pnpm
   tree (rollup missing its native binary, esbuild built for x64 on an arm64 machine). Anything not
   installed *locally* may resolve there and fail bizarrely. Install tools as project devDeps.

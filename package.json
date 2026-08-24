@@ -8,7 +8,8 @@
     "app:build": "node app/build.mjs",
     "app:start": "npm run app:build && electron .",
     "gate:export": "node scripts/export-gate.mjs",
-    "test:capture": "vitest run --config vitest.grant.config.ts"
+    "test:capture": "vitest run --config vitest.grant.config.ts",
+    "gate:seek": "node scripts/seek-gate.mjs"
   },
   "devDependencies": {
     "@types/node": "^26.2.0",
