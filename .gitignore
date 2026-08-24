@@ -15,3 +15,6 @@ scratch/smoke
 
 # fixture generator binary
 fixtures/gen-display
+
+# signing-probe bundle (regenerable)
+tools/signing-probe/*.app/
