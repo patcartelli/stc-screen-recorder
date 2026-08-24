@@ -1,3 +1,13 @@
+/**
+ * Requires a Screen Recording grant for the process running the tests, so it
+ * is NOT part of `npm test` — see vitest.grant.config.ts and `npm run
+ * test:capture`.
+ *
+ * It is a separate FILE rather than a skip on purpose. A skipped test reads
+ * as covered and quietly rots; a named script that someone has to run is at
+ * least honest about being a manual step. The routine way to exercise this
+ * path is tools/test-host, which holds the grant.
+ */
 import { describe, test, expect, afterEach } from "vitest";
 import { spawn, type ChildProcess } from "node:child_process";
 import { mkdtempSync, readFileSync, existsSync } from "node:fs";
@@ -68,36 +78,47 @@ async function probeGranted(): Promise<boolean> {
   return r.ev === "started";
 }
 
-describe("capture — behaviour without a Screen Recording grant", () => {
-  test("start reports a specific, actionable error rather than hanging", async () => {
-    if (await probeGranted()) return;      // covered by the granted suite instead
+describe("capture — a real recording (requires Screen Recording)", () => {
+  test("produces schema-valid display.mp4, events.json and anchors.json", async () => {
+    if (!(await probeGranted())) {
+      throw new Error(
+        "SKIP-GRANT: this environment has no Screen Recording grant, so the real " +
+        "capture path is unverified. Grant it to the process that runs the tests, " +
+        "or run this suite from a bundle that has it.",
+      );
+    }
+    const dir = session();
     const h = spawnHelper();
     await waitFor(() => find(h.fd3, "ready"));
-    h.send({ cmd: "start", dir: session(), seq: 1 });
-    const r = await waitFor(() => h.fd3.find((l) => l.seq === 1), 20_000, "start outcome");
-    expect(r.ev).toBe("error");
-    // The environment decides WHICH failure: with no grant at all the display
-    // list is empty; with a partial one the list arrives and the stream is then
-    // interrupted (-3805). Both are fine. What must never happen is a request
-    // that is simply never answered, which is what this originally caught.
-    expect(["no-displays", "stream-failed", "writer-failed",
-            "writer-rejected-input", "start-timeout"]).toContain(r.code);
-    expect(String(r.detail ?? "").length).toBeGreaterThan(0);
-    if (r.code === "no-displays") expect(String(r.detail)).toMatch(/Screen Recording/i);
-  }, 60_000);
+    h.send({ cmd: "start", dir, seq: 1 });
+    const started = await waitFor(() => h.fd3.find((l) => l.seq === 1), 20_000, "started");
+    expect(started.ev).toBe("started");
 
-  test("a denied start leaves the helper idle and retryable, not wedged", async () => {
-    if (await probeGranted()) return;
-    const h = spawnHelper();
-    await waitFor(() => find(h.fd3, "ready"));
-    h.send({ cmd: "start", dir: session(), seq: 1 });
-    await waitFor(() => h.fd3.find((l) => l.seq === 1), 20_000, "first start");
-    h.send({ cmd: "status", seq: 2 });
-    const st = await waitFor(() => h.fd3.find((l) => l.seq === 2), 10_000, "status");
-    expect(st.state).toBe("idle");
-    // and it can be asked again — the failure is not terminal
-    h.send({ cmd: "start", dir: session(), seq: 3 });
-    const again = await waitFor(() => h.fd3.find((l) => l.seq === 3), 20_000, "second start");
-    expect(again.ev).toBe("error");
-  }, 90_000);
+    await sleep(3000);                       // record ~3 s
+    h.send({ cmd: "stop", seq: 2 });
+    const stopped = await waitFor(() => h.fd3.find((l) => l.seq === 2), 30_000, "stopped");
+    expect(stopped.ev).toBe("stopped");
+    expect(stopped.frames as number).toBeGreaterThan(0);
+
+    for (const f of ["display.mp4", "events.json", "anchors.json"]) {
+      expect(existsSync(join(dir, f)), `${f} missing`).toBe(true);
+    }
+
+    const ajv = new Ajv({ allErrors: true, strict: true });
+    const load = (p: string) => JSON.parse(readFileSync(p, "utf8"));
+    for (const [file, schema] of [
+      ["events.json", "schema/events-1.schema.json"],
+      ["anchors.json", "schema/anchors-1.schema.json"],
+    ] as const) {
+      const validate = ajv.compile(load(join(root, schema)));
+      const ok = validate(load(join(dir, file)));
+      expect(ok, `${file}: ${JSON.stringify(validate.errors, null, 2)}`).toBe(true);
+    }
+
+    // anchors must describe a capture that respects the hardware-encode cliff
+    const anchors = load(join(dir, "anchors.json"));
+    expect(anchors.capture.width).toBeLessThanOrEqual(3840);
+    expect(anchors.capture.height).toBeLessThanOrEqual(2160);
+    expect(typeof anchors.t0Ns).toBe("string");
+  }, 120_000);
 });

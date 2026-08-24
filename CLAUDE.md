@@ -26,6 +26,7 @@ events → deterministic transform → CFR MP4 with cursor overlay.
 | `scripts/gate.mjs` | increment-0 determinism gate (Playwright + real Chrome) |
 | `tools/test-host/` | signed bundle that spawns the helper for capture tests; `--probe` reports TCC state. **CFBundleIdentifier is load-bearing** — the grant is keyed to it |
 | `fixtures/real-session/` | sidecars from a real recording (mp4 omitted, 9.4 MB) pinning click/drag semantics |
+| `*.grant.test.ts` | needs a Screen Recording grant — excluded from `npm test`, run via `npm run test:capture`. A separate file, not a skip: skips read as covered and rot |
 | `scratch/` | phase-0 spike code and outputs (mp4box.js, harness, sample session dirs) |
 | `council/` | cross-AI reviews of the phase-1 plan |
 
@@ -34,7 +35,8 @@ events → deterministic transform → CFR MP4 with cursor overlay.
 ```
 helper/build.sh                                    # -> helper/build/stc-helper (see Signing)
 echo '{"cmd":"status"}' | helper/build/stc-helper  # expect ready -> status -> bye JSON lines
-npm test                                           # transform + helper IPC tests (vitest)
+npm test                                           # everything that runs anywhere (must be green)
+npm run test:capture                               # the one test needing a Screen Recording grant
 npm run gate                                       # increment-0 sink-identity gate (needs Chrome)
 npm run app:start                                  # build + launch the Electron shell
 ```
