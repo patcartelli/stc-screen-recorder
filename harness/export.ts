@@ -17,6 +17,8 @@ export interface ExportResult {
   frames: number;
   hash: string;
   encodedBytes: number;
+  /** base64 of the encoded MP4, when the caller asked to keep it */
+  encodedBase64?: string;
   peakBufferedFrames: number;
   decodedFrames: number;
   durationMs: number;
@@ -30,7 +32,7 @@ async function sha256Hex(bytes: Uint8Array): Promise<string> {
 export async function exportSession(
   dir: string,
   project: Project,
-  opts: { maxFrames?: number; encode?: boolean } = {},
+  opts: { maxFrames?: number; encode?: boolean; returnFile?: boolean } = {},
 ): Promise<ExportResult> {
   const t0 = performance.now();
   const [anchors, events, displayMp4] = await Promise.all([
@@ -103,12 +105,24 @@ export async function exportSession(
   }
 
   let encodedBytes = 0;
+  let encodedBase64: string | undefined;
   if (encoderError) throw encoderError;
   if (encoder && muxer) {
     await encoder.flush();
     muxer.finalize();
     encoder.close();
-    encodedBytes = (muxer.target as ArrayBufferTarget).buffer.byteLength;
+    const out = (muxer.target as ArrayBufferTarget).buffer;
+    encodedBytes = out.byteLength;
+    if (opts.returnFile) {
+      // Chunked: String.fromCharCode(...bytes) blows the argument limit well
+      // below the size of any real export.
+      const bytes = new Uint8Array(out);
+      let bin = "";
+      for (let i = 0; i < bytes.length; i += 0x8000) {
+        bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+      }
+      encodedBase64 = btoa(bin);
+    }
   }
   const decodedFrames = source.decodedCount;
   source.close();
@@ -117,6 +131,7 @@ export async function exportSession(
     frames: total,
     hash: await sha256Hex(rolling),
     encodedBytes,
+    encodedBase64,
     peakBufferedFrames: peakBuffered,
     decodedFrames,
     durationMs: Math.round(performance.now() - t0),

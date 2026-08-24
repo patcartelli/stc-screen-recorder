@@ -58,6 +58,11 @@ npm run app:start                                  # build + launch the Electron
 - **Increment 4 (composite + export):** DONE — gate passed on a 60 s real recording (3414 source
   frames -> 3617 CFR output frames, two independent exports byte-identical pre-encode, peak
   buffered 16 frames). `npm run gate:export [sessionDir]` — defaults to the newest take.
+  **Visually confirmed** (2026-08-24): cursor present, correctly positioned, in sync with the
+  video, click highlight visible, motion smooth. Hashes prove the two sinks AGREE; only watching
+  proves the agreed answer is right — a uniformly mispositioned or time-shifted cursor passes
+  every automated check in this repo. `node scripts/export-one.mjs <sessionDir> [seconds]` writes
+  a watchable file. NB the cursor is a placeholder circle, not the real pointer artwork.
 - **Next: increment 5** — manual smoke test: 5-minute recording, no dropped frames at thermal
   steady state, clean stop on display change, watchable output.
 

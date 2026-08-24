@@ -114,7 +114,9 @@ Two traps found while measuring:
    `events.json` written per the increment-0 schema; periodic stats. No camera, mic, system audio, or
    segmentation.
 3. **Electron shell** — spawn/supervise the helper, start/stop UI, live stats display.
-4. **Composite + export** — wire a real session dir through `render(project, events, t)`; demux
+4. **Composite + export** *(done — gate passed on a 60 s recording, and the output was watched:
+   cursor present, correctly placed, in sync, click highlight visible, motion smooth)* — wire a
+   real session dir through `render(project, events, t)`; demux
    `display.mp4` via mp4box.js, composite cursor overlay, encode CFR MP4. Sink behind the transform —
    not a port of the spike harness's decode loop. No camera PiP. Gate: pre-encode hash of a 60 s real
    recording matches across two independent exports.
