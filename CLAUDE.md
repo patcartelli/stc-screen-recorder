@@ -14,6 +14,7 @@ events → deterministic transform → CFR MP4 with cursor overlay.
 | `helper/src/Watchers.swift` | display/device watchers |
 | `helper/src/main.swift` | App lifecycle, command dispatch |
 | `helper/build.sh` | builds and signs; `SIGN_ID="..." ./build.sh` to override |
+| `helper/test/ipc.test.ts` | black-box IPC tests — spawn the binary, drive stdin, assert on fd3/stdout |
 | `app/src/` | Electron app (not yet started) |
 | `transform/src/` | the pure transform + shared sink modules (TS; render, time, cursor, demux, decode, compositor) |
 | `schema/` | versioned session schemas (anchors-1, events-1, project-1) |
@@ -28,7 +29,7 @@ events → deterministic transform → CFR MP4 with cursor overlay.
 ```
 helper/build.sh                                    # -> helper/build/stc-helper (see Signing)
 echo '{"cmd":"status"}' | helper/build/stc-helper  # expect ready -> status -> bye JSON lines
-npm test                                           # transform unit tests (vitest)
+npm test                                           # transform + helper IPC tests (vitest)
 npm run gate                                       # increment-0 sink-identity gate (needs Chrome)
 ```
 
@@ -37,11 +38,11 @@ npm run gate                                       # increment-0 sink-identity g
 - **Increment 0 (transform contract):** DONE — schemas, fixture session (incl. generated
   display.mp4 with exact-ns sample table), pure `render()`, both sinks, and the gate all pass:
   200 sampled t byte-identical between sinks, two independent exports identical, encode works
-- **Increment 1 (helper control plane):** IN PROGRESS — lifecycle, watchers, and the command set
-  are done; no capture yet. **The IPC as coded is a single blocking stdout channel** (`IO.emit`:
-  one lock, unbuffered blocking writes) — the lossy/reliable split, fd3, sequence numbers, and
-  the bounded ring buffer described under Settled decisions are NOT built. They are prerequisites
-  for increment 2, where capture callbacks would otherwise block on that pipe.
+- **Increment 1 (helper control plane):** DONE except signing — lifecycle, watchers, command set,
+  and the two-channel IPC (fd3 reliable + seq echo; stdout lossy drop-oldest ring on a dedicated
+  writer thread) all built and tested black-box against the real binary. No capture yet.
+  **Still blocking increment 2: the signing experiments** (see Signing) — those need a human at
+  the GUI and cannot be done from a shell.
 
 **Critical ordering rule:** the transform defines the schemas; the helper is a producer to spec.
 Increment 0's `events.json` / `anchors.json` / `project` schemas must exist before increment 1
@@ -76,7 +77,10 @@ See `PHASE-1.md` → "Settled by phase 0" for the full table. The ones most like
   `prefer-software` truncated at 19% of frames at 4K60 — it is not a fallback.
 - **IPC:** stdout = lossy/non-blocking stats (drop-oldest, never block capture callbacks);
   stdin + fd3 = reliable request/response with sequence numbers. Never let stats back-pressure
-  the capture graph.
+  the capture graph. *(built — `IO.send` reliable, `IO.stat` lossy; capture callbacks use
+  `IO.stat` only.)* When fd3 is absent both fall back to blocking stdout so a bare terminal run
+  still works; they must never share fd 1 in split mode, or the lossy writer's partial
+  non-blocking writes would interleave with reliable lines.
 - **Signing:** ad-hoc revokes TCC on every rebuild, and this machine currently has **zero**
   code-signing identities — every build today is ad-hoc. A self-signed cert in the login keychain
   is needed before increment 2; run both experiments in PHASE-1.md → Signing before capture work
@@ -118,6 +122,13 @@ reachable via KVC (`setValue(3, forKey: "captureResolution")`, verified in phase
   runs. Hash pre-encode RGBA buffers, not container output.
 - **Stats on stdout can block capture** — all stats writes must go through a bounded ring buffer
   on a dedicated writer thread with non-blocking fd; no capture callback may touch the pipe.
+  *(`LossyChannel` does this. When capture lands, emit stats with `IO.stat`, never `IO.send`.)*
+- **A failed `swiftc` leaves the previous binary in place** — `helper/build/stc-helper` is not
+  removed on failure, so anything that runs the binary without checking build.sh's exit code
+  silently tests stale code. The IPC tests rebuild in `beforeAll` and let a non-zero exit throw.
+- **Node's paused child-stdio streams need an explicit `resume()`** — attaching a `data` listener
+  to a child's stdout after `pause()` does NOT re-enable reading; the stream silently delivers
+  nothing forever. Any test that stalls a consumer to exercise back-pressure must call `resume()`.
 - **`stateAt(n)` seek cost** — at 120 Hz, 30 min = 216k ticks. If seek is implemented as
   "step from tick 0," a 60 fps export of a long recording is quadratic. Plan checkpoints.
 - **`AVAssetWriter` dimension rigidity** — see above; display hot-swap is a stop, not a rebuild.

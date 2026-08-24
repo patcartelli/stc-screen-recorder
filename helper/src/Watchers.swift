@@ -20,17 +20,17 @@ final class Watchers {
         let nc = NotificationCenter.default
         nc.addObserver(forName: .AVCaptureDeviceWasDisconnected, object: nil, queue: .main) { [weak self] n in
             guard let d = n.object as? AVCaptureDevice else { return }
-            IO.emit("warning", ["code": "device-disconnected", "device": d.localizedName, "uid": d.uniqueID])
+            IO.send("warning", ["code": "device-disconnected", "device": d.localizedName, "uid": d.uniqueID])
             self?.onDeviceChange?("disconnected", d.uniqueID, d.localizedName)
         }
         nc.addObserver(forName: .AVCaptureDeviceWasConnected, object: nil, queue: .main) { [weak self] n in
             guard let d = n.object as? AVCaptureDevice else { return }
-            IO.emit("info", ["code": "device-connected", "device": d.localizedName, "uid": d.uniqueID])
+            IO.send("info", ["code": "device-connected", "device": d.localizedName, "uid": d.uniqueID])
             self?.onDeviceChange?("connected", d.uniqueID, d.localizedName)
         }
         nc.addObserver(forName: .AVCaptureSessionRuntimeError, object: nil, queue: .main) { n in
             let e = n.userInfo?[AVCaptureSessionErrorKey] as? NSError
-            IO.emit("warning", ["code": "av-runtime-error", "detail": e?.localizedDescription ?? "unknown"])
+            IO.send("warning", ["code": "av-runtime-error", "detail": e?.localizedDescription ?? "unknown"])
         }
         // NB: AVCaptureSessionWasInterrupted / ...InterruptionReasonKey are iOS-only.
         // On macOS, runtime errors above are the equivalent signal.
@@ -49,7 +49,7 @@ final class Watchers {
         f(.setMainFlag, "becameMain")
         if names.isEmpty { return }
         let b = CGDisplayBounds(id)
-        IO.emit("warning", ["code": "display-reconfigured", "display": id, "changes": names,
+        IO.send("warning", ["code": "display-reconfigured", "display": id, "changes": names,
                             "bounds": ["x": b.origin.x, "y": b.origin.y, "w": b.size.width, "h": b.size.height]])
         onDisplayChange?(id, names)
     }

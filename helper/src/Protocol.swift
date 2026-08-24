@@ -1,20 +1,145 @@
 import Foundation
 
-/// Line-delimited JSON over stdin/stdout. stderr is for human logs only.
-/// Electron spawns this as a child, so the helper inherits Electron's TCC identity —
-/// one grant, against the signed bundle the user recognises (PHASE-0 §6).
-enum IO {
-    private static let outLock = NSLock()
+/// Two channels, deliberately different (PHASE-0 §3, PHASE-1 "Settled by phase 0"):
+///
+///   fd3    reliable  — command responses (seq echoed) and lifecycle events.
+///                      Blocking, ordered, never dropped.
+///   stdout lossy     — telemetry only. Bounded drop-oldest ring drained by a
+///                      dedicated writer thread over a non-blocking fd, so a
+///                      stalled consumer can never back-pressure the producer.
+///
+/// stderr stays human logs. Electron spawns this as a child, so the helper
+/// inherits Electron's TCC identity — one grant, against the signed bundle the
+/// user recognises (PHASE-0 §6).
+///
+/// When fd3 is absent (a bare terminal run, e.g. the documented smoke test)
+/// both kinds fall back to blocking stdout: the split exists to protect the
+/// capture graph, and there is no capture graph in a pipe-to-terminal run.
+/// They must not *share* fd 1 in split mode — the lossy writer's partial
+/// non-blocking writes would interleave with reliable lines and corrupt both.
 
-    static func emit(_ event: String, _ fields: [String: Any] = [:]) {
-        var o: [String: Any] = fields
+/// Bounded, drop-oldest ring feeding a dedicated writer thread.
+final class LossyChannel {
+    private let fd: Int32
+    private let capacity: Int
+    private var ring: [Data?]
+    private var head = 0, tail = 0, count = 0
+    private var dropped: UInt64 = 0
+    private let cond = NSCondition()
+
+    init(fd: Int32, capacity: Int = 256) {
+        self.fd = fd
+        self.capacity = capacity
+        self.ring = Array(repeating: nil, count: capacity)
+        let flags = fcntl(fd, F_GETFL, 0)
+        _ = fcntl(fd, F_SETFL, flags | O_NONBLOCK)
+        let t = Thread { [weak self] in self?.writeLoop() }
+        t.name = "lossy-writer"
+        t.start()
+    }
+
+    /// Safe from a capture callback: no syscall, no pipe wait. The only possible
+    /// wait is another producer's memcpy, which is never held across I/O.
+    func offer(_ line: Data) {
+        cond.lock()
+        if count == capacity {
+            ring[tail] = nil
+            tail = (tail + 1) % capacity
+            count -= 1
+            dropped &+= 1
+        }
+        ring[head] = line
+        head = (head + 1) % capacity
+        count += 1
+        cond.signal()
+        cond.unlock()
+    }
+
+    private func writeLoop() {
+        while true {
+            cond.lock()
+            while count == 0 { cond.wait() }
+            let item = ring[tail]!
+            ring[tail] = nil
+            tail = (tail + 1) % capacity
+            count -= 1
+            let drops = dropped
+            dropped = 0
+            cond.unlock()
+
+            // Loss is reported, never silent — a gap in telemetry that the
+            // consumer cannot see is indistinguishable from a stalled capture.
+            if drops > 0 { writeAll(IO.encode("stats-dropped", seq: nil, ["n": drops])) }
+            writeAll(item)
+        }
+    }
+
+    /// Blocks this thread only. While it waits, `offer` keeps dropping oldest.
+    private func writeAll(_ data: Data) {
+        data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
+            guard let base = raw.baseAddress else { return }
+            var off = 0
+            while off < data.count {
+                let n = write(fd, base + off, data.count - off)
+                if n > 0 { off += n; continue }
+                if errno == EINTR { continue }
+                if errno == EAGAIN || errno == EWOULDBLOCK {
+                    var p = pollfd(fd: fd, events: Int16(POLLOUT), revents: 0)
+                    _ = poll(&p, 1, 100)
+                    continue
+                }
+                return   // EPIPE and friends: consumer is gone for good
+            }
+        }
+    }
+}
+
+enum IO {
+    private static let reliableLock = NSLock()
+    private static var reliableFd: Int32 = 1
+    private static var lossy: LossyChannel?
+
+    /// Must run before anything is emitted.
+    static func boot() {
+        let hasFd3 = fcntl(3, F_GETFD) != -1
+        reliableFd = hasFd3 ? 3 : 1
+        lossy = hasFd3 ? LossyChannel(fd: 1) : nil
+    }
+
+    static func encode(_ event: String, seq: Int?, _ fields: [String: Any]) -> Data {
+        var o = fields
         o["ev"] = event
         o["t"] = Clock.nowNs()
-        guard let d = try? JSONSerialization.data(withJSONObject: o, options: [.sortedKeys]),
-              var s = String(data: d, encoding: .utf8) else { return }
-        s += "\n"
-        outLock.lock(); defer { outLock.unlock() }
-        FileHandle.standardOutput.write(s.data(using: .utf8)!)
+        if let seq { o["seq"] = seq }
+        guard let d = try? JSONSerialization.data(withJSONObject: o, options: [.sortedKeys])
+        else { return Data() }
+        return d + Data("\n".utf8)
+    }
+
+    /// Reliable: responses and lifecycle. `seq` echoes the request it answers.
+    static func send(_ event: String, seq: Int? = nil, _ fields: [String: Any] = [:]) {
+        writeReliable(encode(event, seq: seq, fields))
+    }
+
+    /// Lossy: telemetry only. Never blocks on the pipe.
+    static func stat(_ event: String, _ fields: [String: Any] = [:]) {
+        let d = encode(event, seq: nil, fields)
+        if let lossy { lossy.offer(d) } else { writeReliable(d) }
+    }
+
+    private static func writeReliable(_ data: Data) {
+        guard !data.isEmpty else { return }
+        reliableLock.lock(); defer { reliableLock.unlock() }
+        data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
+            guard let base = raw.baseAddress else { return }
+            var off = 0
+            while off < data.count {
+                let n = write(reliableFd, base + off, data.count - off)
+                if n > 0 { off += n; continue }
+                if errno == EINTR { continue }
+                return
+            }
+        }
     }
 
     static func log(_ s: String) {
@@ -29,7 +154,8 @@ enum IO {
                 if trimmed.isEmpty { continue }
                 guard let d = trimmed.data(using: .utf8),
                       let o = (try? JSONSerialization.jsonObject(with: d)) as? [String: Any] else {
-                    emit("error", ["code": "bad-json", "detail": trimmed.prefix(200).description])
+                    // Unparseable, so there is no seq to correlate against.
+                    send("error", seq: nil, ["code": "bad-json", "detail": trimmed.prefix(200).description])
                     continue
                 }
                 DispatchQueue.main.async { onCommand(o) }

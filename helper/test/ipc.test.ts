@@ -1,0 +1,215 @@
+import { describe, test, expect, beforeAll, afterEach } from "vitest";
+import { spawn, execFileSync, type ChildProcess } from "node:child_process";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { Readable } from "node:stream";
+
+const root = join(__dirname, "..", "..");
+const BIN = join(root, "helper", "build", "stc-helper");
+
+beforeAll(() => {
+  execFileSync(join(root, "helper", "build.sh"), { stdio: "pipe" });
+}, 180_000);
+
+interface Line { ev: string; seq?: number; [k: string]: unknown }
+
+interface Helper {
+  proc: ChildProcess;
+  out: Line[];   // stdout — lossy channel
+  fd3: Line[];   // fd3 — reliable channel
+  send(cmd: object): void;
+  drainStdout(): void;
+  kill(): void;
+}
+
+function collect(stream: Readable, sink: Line[]): void {
+  let buf = "";
+  // resume() is required, not decorative: on a child's stdio pipe that was
+  // explicitly paused, attaching a "data" listener alone does NOT re-enable
+  // reading, and the stream silently delivers nothing forever.
+  stream.on("data", (chunk: Buffer) => {
+    buf += chunk.toString("utf8");
+    let i: number;
+    while ((i = buf.indexOf("\n")) >= 0) {
+      const line = buf.slice(0, i).trim();
+      buf = buf.slice(i + 1);
+      if (line) { try { sink.push(JSON.parse(line)); } catch { /* not JSON */ } }
+    }
+  });
+  stream.resume();
+}
+
+const live: ChildProcess[] = [];
+
+function spawnHelper(opts: { fd3?: boolean; drainStdout?: boolean } = {}): Helper {
+  const withFd3 = opts.fd3 ?? true;
+  const drain = opts.drainStdout ?? true;
+  const stdio: any[] = ["pipe", "pipe", "pipe"];
+  if (withFd3) stdio.push("pipe");
+  const proc = spawn(BIN, [], { stdio });
+  live.push(proc);
+  const out: Line[] = [];
+  const fd3: Line[] = [];
+  if (drain) collect(proc.stdout!, out);
+  else proc.stdout!.pause();          // simulate a stalled consumer: OS pipe fills
+  proc.stderr!.resume();               // never let stderr back up
+  if (withFd3) collect(proc.stdio[3] as Readable, fd3);
+  return {
+    proc, out, fd3,
+    send: (cmd) => proc.stdin!.write(JSON.stringify(cmd) + "\n"),
+    drainStdout: () => collect(proc.stdout!, out),
+    kill: () => proc.kill("SIGKILL"),
+  };
+}
+
+afterEach(() => { for (const p of live.splice(0)) p.kill("SIGKILL"); });
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+async function waitFor<T>(fn: () => T | undefined | false, ms = 5000, what = "condition"): Promise<T> {
+  const start = Date.now();
+  for (;;) {
+    const v = fn();
+    if (v !== undefined && v !== false) return v;
+    if (Date.now() - start > ms) throw new Error(`timeout waiting for ${what}`);
+    await sleep(10);
+  }
+}
+
+const find = (ls: Line[], ev: string) => ls.find((l) => l.ev === ev);
+const tmpSession = () => mkdtempSync(join(tmpdir(), "stc-ipc-"));
+
+describe("reliable channel — fd3, request/response with sequence numbers", () => {
+  test("ready is a reliable lifecycle event on fd3, not lossy stdout", async () => {
+    const h = spawnHelper();
+    const ready = await waitFor(() => find(h.fd3, "ready"), 5000, "ready");
+    expect(ready.protocol).toBe(1);
+    expect(find(h.out, "ready")).toBeUndefined();
+  });
+
+  test("a command's response echoes its seq on fd3", async () => {
+    const h = spawnHelper();
+    await waitFor(() => find(h.fd3, "ready"));
+    h.send({ cmd: "status", seq: 7 });
+    const r = await waitFor(() => h.fd3.find((l) => l.seq === 7), 5000, "seq 7");
+    expect(r.ev).toBe("status");
+    expect(r.state).toBe("idle");
+  });
+
+  test("concurrent commands each get their own seq back, none on stdout", async () => {
+    const h = spawnHelper();
+    await waitFor(() => find(h.fd3, "ready"));
+    for (const seq of [1, 2, 3]) h.send({ cmd: "status", seq });
+    await waitFor(() => h.fd3.filter((l) => l.ev === "status").length === 3, 5000, "3 status");
+    expect(h.fd3.filter((l) => l.ev === "status").map((l) => l.seq)).toEqual([1, 2, 3]);
+    expect(h.out.some((l) => l.ev === "status")).toBe(false);
+  });
+
+  test("errors are reliable and carry the offending command's seq", async () => {
+    const h = spawnHelper();
+    await waitFor(() => find(h.fd3, "ready"));
+    h.send({ cmd: "nonsense", seq: 42 });
+    const r = await waitFor(() => h.fd3.find((l) => l.seq === 42), 5000, "seq 42");
+    expect(r.ev).toBe("error");
+    expect(r.code).toBe("unknown-command");
+  });
+
+  test("malformed JSON produces a reliable error without wedging the stream", async () => {
+    const h = spawnHelper();
+    await waitFor(() => find(h.fd3, "ready"));
+    h.proc.stdin!.write("{not json\n");
+    await waitFor(() => h.fd3.find((l) => l.ev === "error" && l.code === "bad-json"), 5000, "bad-json");
+    h.send({ cmd: "status", seq: 5 });
+    const r = await waitFor(() => h.fd3.find((l) => l.seq === 5), 5000, "seq 5 after bad json");
+    expect(r.ev).toBe("status");
+  });
+
+  test("start/stop lifecycle events are reliable", async () => {
+    const h = spawnHelper();
+    await waitFor(() => find(h.fd3, "ready"));
+    h.send({ cmd: "start", dir: tmpSession(), seq: 10 });
+    const started = await waitFor(() => h.fd3.find((l) => l.seq === 10), 5000, "started");
+    expect(started.ev).toBe("started");
+    h.send({ cmd: "stop", seq: 11 });
+    const stopped = await waitFor(() => h.fd3.find((l) => l.seq === 11), 5000, "stopped");
+    expect(stopped.ev).toBe("stopped");
+    expect(find(h.out, "started")).toBeUndefined();
+  });
+});
+
+describe("lossy channel — stdout stats never back-pressure the capture graph", () => {
+  test("stats go to stdout, never to fd3", async () => {
+    const h = spawnHelper();
+    await waitFor(() => find(h.fd3, "ready"));
+    h.send({ cmd: "start", dir: tmpSession(), statsIntervalMs: 5, seq: 1 });
+    await waitFor(() => find(h.fd3, "started"));
+    await waitFor(() => find(h.out, "stats"), 5000, "stats on stdout");
+    expect(find(h.fd3, "stats")).toBeUndefined();
+  });
+
+  test("a stalled stdout consumer does not stall the control plane", async () => {
+    const h = spawnHelper({ drainStdout: false });
+    await waitFor(() => find(h.fd3, "ready"));
+    h.send({ cmd: "start", dir: tmpSession(), statsIntervalMs: 1, seq: 1 });
+    await waitFor(() => find(h.fd3, "started"), 5000, "started");
+    // hammer the undrained pipe until the OS buffer is full and the ring overflows
+    await sleep(2500);
+    h.send({ cmd: "status", seq: 99 });
+    const r = await waitFor(() => h.fd3.find((l) => l.seq === 99), 5000, "status while stdout blocked");
+    expect(r.ev).toBe("status");
+    expect(r.state).toBe("recording");
+  }, 20_000);
+
+  test("dropped stats are reported, not silently lost", async () => {
+    const h = spawnHelper({ drainStdout: false });
+    await waitFor(() => find(h.fd3, "ready"));
+    h.send({ cmd: "start", dir: tmpSession(), statsIntervalMs: 1, seq: 1 });
+    await waitFor(() => find(h.fd3, "started"));
+    await sleep(2500);
+    h.drainStdout();                       // consumer comes back
+    const note = await waitFor(() => find(h.out, "stats-dropped"), 10_000, "stats-dropped notice");
+    expect(typeof note.n).toBe("number");
+    expect(note.n as number).toBeGreaterThan(0);
+  }, 25_000);
+
+  test("backlog is bounded by capacity, not by how long the consumer stalls", async () => {
+    // The point of the ring is that helper memory is capped. Measuring against
+    // an absolute constant would encode a guess about the kernel's pipe buffer;
+    // instead, stall for two very different durations and require that the
+    // surviving backlog does NOT scale with the stall. An unbounded queue would
+    // deliver ~3x as much from the longer window.
+    const measure = async (stallMs: number) => {
+      const h = spawnHelper({ drainStdout: false });
+      await waitFor(() => find(h.fd3, "ready"));
+      h.send({ cmd: "start", dir: tmpSession(), statsIntervalMs: 1, seq: 1 });
+      await waitFor(() => find(h.fd3, "started"));
+      await sleep(stallMs);
+      h.drainStdout();
+      await waitFor(() => find(h.out, "stats-dropped"), 10_000, "drop notice");
+      await sleep(500);
+      const elapsed = h.out.filter((l) => l.ev === "stats").map((l) => l.elapsedMs as number);
+      h.kill();
+      return {
+        produced: Math.max(...elapsed),
+        survived: elapsed.filter((ms) => ms <= stallMs - 100).length,
+      };
+    };
+
+    const short = await measure(1500);
+    const long = await measure(4500);
+    expect(long.produced).toBeGreaterThan(short.produced * 2);      // 3x the production...
+    expect(long.survived).toBeLessThan(short.survived * 1.5 + 200); // ...same bounded backlog
+  }, 60_000);
+});
+
+describe("no fd3 — a bare terminal run still works", () => {
+  test("responses fall back to stdout so the documented smoke test holds", async () => {
+    const h = spawnHelper({ fd3: false });
+    const ready = await waitFor(() => find(h.out, "ready"), 5000, "ready on stdout");
+    expect(ready.protocol).toBe(1);
+    h.send({ cmd: "status", seq: 3 });
+    const r = await waitFor(() => h.out.find((l) => l.seq === 3), 5000, "status on stdout");
+    expect(r.ev).toBe("status");
+  });
+});
