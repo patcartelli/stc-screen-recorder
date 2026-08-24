@@ -183,6 +183,11 @@ reachable via KVC (`setValue(3, forKey: "captureResolution")`, verified in phase
 - **Recordings go to `~/Desktop/stc/<timestamp>/`, never a temp dir** — `os.tmpdir()` on macOS is
   `/var/folders/.../T`, purged on boot and swept after ~3 days. A take is a deliverable, not
   scratch. `STC_RECORDINGS_DIR` overrides it (the E2E suite sets it so runs never touch the Desktop).
+- **`-3805 "application connection being interrupted"` usually means OUR OWN app is still running**
+  — a leftover `electron .` (or any second SCStream from this project) holds the display and every
+  new capture fails this way. It reads like a permission or entitlement problem and is not one:
+  with the stray app gone, the same helper immediately reports the honest `no-displays` instead.
+  Check `ps -Ao pid,command | grep stc-screen-recorder` before debugging anything else.
 - **`SCStream` can fail through `didStopWithError` INSTEAD of `startCapture`'s completion** — seen
   as `-3805 "application connection being interrupted"`. Wiring only the completion left `start`
   permanently unanswered. Every request path must resolve exactly once: the delegate answers a

@@ -96,10 +96,18 @@ final class App {
                     IO.send("error", seq: seq,
                             ["code": ce?.code ?? "start-failed",
                              "detail": ce.map { $0.description } ?? "\(err)"])
-                    if !dirExistedBefore,
-                       let entries = try? FileManager.default.contentsOfDirectory(atPath: url.path),
-                       entries.isEmpty {
-                        try? FileManager.default.removeItem(at: url)
+                    // A failed start still leaves the writer's zero-byte
+                    // display.mp4 behind, so "is the directory empty?" is not
+                    // the right question — "does it hold anything worth
+                    // keeping?" is. Only ever removes a directory we created
+                    // whose contents are all empty files.
+                    if !dirExistedBefore, let fm = Optional(FileManager.default),
+                       let entries = try? fm.contentsOfDirectory(atPath: url.path),
+                       entries.allSatisfy({ name in
+                           let attrs = try? fm.attributesOfItem(atPath: url.appendingPathComponent(name).path)
+                           return (attrs?[.size] as? Int ?? 1) == 0
+                       }) {
+                        try? fm.removeItem(at: url)
                     }
                     // Leave the helper usable: a denied permission must not
                     // wedge the process, it must be retryable after granting.
