@@ -9,10 +9,16 @@ import AVFoundation
 import CoreGraphics
 
 let args = CommandLine.arguments
-guard args.count == 3 else {
-    FileHandle.standardError.write("usage: gen-display <frames.json> <out.mp4>\n".data(using: .utf8)!)
+guard args.count >= 3 else {
+    FileHandle.standardError.write("usage: gen-display <frames.json> <out.mp4> [--offset-ns N]\n".data(using: .utf8)!)
     exit(2)
 }
+// A non-zero offset makes AVAssetWriter emit an EMPTY EDIT rather than shifting
+// sample CTS — which is exactly what a real capture does, because the first
+// frame never lands precisely at the moment the start command arrived.
+let offsetNs = args.firstIndex(of: "--offset-ns").flatMap { i -> Int? in
+    i + 1 < args.count ? Int(args[i + 1]) : nil
+} ?? 0
 let framesNs = try JSONSerialization.jsonObject(
     with: Data(contentsOf: URL(fileURLWithPath: args[1]))) as! [Int]
 let outURL = URL(fileURLWithPath: args[2])
@@ -78,10 +84,10 @@ for (i, ptsNs) in framesNs.enumerated() {
         ctx.fill(CGRect(x: 8 + bit * 20, y: H - 24, width: 16, height: 16))
     }
     CVPixelBufferUnlockBaseAddress(buf, [])
-    adaptor.append(buf, withPresentationTime: CMTime(value: CMTimeValue(ptsNs), timescale: 1_000_000_000))
+    adaptor.append(buf, withPresentationTime: CMTime(value: CMTimeValue(ptsNs + offsetNs), timescale: 1_000_000_000))
 }
 input.markAsFinished()
-writer.endSession(atSourceTime: CMTime(value: 5_000_000_000, timescale: 1_000_000_000))
+writer.endSession(atSourceTime: CMTime(value: CMTimeValue(5_000_000_000 + offsetNs), timescale: 1_000_000_000))
 let sem = DispatchSemaphore(value: 0)
 writer.finishWriting { sem.signal() }
 sem.wait()

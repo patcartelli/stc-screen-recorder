@@ -29,12 +29,27 @@ export function demuxDisplayMp4(buf: ArrayBuffer): Promise<DemuxedVideo> {
 
       // avcC description: serialize the box, strip the 8-byte box header.
       // NB PHASE-0 §4b.5: DataStream must come off the module export in use.
-      const entries = file.getTrackById(track.id).mdia.minf.stbl.stsd.entries;
+      const trak = file.getTrackById(track.id);
+      const entries = trak.mdia.minf.stbl.stsd.entries;
       const avcC = entries.map((e: any) => e.avcC).find(Boolean);
       if (!avcC) { reject(new Error("no avcC box")); return; }
       const ds = new MP4Box.DataStream(undefined, 0, MP4Box.DataStream.BIG_ENDIAN);
       avcC.write(ds);
       const description = new Uint8Array(ds.buffer, 8, ds.position - 8);
+
+      // Presentation time = media time + edit-list offset. AVAssetWriter records
+      // the gap between "recording started" and "first frame arrived" as an
+      // EMPTY EDIT (media_time -1) and leaves sample CTS starting at zero, so
+      // reading the sample table alone reports every frame too early by that
+      // gap. Measured at 231.7 ms on a real capture — about 14 frames of cursor
+      // desync, small enough to look like a rendering bug rather than a clock one.
+      const movieTimescale = file.moov.mvhd.timescale;
+      const editOffsetNs = (trak.edts?.elst?.entries ?? [])
+        .filter((e: any) => e.media_time === -1)
+        .reduce((sum: number, e: any) => sum + (e.segment_duration / movieTimescale) * 1_000_000_000, 0);
+      if (!Number.isInteger(editOffsetNs)) {
+        throw new Error(`edit-list offset is not an integer ns: ${editOffsetNs}`);
+      }
 
       const collected: any[] = [];
       file.onSamples = (_id: number, _user: unknown, samples: any[]) => {
@@ -42,7 +57,7 @@ export function demuxDisplayMp4(buf: ArrayBuffer): Promise<DemuxedVideo> {
         if (collected.length < track.nb_samples) return;
         const framesNs = collected.map((s) => {
           const scale = 1_000_000_000 / s.timescale;
-          const pts = s.cts * scale;
+          const pts = s.cts * scale + editOffsetNs;
           if (!Number.isInteger(pts)) throw new Error(`non-integer ns PTS: cts=${s.cts} timescale=${s.timescale}`);
           return pts;
         });
@@ -54,7 +69,7 @@ export function demuxDisplayMp4(buf: ArrayBuffer): Promise<DemuxedVideo> {
           description,
           chunks: collected.map((s) => ({
             type: s.is_sync ? "key" : "delta",
-            timestampUs: Math.round((s.cts * (1_000_000_000 / s.timescale)) / 1000),
+            timestampUs: Math.round((s.cts * (1_000_000_000 / s.timescale) + editOffsetNs) / 1000),
             data: s.data as Uint8Array,
           })),
         });

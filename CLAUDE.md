@@ -144,6 +144,16 @@ reachable via KVC (`setValue(3, forKey: "captureResolution")`, verified in phase
   global**, not `MP4Box.DataStream` — the latter throws inside the demux promise executor and the
   `await` hangs forever with no error.
 - **mach timebase** — 41.667 ns/tick on this machine; Intel is 1/1. Always `mach_timebase_info()`.
+- **Never block on `SCStream.startCapture`'s completion** — it dispatches to the same
+  ScreenCaptureKit queue that delivered `SCShareableContent`'s callback, so a semaphore wait
+  there deadlocks against itself and only clears when the timeout fires. This cost a flat 10 s
+  on every `start` until it was found; `start` is ~0.2 s once the wait is removed.
+- **`display.mp4`'s first sample is NOT at session time zero** — AVAssetWriter records the gap
+  between "start received" and "first frame arrived" as an **empty edit** (`media_time: -1`) and
+  leaves sample CTS starting at 0. A demuxer that reads only the sample table reports every frame
+  early by that gap: measured at 231.7 ms on a real capture, ~14 frames of cursor desync — small
+  enough to look like a rendering bug rather than a clock one. `demux.ts` adds the empty-edit
+  duration; `fixtures/offset/` is the regression fixture.
 - **A no-op rebuild is a vacuous TCC test** — `swiftc` is deterministic and
   `codesign --timestamp=none` adds no entropy, so unchanged source rebuilds to the *same* CDHash.
   Any "did the grant survive a rebuild?" check must confirm the CDHash actually changed first.

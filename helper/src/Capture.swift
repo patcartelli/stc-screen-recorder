@@ -61,16 +61,11 @@ final class CaptureSession: NSObject, SCStreamOutput, SCStreamDelegate {
             }
             let display = displayId.flatMap { id in content.displays.first { $0.displayID == id } }
                 ?? content.displays[0]
-            do {
-                try self.begin(display: display)
-                completion(.success(self.describe()))
-            } catch {
-                completion(.failure(error))
-            }
+            self.begin(display: display, completion: completion)
         }
     }
 
-    private func begin(display: SCDisplay) throws {
+    private func begin(display: SCDisplay, completion: @escaping (Result<[String: Any], Error>) -> Void) {
         displayID = display.displayID
         pointW = display.width
         pointH = display.height
@@ -85,9 +80,20 @@ final class CaptureSession: NSObject, SCStreamOutput, SCStreamDelegate {
         }
         (captureW, captureH) = captureSize(pixelW, pixelH)
 
-        try setupWriter()
-        try setupStream(display: display)
-        startEventTap()
+        do {
+            try setupWriter()
+            try startStream(display: display) { [weak self] err in
+                guard let self else { return }
+                if let err {
+                    completion(.failure(CaptureError.streamFailed(err)))
+                } else {
+                    self.startEventTap()
+                    completion(.success(self.describe()))
+                }
+            }
+        } catch {
+            completion(.failure(error))
+        }
     }
 
     private func setupWriter() throws {
@@ -121,7 +127,13 @@ final class CaptureSession: NSObject, SCStreamOutput, SCStreamDelegate {
         writer = w; input = inp; adaptor = ad
     }
 
-    private func setupStream(display: SCDisplay) throws {
+    /// Never block waiting on startCapture's completion. This runs on
+    /// ScreenCaptureKit's own callback queue, and startCapture dispatches its
+    /// completion to that same queue — so a semaphore wait here deadlocks
+    /// against itself and only unwedges when the timeout fires. That cost a
+    /// flat 10 s on every start, which AVAssetWriter then baked into the file
+    /// as a 10 s empty edit.
+    private func startStream(display: SCDisplay, completion: @escaping (Error?) -> Void) throws {
         let cfg = SCStreamConfiguration()
         cfg.width = captureW
         cfg.height = captureH
@@ -141,12 +153,8 @@ final class CaptureSession: NSObject, SCStreamOutput, SCStreamDelegate {
         let s = SCStream(filter: filter, configuration: cfg, delegate: self)
         try s.addStreamOutput(self, type: .screen,
                               sampleHandlerQueue: DispatchQueue(label: "stc.capture.screen"))
-        let sem = DispatchSemaphore(value: 0)
-        var startErr: Error?
-        s.startCapture { e in startErr = e; sem.signal() }
-        _ = sem.wait(timeout: .now() + 10)
-        if let startErr { throw CaptureError.streamFailed(startErr) }
         stream = s
+        s.startCapture { completion($0) }
     }
 
     // MARK: - frames

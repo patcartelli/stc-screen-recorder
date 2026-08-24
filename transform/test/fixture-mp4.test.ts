@@ -57,3 +57,22 @@ describe("fixture display.mp4 matches the hand-authored session contract", () =>
     expect(samples[0]!.is_sync).toBe(true);
   });
 });
+
+describe("demux honours the edit list", () => {
+  // A real capture never starts exactly when the start command arrives, so
+  // AVAssetWriter records the gap as an EMPTY EDIT and leaves sample CTS
+  // starting at 0. Reading only the sample table therefore reports every frame
+  // too early by that gap — measured at 231.7 ms on a real recording, which is
+  // ~14 frames of cursor desync: visible, but easy to blame on anything else.
+  test("frames start at their true session-relative time, not at zero", async () => {
+    const framesNs: number[] = JSON.parse(
+      readFileSync(join(root, "fixtures", "offset", "frames.json"), "utf8"),
+    );
+    const { demuxDisplayMp4 } = await import("../src/demux.js");
+    const buf = readFileSync(join(root, "fixtures", "offset", "display.mp4"));
+    const ab = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) as ArrayBuffer;
+    const video = await demuxDisplayMp4(ab);
+    expect(video.framesNs[0]).toBe(250_000_000);
+    expect(video.framesNs).toEqual(framesNs);
+  });
+});

@@ -18,3 +18,4 @@ fixtures/gen-display
 
 # signing-probe bundle (regenerable)
 tools/signing-probe/*.app/
+tools/test-host/*.app/
