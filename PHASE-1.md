@@ -1,4 +1,12 @@
-# Phase 1 — end-to-end vertical slice
+# Phase 1 — end-to-end vertical slice  ✅ COMPLETE (2026-08-24)
+
+All five increments shipped and verified. Highlights: 60 s export gate passes with
+byte-identical pre-encode hashes across independent runs; a 5-minute capture holds 60 fps
+peak capability with zero dropped frames; display reconfiguration stops cleanly leaving a
+playable partial file; and composited output was watched and confirmed correct.
+
+Deferred to phase 2 unchanged: camera PiP, microphone, system audio, mid-recording display
+rebuild, N-minute segmentation, device-loss recovery, fault-injection soak.
 
 **Goal:** record → composite → export, once, at low fidelity. Ugly is fine. The spike proved each
 component in isolation; this proves them *composed*: display capture + cursor events → deterministic

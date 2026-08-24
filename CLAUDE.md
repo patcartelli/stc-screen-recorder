@@ -63,10 +63,11 @@ npm run app:start                                  # build + launch the Electron
   proves the agreed answer is right — a uniformly mispositioned or time-shifted cursor passes
   every automated check in this repo. `node scripts/export-one.mjs <sessionDir> [seconds]` writes
   a watchable file. NB the cursor is a placeholder circle, not the real pointer artwork.
-- **Increment 5 (smoke test):** 5-minute capture PASSED (9311 frames, 0 dropped, 0 non-monotonic,
-  peak 60.0 fps in the second half — no throttling). Display-change stop PASSED (stops cleanly,
-  `stop.reason: "display-reconfigured"`, partial mp4 parses and plays). Remaining: watch an export
-  of longer material.
+- **Increment 5 (smoke test):** DONE. 5-minute capture (9311 frames, 0 dropped, 0 non-monotonic,
+  peak 60.0 fps in the second half — no throttling). Display-change stop (clean, correct
+  `stop.reason`, partial mp4 parses and plays). 30 s export from 2:30 into the take watched and
+  confirmed: cursor tracking, correct segment, smooth.
+- **PHASE 1 IS COMPLETE** — record -> composite -> export, verified end to end on real hardware.
 - **The helper can stop itself** — a display change makes it stop cleanly and emit an unsolicited
   `stopped`. Anything holding recording state must reconcile, or it sits there believing a
   recording is live; the supervisor listens for that event and treats the heartbeat's `state` as
