@@ -12,3 +12,6 @@ scratch/gen
 scratch/encbench
 scratch/smoke
 .DS_Store
+
+# fixture generator binary
+fixtures/gen-display
