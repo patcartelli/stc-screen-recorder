@@ -32,7 +32,7 @@ async function sha256Hex(bytes: Uint8Array): Promise<string> {
 export async function exportSession(
   dir: string,
   project: Project,
-  opts: { maxFrames?: number; encode?: boolean; returnFile?: boolean } = {},
+  opts: { maxFrames?: number; encode?: boolean; returnFile?: boolean; fromFrame?: number } = {},
 ): Promise<ExportResult> {
   const t0 = performance.now();
   const [anchors, events, displayMp4] = await Promise.all([
@@ -52,10 +52,18 @@ export async function exportSession(
   // tick for 60 fps. The SOURCE grid stays variable — frame selection picks the
   // greatest PTS <= t and holds, never interpolating.
   const lastFrameNs = session.frames[session.frames.length - 1]!;
-  const total = Math.min(
-    opts.maxFrames ?? Number.MAX_SAFE_INTEGER,
-    Math.floor((lastFrameNs * fps) / 1_000_000_000) + 1,
-  );
+  const available = Math.floor((lastFrameNs * fps) / 1_000_000_000) + 1;
+  // Exporting a window from the middle still decodes from the beginning: the
+  // source is forward-only by design. Those frames are decoded and released
+  // without being composited or hashed, which is the cheap part of the loop.
+  const from = Math.max(0, Math.min(opts.fromFrame ?? 0, available - 1));
+  const total = Math.min(opts.maxFrames ?? Number.MAX_SAFE_INTEGER, available - from);
+  // The exported clip is its own file and its timeline starts at zero, so
+  // container timestamps are rebased. render() keeps receiving SESSION time —
+  // cursor state is a function of where we are in the recording, not of where
+  // this clip happens to begin. Conflating the two would put the cursor at the
+  // wrong moment in any export that does not start at t=0.
+  const originNs = tickTimeNs(2 * from);
 
   const encode = opts.encode ?? true;
   let muxer: Muxer<ArrayBufferTarget> | undefined;
@@ -82,7 +90,7 @@ export async function exportSession(
   let peakBuffered = 0;
 
   for (let k = 0; k < total; k++) {
-    const tNs = tickTimeNs(2 * k);
+    const tNs = tickTimeNs(2 * (from + k));
     const fs = render(project, session, tNs);
     const idx = frameIndexAt(session.frames, tNs);
     const frame = idx === null ? null : await source.frameAt(idx);
@@ -96,7 +104,7 @@ export async function exportSession(
 
     if (encoder) {
       if (encoderError) throw encoderError;
-      const vf = new VideoFrame(ctx.canvas, { timestamp: Math.round(tNs / 1000) });
+      const vf = new VideoFrame(ctx.canvas, { timestamp: Math.round((tNs - originNs) / 1000) });
       encoder.encode(vf, { keyFrame: k % fps === 0 });
       vf.close();
       // Never let the encoder queue grow without bound on a long export.

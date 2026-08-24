@@ -13,8 +13,9 @@ import { join } from "node:path";
 
 const sessionDir = process.argv[2];
 const seconds = Number(process.argv[3] ?? 10);
+const fromSeconds = Number(process.argv[4] ?? 0);
 if (!sessionDir || !existsSync(join(sessionDir, "display.mp4"))) {
-  console.error("usage: node scripts/export-one.mjs <sessionDir> [seconds]");
+  console.error("usage: node scripts/export-one.mjs <sessionDir> [seconds] [fromSeconds]");
   process.exit(2);
 }
 const anchors = JSON.parse(readFileSync(join(sessionDir, "anchors.json"), "utf8"));
@@ -50,12 +51,14 @@ try {
     cursor: { style: "default", scale: 1 },
   };
   const frames = Math.round(seconds * 60);
-  console.log(`exporting ${seconds}s (${frames} frames) at ${project.output.width}x${project.output.height}…`);
-  const r = await page.evaluate(([p, f]) =>
-    window.exportSession("/session", p, { maxFrames: f, encode: true, returnFile: true }),
-    [project, frames]);
+  const fromFrame = Math.round(fromSeconds * 60);
+  console.log(`exporting ${seconds}s from t=${fromSeconds}s (${frames} frames) ` +
+              `at ${project.output.width}x${project.output.height}…`);
+  const r = await page.evaluate(([p, f, ff]) =>
+    window.exportSession("/session", p, { maxFrames: f, fromFrame: ff, encode: true, returnFile: true }),
+    [project, frames, fromFrame]);
 
-  const dest = join(sessionDir, `export-${seconds}s.mp4`);
+  const dest = join(sessionDir, `export-${seconds}s-from${fromSeconds}s.mp4`);
   writeFileSync(dest, Buffer.from(r.encodedBase64, "base64"));
   console.log(`\n${r.frames} frames in ${(r.durationMs / 1000).toFixed(1)}s`);
   console.log(`wrote ${dest} (${(r.encodedBytes / 1e6).toFixed(2)} MB)`);
