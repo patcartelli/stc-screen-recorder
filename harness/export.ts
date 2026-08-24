@@ -32,7 +32,8 @@ async function sha256Hex(bytes: Uint8Array): Promise<string> {
 export async function exportSession(
   dir: string,
   project: Project,
-  opts: { maxFrames?: number; encode?: boolean; returnFile?: boolean; fromFrame?: number } = {},
+  opts: { maxFrames?: number; encode?: boolean; returnFile?: boolean; fromFrame?: number;
+          hash?: boolean; softwareRaster?: boolean } = {},
 ): Promise<ExportResult> {
   const t0 = performance.now();
   const [anchors, events, displayMp4] = await Promise.all([
@@ -45,8 +46,15 @@ export async function exportSession(
   const source = new ForwardFrameSource(session.video);
 
   const { width, height, fps } = project.output;
+  // willReadFrequently forces SOFTWARE rasterisation. It exists so the gate can
+  // getImageData cheaply; an export that never reads pixels back does not need
+  // it, and it may be the dominant cost. Measured via opts.hash, which is the
+  // only thing that reads back — see scripts/measure-export.mjs.
   const ctx = new OffscreenCanvas(width, height)
-    .getContext("2d", { alpha: false, willReadFrequently: true }) as OffscreenCanvasRenderingContext2D;
+    .getContext("2d", {
+      alpha: false,
+      willReadFrequently: opts.softwareRaster ?? opts.hash ?? true,
+    }) as OffscreenCanvasRenderingContext2D;
 
   // CFR at export: the output grid is uniform, sampling every other 120 Hz sim
   // tick for 60 fps. The SOURCE grid stays variable — frame selection picks the
@@ -88,6 +96,10 @@ export async function exportSession(
   // contractually deterministic; the RGBA that goes IN is.
   const rolling = new Uint8Array(32);
   let peakBuffered = 0;
+  // Hashing is what the GATE needs, not what an export needs: a 33 MB
+  // getImageData plus a SHA-256 per frame, purely to compare the two sinks.
+  // A real export encodes straight from the canvas and pays none of it.
+  const wantHash = opts.hash ?? true;
 
   for (let k = 0; k < total; k++) {
     const tNs = tickTimeNs(2 * (from + k));
@@ -97,10 +109,12 @@ export async function exportSession(
     peakBuffered = Math.max(peakBuffered, source.bufferedCount);
 
     composite(ctx, frame as unknown as ImageBitmap | null, fs, width, height);
-    const rgba = ctx.getImageData(0, 0, width, height).data;
 
-    const h = new Uint8Array(await crypto.subtle.digest("SHA-256", rgba as unknown as BufferSource));
-    for (let i = 0; i < 32; i++) rolling[i]! ^= h[i]! + ((k * 31 + i) & 0xff);
+    if (wantHash) {
+      const rgba = ctx.getImageData(0, 0, width, height).data;
+      const h = new Uint8Array(await crypto.subtle.digest("SHA-256", rgba as unknown as BufferSource));
+      for (let i = 0; i < 32; i++) rolling[i]! ^= h[i]! + ((k * 31 + i) & 0xff);
+    }
 
     if (encoder) {
       if (encoderError) throw encoderError;
@@ -137,7 +151,7 @@ export async function exportSession(
 
   return {
     frames: total,
-    hash: await sha256Hex(rolling),
+    hash: wantHash ? await sha256Hex(rolling) : "",
     encodedBytes,
     encodedBase64,
     peakBufferedFrames: peakBuffered,

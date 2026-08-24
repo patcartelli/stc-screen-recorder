@@ -42,18 +42,32 @@ harness that crashed the tab repeatedly doing this, and every lesson applies:
    fresh `VideoDecoder` every spin
 3. close `VideoFrame`s in the output callback, retaining at most one — ~30 MB each at 6K
 
-## Open question to settle FIRST
+## Settled by increment 0 — export throughput
 
-**Is export fast enough to run in the app?** The measured ~55 ms/frame at 4K is *gate* cost: it
-includes a 33 MB `getImageData` and a SHA-256 per frame, needed only to compare sinks. A real
-export encodes straight from the canvas. Until that is measured we do not know whether UI export
-is roughly realtime or ten times slower than realtime, and that changes what the UI must promise
-(a progress bar vs a background job with notification).
+Measured on a real 3840×2160 take (900 output frames):
+
+| path | ms/frame | note |
+|---|---|---|
+| gate (software raster + hash) | 52.2 | what phase 1 measured; hashing alone is 79% of it |
+| export (software raster, no hash) | 24.7 | |
+| **export (GPU raster, no hash)** | **11.0** | **1.52× realtime — a 5-minute take exports in 3.3 min** |
+
+Two things this settles:
+
+- **A progress bar is honest.** Export is faster than realtime, so increment 4 can show progress
+  rather than dispatching a background job. It is still minutes for a long take, so it must be
+  cancellable and must not block the UI.
+- **The raster backend is free.** `willReadFrequently: true` forces software rasterisation and was
+  over half the export cost, but it exists only so the gate can read pixels back. Both backends
+  were checked and are individually deterministic **and produce byte-identical output**
+  (`cda78486efab82e40b4ee728…` from both), so the sink-identity gate remains valid whichever is
+  used and the fast path carries no correctness risk. Had they disagreed, the gate would have been
+  verifying a rendering path that no export actually uses.
 
 ## Increments
 
-0. **Throughput measurement** — export with and without the per-frame hash, on a real take.
-   Decides increment 3's UX. No feature work; a number.
+0. **Throughput measurement** *(done — see "Settled by increment 0" above)* — export with and
+   without the per-frame hash, on a real take. Decides increment 4's UX. No feature work; a number.
 1. **Take library** — list recordings with duration, size, date, resolution, event count, read
    from the sidecars. Gate: a take recorded by the app appears with correct metadata, and a
    directory that is not a valid session is reported as such rather than crashing the list.
