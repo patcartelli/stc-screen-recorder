@@ -1,5 +1,6 @@
 import Foundation
 import AppKit
+import CoreGraphics
 
 /// Long-running capture helper. Controlled over stdin; reports over stdout.
 /// Increment 1: control plane, watchers, lifecycle. Capture lands in increment 2.
@@ -10,6 +11,7 @@ final class App {
     private var sessionDir: URL?
     private var startedAtNs: UInt64 = 0
     private var statsTimer: DispatchSourceTimer?
+    private var capture: CaptureSession?
     /// Stats run off the main queue on purpose: telemetry must never compete with
     /// the control plane for the queue that dispatches commands.
     private let statsQueue = DispatchQueue(label: "stc.stats")
@@ -17,13 +19,17 @@ final class App {
 
     func boot() {
         installSignalHandlers()
+        startHeartbeat()
         Watchers.shared.start()
         Watchers.shared.onDisplayChange = { [weak self] _, changes in
             guard let self = self, self.state == .recording else { return }
             // Increment 2 rebuilds the stream here. For now the change is at least never silent.
+            // AVAssetWriter cannot change output dimensions mid-file, so a
+            // reconfiguration is a clean stop, not a rebuild (phase 2 concern).
             IO.send("warning", ["code": "display-change-during-recording",
                                 "changes": changes,
-                                "detail": "stream rebuild not yet implemented (increment 2)"])
+                                "detail": "stopping cleanly — mid-stream rebuild is a phase 2 concern"])
+            self.stop(reason: "display-reconfigured")
         }
         IO.send("ready", ["pid": ProcessInfo.processInfo.processIdentifier,
                           "timebase": Clock.describe,
@@ -66,37 +72,93 @@ final class App {
         state = .starting
         sessionDir = url
         startedAtNs = Clock.nowNs()
-        state = .recording
-        IO.send("started", seq: seq, ["dir": url.path, "t0Ns": startedAtNs])
-        startStatsTimer(intervalMs: cmd["statsIntervalMs"] as? Int ?? 2000, since: startedAtNs)
+
+        let displayId = (cmd["displayId"] as? Int).map { CGDirectDisplayID($0) }
+        let session = CaptureSession(dir: url, t0Ns: startedAtNs)
+        capture = session
+        session.start(displayId: displayId) { [weak self] result in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                switch result {
+                case .success(let info):
+                    // A stop may have arrived while the async start was in flight.
+                    guard self.state == .starting else { return }
+                    self.state = .recording
+                    var o: [String: Any] = ["dir": url.path, "t0Ns": self.startedAtNs]
+                    o.merge(info) { a, _ in a }
+                    IO.send("started", seq: seq, o)
+                case .failure(let err):
+                    let ce = err as? CaptureError
+                    IO.send("error", seq: seq,
+                            ["code": ce?.code ?? "start-failed",
+                             "detail": ce.map { $0.description } ?? "\(err)"])
+                    // Leave the helper usable: a denied permission must not
+                    // wedge the process, it must be retryable after granting.
+                    self.capture = nil
+                    self.sessionDir = nil
+                    self.state = .idle
+                }
+            }
+        }
     }
 
-    private func stop(seq: Int? = nil) {
-        guard state == .recording else {
+    private func stop(seq: Int? = nil, reason: String = "user") {
+        guard state == .recording || state == .starting else {
             IO.send("error", seq: seq, ["code": "bad-state", "detail": "not recording"]); return
         }
         state = .stopping
-        statsTimer?.cancel(); statsTimer = nil
+        let dir = sessionDir?.path
         let elapsed = (Clock.nowNs() - startedAtNs) / 1_000_000
-        IO.send("stopped", seq: seq, ["dir": sessionDir?.path as Any, "elapsedMs": elapsed])
-        sessionDir = nil
-        state = .idle
+
+        guard let session = capture else {
+            IO.send("stopped", seq: seq, ["dir": dir as Any, "elapsedMs": elapsed, "reason": reason])
+            sessionDir = nil; state = .idle
+            return
+        }
+        session.stop(reason: reason) { [weak self] stats in
+            DispatchQueue.main.async {
+                var o: [String: Any] = ["dir": dir as Any, "elapsedMs": elapsed, "reason": reason]
+                o.merge(stats) { a, _ in a }
+                IO.send("stopped", seq: seq, o)
+                self?.capture = nil
+                self?.sessionDir = nil
+                self?.state = .idle
+            }
+        }
     }
 
     /// Periodic stats make thermal throttling observable rather than inferred.
     /// Phase 0 saw 6K H.264 fade from 18.7 to 12.1 fps across a longer benchmark.
-    private func startStatsTimer(intervalMs: Int, since t0: UInt64) {
-        let ms = max(1, intervalMs)
+    /// Liveness + capture telemetry, from boot until exit. Deliberately not
+    /// gated on recording: a parent that only hears from the helper while
+    /// recording cannot distinguish a healthy idle helper from a wedged one.
+    ///
+    /// Lossy on purpose — IO.stat never blocks, so a stalled consumer cannot
+    /// back-pressure the capture graph. Never IO.send from anywhere near here.
+    private func startHeartbeat() {
+        let ms = max(1, Self.statsIntervalMs)
         let t = DispatchSource.makeTimerSource(queue: statsQueue)
         t.schedule(deadline: .now() + .milliseconds(ms), repeating: .milliseconds(ms))
-        // t0 captured by value: the handler must not touch main-queue state.
-        t.setEventHandler {
-            IO.stat("stats", ["elapsedMs": (Clock.nowNs() - t0) / 1_000_000,
-                              "frames": 0, "dropped": 0, "note": "capture lands in increment 2"])
+        t.setEventHandler { [weak self] in
+            guard let self else { return }
+            var o: [String: Any] = ["state": self.state.rawValue]
+            if self.state == .recording {
+                o["elapsedMs"] = (Clock.nowNs() - self.startedAtNs) / 1_000_000
+            }
+            if let s = self.capture?.stats() { o.merge(s) { a, _ in a } }
+            IO.stat("stats", o)
         }
         t.resume()
         statsTimer = t
     }
+
+    /// `--stats-interval-ms N`, read once at launch. Electron sets it at spawn.
+    static let statsIntervalMs: Int = {
+        let a = CommandLine.arguments
+        guard let i = a.firstIndex(of: "--stats-interval-ms"), i + 1 < a.count,
+              let v = Int(a[i + 1]) else { return 2000 }
+        return max(1, v)
+    }()
 
     /// Phase 0 §2a: being killed while holding a capture device wedged CoreAudio system-wide.
     /// Background queue on purpose — these must fire even if the main thread is blocked.
@@ -115,7 +177,7 @@ final class App {
 
     func shutdown(reason: String, exitCode: Int32, seq: Int? = nil) {
         IO.log("shutdown: \(reason)")
-        if state == .recording { stop() }
+        if state == .recording || state == .starting { stop(reason: reason) }
         IO.send("bye", seq: seq, ["reason": reason])
         exit(exitCode)
     }
