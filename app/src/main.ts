@@ -1,9 +1,9 @@
 import { app, BrowserWindow, ipcMain, dialog } from "electron";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, readdirSync } from "node:fs";
 import { HelperSupervisor } from "./supervisor.js";
+import { newTakeDir, takesRoot } from "./takes.js";
 
 /**
  * Electron main process. Owns the helper: it is spawned as a CHILD of this
@@ -63,7 +63,11 @@ ipcMain.handle("recorder:status", async () => ({
 
 ipcMain.handle("recorder:start", async () => {
   if (!sup) throw new Error("supervisor not running");
-  const dir = mkdtempSync(join(tmpdir(), "stc-take-"));
+  const root = takesRoot(process.env);
+  const existing = existsSync(root) ? readdirSync(root) : [];
+  // The helper creates the directory itself, and removes it again if the start
+  // fails — so a denied grant leaves nothing behind on the user's Desktop.
+  const dir = newTakeDir(process.env, new Date(), existing);
   try {
     const r = await sup.startRecording(dir);
     return { ok: true, dir, info: r };

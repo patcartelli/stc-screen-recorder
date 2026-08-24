@@ -39,6 +39,15 @@ final class CaptureSession: NSObject, SCStreamOutput, SCStreamDelegate {
     private var firstFramePtsNs: Int64 = -1
     private var tapReenables = 0
 
+    /// A start must be answered exactly once, by whichever path gets there
+    /// first. SCStream can fail through `didStopWithError` INSTEAD of through
+    /// startCapture's completion (seen as -3805 "application connection being
+    /// interrupted"), and with only the completion wired the request hung
+    /// forever. A protocol where some requests are never answered is worse than
+    /// one that answers with an error.
+    private var startCompletion: ((Result<[String: Any], Error>) -> Void)?
+    private let startLock = NSLock()
+
     private var tap: CFMachPort?
     private var tapSource: CFRunLoopSource?
     private var tapRunLoop: CFRunLoop?
@@ -81,20 +90,38 @@ final class CaptureSession: NSObject, SCStreamOutput, SCStreamDelegate {
         }
         (captureW, captureH) = captureSize(pixelW, pixelH)
 
+        startLock.lock(); startCompletion = completion; startLock.unlock()
+
+        // Backstop: if neither the completion nor the delegate ever fires, the
+        // caller still gets an answer rather than a permanently pending request.
+        DispatchQueue.global().asyncAfter(deadline: .now() + 15) { [weak self] in
+            self?.finishStart(.failure(CaptureError.startTimedOut))
+        }
+
         do {
             try setupWriter()
             try startStream(display: display) { [weak self] err in
                 guard let self else { return }
                 if let err {
-                    completion(.failure(CaptureError.streamFailed(err)))
+                    self.finishStart(.failure(CaptureError.streamFailed(err)))
                 } else {
                     self.startEventTap()
-                    completion(.success(self.describe()))
+                    self.finishStart(.success(self.describe()))
                 }
             }
         } catch {
-            completion(.failure(error))
+            finishStart(.failure(error))
         }
+    }
+
+    /// Call-once. Later callers are no-ops, so a stream that fails after a
+    /// successful start reports as a warning rather than a second response.
+    private func finishStart(_ result: Result<[String: Any], Error>) {
+        startLock.lock()
+        let c = startCompletion
+        startCompletion = nil
+        startLock.unlock()
+        c?(result)
     }
 
     private func setupWriter() throws {
@@ -206,6 +233,9 @@ final class CaptureSession: NSObject, SCStreamOutput, SCStreamDelegate {
     }
 
     func stream(_ stream: SCStream, didStopWithError error: Error) {
+        // If the start is still pending this IS its answer — the stream died on
+        // the way up rather than reporting through startCapture's completion.
+        finishStart(.failure(CaptureError.streamFailed(error)))
         IO.send("warning", ["code": "stream-stopped", "detail": "\(error)"])
     }
 
@@ -358,6 +388,7 @@ enum CaptureError: Error, CustomStringConvertible {
     case writerRejectedInput
     case writerFailed(Error?)
     case streamFailed(Error)
+    case startTimedOut
 
     var description: String {
         switch self {
@@ -366,6 +397,7 @@ enum CaptureError: Error, CustomStringConvertible {
         case .writerRejectedInput: return "AVAssetWriter rejected the video input"
         case .writerFailed(let e): return "AVAssetWriter failed to start: \(e.map { "\($0)" } ?? "unknown")"
         case .streamFailed(let e): return "SCStream failed to start: \(e)"
+        case .startTimedOut: return "capture did not start within 15s and reported no error"
         }
     }
     var code: String {
@@ -374,6 +406,7 @@ enum CaptureError: Error, CustomStringConvertible {
         case .writerRejectedInput: return "writer-rejected-input"
         case .writerFailed: return "writer-failed"
         case .streamFailed: return "stream-failed"
+        case .startTimedOut: return "start-timeout"
         }
     }
 }

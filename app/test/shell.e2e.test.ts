@@ -1,6 +1,8 @@
 import { describe, test, expect, afterEach } from "vitest";
 import { _electron as electron, type ElectronApplication } from "playwright";
 import { execFileSync } from "node:child_process";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const root = join(__dirname, "..", "..");
@@ -10,7 +12,11 @@ afterEach(async () => { await app?.close().catch(() => {}); app = undefined; });
 
 async function launch() {
   execFileSync("node", [join(root, "app", "build.mjs")], { cwd: root, stdio: "pipe" });
-  app = await electron.launch({ args: [root], cwd: root });
+  // Never write takes to the real ~/Desktop/stc from an automated run.
+  app = await electron.launch({
+    args: [root], cwd: root,
+    env: { ...process.env, STC_RECORDINGS_DIR: mkdtempSync(join(tmpdir(), "stc-e2e-")) },
+  });
   const win = await app.firstWindow();
   await win.waitForLoadState("domcontentloaded");
   return win;

@@ -180,6 +180,13 @@ reachable via KVC (`setValue(3, forKey: "captureResolution")`, verified in phase
 - **A stray `~/node_modules` hijacks module resolution** — the home directory holds a broken pnpm
   tree (rollup missing its native binary, esbuild built for x64 on an arm64 machine). Anything not
   installed *locally* may resolve there and fail bizarrely. Install tools as project devDeps.
+- **Recordings go to `~/Desktop/stc/<timestamp>/`, never a temp dir** — `os.tmpdir()` on macOS is
+  `/var/folders/.../T`, purged on boot and swept after ~3 days. A take is a deliverable, not
+  scratch. `STC_RECORDINGS_DIR` overrides it (the E2E suite sets it so runs never touch the Desktop).
+- **`SCStream` can fail through `didStopWithError` INSTEAD of `startCapture`'s completion** — seen
+  as `-3805 "application connection being interrupted"`. Wiring only the completion left `start`
+  permanently unanswered. Every request path must resolve exactly once: the delegate answers a
+  pending start, and a 15 s backstop answers if neither fires.
 - **An empty events.json does not mean the tap is broken** — an automated capture records zero
   events simply because nothing moves the mouse, which is indistinguishable from a dead button
   path. Verifying input needs deliberate input; `fixtures/real-session/` pins the result.

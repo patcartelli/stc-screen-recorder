@@ -66,6 +66,10 @@ final class App {
             IO.send("error", seq: seq, ["code": "missing-dir", "detail": "start requires \"dir\""]); return
         }
         let url = URL(fileURLWithPath: dir)
+        // Noted before creating: a session dir we made and never wrote to gets
+        // cleaned up on failure, so a denied grant does not litter the user's
+        // recordings folder with empty takes. A pre-existing dir is never touched.
+        let dirExistedBefore = FileManager.default.fileExists(atPath: url.path)
         do { try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true) }
         catch { IO.send("error", seq: seq, ["code": "mkdir-failed", "detail": "\(error)"]); return }
 
@@ -92,6 +96,11 @@ final class App {
                     IO.send("error", seq: seq,
                             ["code": ce?.code ?? "start-failed",
                              "detail": ce.map { $0.description } ?? "\(err)"])
+                    if !dirExistedBefore,
+                       let entries = try? FileManager.default.contentsOfDirectory(atPath: url.path),
+                       entries.isEmpty {
+                        try? FileManager.default.removeItem(at: url)
+                    }
                     // Leave the helper usable: a denied permission must not
                     // wedge the process, it must be retryable after granting.
                     self.capture = nil
