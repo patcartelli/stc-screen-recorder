@@ -101,9 +101,17 @@ try {
   if (a.frames !== b.frames) fail(`frame counts differ: ${a.frames} vs ${b.frames}`);
   if (!(a.encodedBytes > 0)) fail("encoder produced no bytes");
 
-  // Memory: streaming means the buffered set stays tiny regardless of length.
-  if (a.peakBufferedFrames > 16) {
-    fail(`peak buffered frames ${a.peakBufferedFrames} — the source is not streaming`);
+  // Memory: streaming means the buffered set stays bounded by the decoder's
+  // queue target, NOT by the length of the recording. The 60 s take peaked at
+  // 16 against 3414 source frames, which is the property being asserted — but
+  // 16 sat exactly on the old limit of >16, one frame from a spurious failure.
+  // The threshold exists to catch "decodes everything", so give it headroom.
+  const BOUNDED = 48;
+  if (a.peakBufferedFrames > BOUNDED) {
+    fail(`peak buffered frames ${a.peakBufferedFrames} > ${BOUNDED} — the source is not streaming`);
+  }
+  if (a.peakBufferedFrames >= a.decodedFrames && a.decodedFrames > BOUNDED) {
+    fail("every decoded frame was retained — that is decode-all, not streaming");
   }
   console.log(`\npeak buffered frames: ${a.peakBufferedFrames} (bounded, not proportional to length)`);
 } catch (e) {

@@ -55,8 +55,11 @@ npm run app:start                                  # build + launch the Electron
 - **Increment 3 (Electron shell):** DONE — `app/src/{helper-client,supervisor,main,preload,renderer}.ts`.
   Client and supervisor are Electron-free and tested against the real helper binary; the shell is
   verified by a Playwright-Electron E2E test that launches the app for real.
-- **Next: increment 4** — composite + export: wire a real session dir through
-  `render(project, session, t)` and encode a CFR MP4.
+- **Increment 4 (composite + export):** DONE — gate passed on a 60 s real recording (3414 source
+  frames -> 3617 CFR output frames, two independent exports byte-identical pre-encode, peak
+  buffered 16 frames). `npm run gate:export [sessionDir]` — defaults to the newest take.
+- **Next: increment 5** — manual smoke test: 5-minute recording, no dropped frames at thermal
+  steady state, clean stop on display change, watchable output.
 
 **Critical ordering rule:** the transform defines the schemas; the helper is a producer to spec.
 Increment 0's `events.json` / `anchors.json` / `project` schemas must exist before increment 1
