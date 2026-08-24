@@ -15,6 +15,11 @@ events → deterministic transform → CFR MP4 with cursor overlay.
 | `helper/src/main.swift` | App lifecycle, command dispatch |
 | `helper/build.sh` | builds and signs; `SIGN_ID="..." ./build.sh` to override |
 | `app/src/` | Electron app (not yet started) |
+| `transform/src/` | the pure transform + shared sink modules (TS; render, time, cursor, demux, decode, compositor) |
+| `schema/` | versioned session schemas (anchors-1, events-1, project-1) |
+| `fixtures/` | hand-authored 5 s fixture session + deterministic display.mp4 generator |
+| `harness/` | vite-served browser harness hosting both sinks |
+| `scripts/gate.mjs` | increment-0 determinism gate (Playwright + real Chrome) |
 | `scratch/` | phase-0 spike code and outputs (mp4box.js, harness, sample session dirs) |
 | `council/` | cross-AI reviews of the phase-1 plan |
 
@@ -23,11 +28,15 @@ events → deterministic transform → CFR MP4 with cursor overlay.
 ```
 helper/build.sh                                    # -> helper/build/stc-helper (see Signing)
 echo '{"cmd":"status"}' | helper/build/stc-helper  # expect ready -> status -> bye JSON lines
+npm test                                           # transform unit tests (vitest)
+npm run gate                                       # increment-0 sink-identity gate (needs Chrome)
 ```
 
 ## Current status
 
-- **Increment 0 (transform contract):** NOT STARTED — must happen before increment 1 ships
+- **Increment 0 (transform contract):** DONE — schemas, fixture session (incl. generated
+  display.mp4 with exact-ns sample table), pure `render()`, both sinks, and the gate all pass:
+  200 sampled t byte-identical between sinks, two independent exports identical, encode works
 - **Increment 1 (helper control plane):** IN PROGRESS — lifecycle, watchers, and the command set
   are done; no capture yet. **The IPC as coded is a single blocking stdout channel** (`IO.emit`:
   one lock, unbuffered blocking writes) — the lossy/reliable split, fd3, sequence numbers, and

@@ -87,7 +87,7 @@ Certificate Assistant, set its trust to "Code Signing" in Keychain Access before
    preview and WebCodecs encode. Gate: for 200 sampled `t` values across the fixture, the pre-encode RGBA
    buffer produced by each sink is byte-identical — preview hash = export hash, and two independent exports
    produce matching pre-encode hashes. The encoded MP4 files need not be byte-identical (container
-   timestamps and encoder state are not contractually deterministic); the gate lives before the encoder.
+   timestamps and encoder state are not contractually deterministic); the gate lives before the encoder. *(done)*
 1. **Helper control plane** — long-running process, JSON-line protocol, display/device watchers, no capture. *(in progress)*
 2. **Capture ported in** — ScreenCaptureKit display capture + CGEventTap only; single-file `display.mp4`;
    `events.json` written per the increment-0 schema; periodic stats. No camera, mic, system audio, or
