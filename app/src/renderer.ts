@@ -1,6 +1,11 @@
 /** UI: a record button, live telemetry, and anything that went wrong stated plainly. */
+interface Take {
+  dir: string; name: string; durationMs: number;
+  width: number; height: number; events: number; bytes: number;
+}
 declare const recorder: {
   status(): Promise<{ state: string; pid?: number }>;
+  takes(): Promise<{ takes: Take[]; invalid: { name: string; reason: string }[] }>;
   start(): Promise<{ ok: boolean; dir?: string; code?: string; detail?: string }>;
   stop(): Promise<{ ok: boolean; info?: any }>;
   reveal(dir: string): Promise<void>;
@@ -38,7 +43,7 @@ recordBtn.addEventListener("click", async () => {
       recording = false;
       recordBtn.textContent = "Record";
       setState("idle");
-      if (currentDir) await recorder.reveal(currentDir);
+      await refreshTakes();
     }
   } catch (e: any) {
     alertUser(String(e?.message ?? e));
@@ -70,6 +75,7 @@ recorder.on("helper:recording-ended", (i) => {
   recording = false;
   recordBtn.textContent = "Record";
   setState("idle");
+  refreshTakes();
   alertUser(i.reason === "display-reconfigured"
     ? "Display configuration changed, so the recording was stopped.\nWhat was captured up to that point was saved."
     : `Recording stopped by the recorder (${i.reason}).\nWhat was captured up to that point was saved.`);
@@ -87,4 +93,53 @@ recorder.on("helper:respawned", () => setState("recovered — helper restarted")
 recorder.on("helper:gave-up", () => { recordBtn.disabled = true; alertUser("The recorder keeps failing to start. Restart the app."); });
 recorder.on("helper:warning", (l) => { if (l.code === "display-change-during-recording") alertUser("Display configuration changed — the recording was stopped."); });
 
+const fmtDuration = (ms: number) => {
+  const total = Math.round(ms / 1000);
+  return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, "0")}`;
+};
+const fmtSize = (b: number) =>
+  b >= 1e9 ? `${(b / 1e9).toFixed(1)} GB` : `${Math.round(b / 1e6)} MB`;
+
+async function refreshTakes(): Promise<void> {
+  const { takes, invalid } = await recorder.takes();
+  const host = $("takes");
+  host.textContent = "";
+
+  if (!takes.length && !invalid.length) {
+    const p = document.createElement("div");
+    p.id = "empty";
+    p.textContent = "No recordings yet.";
+    host.append(p);
+    return;
+  }
+
+  for (const t of takes) {
+    const row = document.createElement("div");
+    row.className = "take";
+    const left = document.createElement("div");
+    const title = document.createElement("div");
+    title.textContent = t.name;
+    const meta = document.createElement("div");
+    meta.className = "meta";
+    meta.textContent = `${fmtDuration(t.durationMs)} · ${t.width}×${t.height} · ` +
+                       `${t.events} events · ${fmtSize(t.bytes)}`;
+    left.append(title, meta);
+    const btn = document.createElement("button");
+    btn.textContent = "Show";
+    btn.addEventListener("click", () => recorder.reveal(t.dir));
+    row.append(left, btn);
+    host.append(row);
+  }
+
+  // Broken takes are shown, not hidden: a recording that silently disappears
+  // from the list is indistinguishable from one that was deleted.
+  for (const b of invalid) {
+    const row = document.createElement("div");
+    row.className = "broken";
+    row.textContent = `${b.name} — ${b.reason}`;
+    host.append(row);
+  }
+}
+
 recorder.status().then((s) => { setState(s.state); if (s.pid) $("pid").textContent = String(s.pid); });
+refreshTakes();

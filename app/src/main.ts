@@ -1,9 +1,9 @@
-import { app, BrowserWindow, ipcMain, dialog } from "electron";
+import { app, BrowserWindow, ipcMain, dialog, shell } from "electron";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { existsSync, readdirSync } from "node:fs";
 import { HelperSupervisor } from "./supervisor.js";
-import { newTakeDir, takesRoot } from "./takes.js";
+import { newTakeDir, takesRoot, listTakes } from "./takes.js";
 
 /**
  * Electron main process. Owns the helper: it is spawned as a CHILD of this
@@ -86,7 +86,12 @@ ipcMain.handle("recorder:stop", async () => {
   return { ok: true, info: r };
 });
 
+ipcMain.handle("recorder:takes", async () => listTakes(process.env));
+
 ipcMain.handle("recorder:reveal", async (_e, dir: string) => {
-  if (!win) return;
-  await dialog.showMessageBox(win, { message: "Recording saved", detail: dir, buttons: ["OK"] });
+  // Only ever reveal something inside the recordings folder: `dir` arrives from
+  // the renderer, and the renderer should not be able to open arbitrary paths.
+  const root = takesRoot(process.env);
+  if (!dir.startsWith(root)) throw new Error("refusing to reveal a path outside the recordings folder");
+  shell.showItemInFolder(dir);
 });

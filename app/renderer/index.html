@@ -19,6 +19,13 @@
     #alert { padding: 10px 12px; border-radius: 7px; border: 1px solid rgba(200,80,60,.5);
              background: rgba(200,80,60,.1); display: none; white-space: pre-wrap; }
     #alert.show { display: block; }
+    h2 { font-size: 13px; font-weight: 600; margin: 4px 0 0; opacity: .7; }
+    .take { display: flex; justify-content: space-between; gap: 12px; align-items: baseline;
+            padding: 7px 0; border-top: 1px solid rgba(128,128,128,.22); }
+    .take .meta { opacity: .6; font-variant-numeric: tabular-nums; font-size: 12px; }
+    .take button { padding: 3px 10px; font-size: 12px; }
+    .broken { color: #c2553c; font-size: 12px; padding: 6px 0; }
+    #empty { opacity: .5; padding: 6px 0; }
   </style>
 </head>
 <body>
@@ -38,6 +45,8 @@
       <tr><td>elapsed</td><td id="elapsed">—</td></tr>
     </tbody>
   </table>
+  <h2 id="lib-heading">Recordings</h2>
+  <div id="takes"></div>
   <script src="../dist/renderer.js"></script>
 </body>
 </html>

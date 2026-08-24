@@ -68,8 +68,8 @@ Two things this settles:
 
 0. **Throughput measurement** *(done — see "Settled by increment 0" above)* — export with and
    without the per-frame hash, on a real take. Decides increment 4's UX. No feature work; a number.
-1. **Take library** — list recordings with duration, size, date, resolution, event count, read
-   from the sidecars. Gate: a take recorded by the app appears with correct metadata, and a
+1. **Take library** *(done)* — list recordings with duration, size, date, resolution, event count,
+   read from the sidecars. Gate: a take recorded by the app appears with correct metadata, and a
    directory that is not a valid session is reported as such rather than crashing the list.
 2. **Seeking frame source** — the scrub-safe decoder. Gate: forward, backward, repeated and
    out-of-range seeks all terminate and return the frame `frameIndexAt` names; buffered frames
