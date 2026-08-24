@@ -1,7 +1,8 @@
 # Phase 1 — end-to-end vertical slice
 
-**Goal:** record → align → composite → export, once, at low fidelity. Ugly is fine. The spike proved
-each component in isolation; this proves them *composed*, under sustained load, while the world changes.
+**Goal:** record → composite → export, once, at low fidelity. Ugly is fine. The spike proved each
+component in isolation; this proves them *composed*: display capture + cursor events → deterministic
+transform → CFR MP4 with cursor overlay.
 
 Full findings: [docs/PHASE-0-FINDINGS.md](docs/PHASE-0-FINDINGS.md).
 
@@ -26,9 +27,10 @@ Full findings: [docs/PHASE-0-FINDINGS.md](docs/PHASE-0-FINDINGS.md).
 ```
 Electron (UI, compositing, export via WebCodecs)
     │  JSON lines over stdin/stdout
+    │    stdout: lossy/non-blocking stats   stdin + fd3: reliable request/response
     ▼
-Swift helper (long-running)  ──►  session dir: display.mp4, camera.mp4, mic.wav,
-  ScreenCaptureKit + AVFoundation + CGEventTap        sysaudio.wav, events.json, anchors.json
+Swift helper (long-running)  ──►  session dir: display.mp4,
+  ScreenCaptureKit + CGEventTap           events.json, anchors.json
 ```
 
 **The non-negotiable this architecture exists for:** `render(project, events, t) → FrameState` is a
@@ -40,20 +42,16 @@ The helper is a **long-running, controllable process**, not the spike's 12-secon
 spawned as a child of Electron, which means it inherits Electron's TCC identity — one grant, against the
 signed bundle the user recognises.
 
-## The four risks, and how the slice covers them
-
-Three are the same underlying problem — *the world changes mid-recording* — and all live in the helper.
+## Risks in scope for phase 1
 
 | risk | approach |
 |---|---|
-| **Long-duration stability** | segment output every N minutes; emit periodic `stats` (frames, drops, queue depth, encoder fps) so throttling is *observable*, not inferred. Thermal fade was already visible in phase 0: 18.7 → 12.1 fps across a longer benchmark. Stats are **non-blocking and lossy** — drop-oldest on full buffer, never back-pressure the capture graph; control messages (start/stop) use a separate reliable channel |
-| **Multi-display / hot-swap** | `CGDisplayRegisterReconfigurationCallback`; on change, emit an event and rebuild the SCStream against the new config rather than dying |
-| **System audio** | `SCStreamConfiguration.capturesAudio` (macOS 13+, present in the 13.3 SDK) — same stream, separate output type; avoids a second device path |
-| **Device loss mid-recording** | `AVCaptureDeviceWasDisconnected` + `AVCaptureSessionRuntimeError`; drop the affected track, keep recording, emit a warning. Camera/mic are already off the critical path |
+| **Thermal throttle / frame drops** | emit periodic `stats` (frames, drops, queue depth, encoder fps) on the lossy non-blocking channel so throttling is *observable*, not inferred. Thermal fade was already visible in phase 0: 18.7 → 12.1 fps across a longer benchmark |
+| **Display hot-swap** | `CGDisplayRegisterReconfigurationCallback`; on change, emit a `display-reconfigured` event and **stop the recording cleanly**. Rebuild-and-continue is a phase 2 concern — `AVAssetWriter` cannot change output dimensions mid-file without corruption |
 
-**Honest scope note:** fully hardening all four is more than one increment. The slice builds each in as a
-first-class concern and makes its failure modes observable; a soak harness then exercises all four
-together (long recording + display change + device unplug + system audio).
+**Deferred to phase 2:** mid-recording display rebuild, camera/mic capture, system audio
+(`capturesAudio`), N-minute segmentation, device-loss recovery, and the fault-injection soak harness.
+Phase 1 stops cleanly on any of these; it does not attempt to survive them.
 
 ## Signing
 
@@ -85,16 +83,26 @@ Certificate Assistant, set its trust to "Code Signing" in Keychain Access before
 
 0. **Transform contract** — write `events.json` / `anchors.json` schemas; hand-author a 5-second fixture
    session (no capture). Implement `render(project, events, t)` against the fixture with two sinks: canvas
-   preview and WebCodecs encode. Gate: for 200 sampled `t`, preview frame hash = export frame hash; two
-   independent exports of the fixture are byte-identical.
+   preview and WebCodecs encode. Gate: for 200 sampled `t` values across the fixture, the pre-encode RGBA
+   buffer produced by each sink is byte-identical — preview hash = export hash, and two independent exports
+   produce matching pre-encode hashes. The encoded MP4 files need not be byte-identical (container
+   timestamps and encoder state are not contractually deterministic); the gate lives before the encoder.
 1. **Helper control plane** — long-running process, JSON-line protocol, display/device watchers, no capture. *(in progress)*
-2. **Capture ported in** — screen, camera, mic, system audio, event tap; segmented writing; stats.
-3. **Electron shell** — spawn/supervise the helper, start/stop UI, live stats.
-4. **Composite + export** — wire real capture output through `render(project, events, t)`; WebCodecs encode
-   path is a sink behind the transform, not a port of the spike harness's decode loop. One CFR MP4 with
-   cursor overlay and camera PiP.
-5. **Soak harness** — 30 min recording with induced display change, device unplug, and system audio.
+2. **Capture ported in** — ScreenCaptureKit display capture + CGEventTap only; single-file `display.mp4`;
+   `events.json` written per the increment-0 schema; periodic stats. No camera, mic, system audio, or
+   segmentation.
+3. **Electron shell** — spawn/supervise the helper, start/stop UI, live stats display.
+4. **Composite + export** — wire a real session dir through `render(project, events, t)`; demux
+   `display.mp4` via mp4box.js, composite cursor overlay, encode CFR MP4. Sink behind the transform —
+   not a port of the spike harness's decode loop. No camera PiP. Gate: pre-encode hash of a 60 s real
+   recording matches across two independent exports.
+5. **Smoke test** — manual 5-minute recording; verify no dropped frames at thermal steady-state, clean
+   stop on display change, export produces a watchable file.
 
 ## Non-goals for phase 1
 
 Polish, editing UI, multi-take management, HDR/P3, uploads, anything cross-platform.
+
+**Explicitly deferred to phase 2:** camera PiP, microphone, system audio, display hot-swap rebuild
+(phase 1 stops cleanly instead), N-minute segmentation, device-loss recovery, and the full
+fault-injection soak harness.
