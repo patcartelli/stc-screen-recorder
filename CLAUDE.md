@@ -15,7 +15,10 @@ events → deterministic transform → CFR MP4 with cursor overlay.
 | `helper/src/main.swift` | App lifecycle, command dispatch |
 | `helper/build.sh` | builds and signs; `SIGN_ID="..." ./build.sh` to override |
 | `helper/test/ipc.test.ts` | black-box IPC tests — spawn the binary, drive stdin, assert on fd3/stdout |
-| `app/src/` | Electron app (not yet started) |
+| `app/src/helper-client.ts` | promise-based client for the two-channel protocol (fd3 + lossy stdout) |
+| `app/src/supervisor.ts` | keeps the helper alive; makes crashes and lost recordings legible |
+| `app/src/main.ts` | Electron main — owns the supervisor, spawns the helper as its child |
+| `app/build.mjs` | esbuild bundle -> `app/dist/`; `npm run app:start` builds and launches |
 | `transform/src/` | the pure transform + shared sink modules (TS; render, time, cursor, demux, decode, compositor) |
 | `schema/` | versioned session schemas (anchors-1, events-1, project-1) |
 | `fixtures/` | hand-authored 5 s fixture session + deterministic display.mp4 generator |
@@ -33,6 +36,7 @@ helper/build.sh                                    # -> helper/build/stc-helper 
 echo '{"cmd":"status"}' | helper/build/stc-helper  # expect ready -> status -> bye JSON lines
 npm test                                           # transform + helper IPC tests (vitest)
 npm run gate                                       # increment-0 sink-identity gate (needs Chrome)
+npm run app:start                                  # build + launch the Electron shell
 ```
 
 ## Current status
@@ -48,7 +52,11 @@ npm run gate                                       # increment-0 sink-identity g
   correct, and events sharing one time origin with the frame grid. Verified through
   `tools/test-host` (a signed bundle that spawns the helper, so the helper inherits its TCC
   identity — the same arrangement Electron will use, now known to work).
-- **Next: increment 3** — Electron shell spawning and supervising the helper.
+- **Increment 3 (Electron shell):** DONE — `app/src/{helper-client,supervisor,main,preload,renderer}.ts`.
+  Client and supervisor are Electron-free and tested against the real helper binary; the shell is
+  verified by a Playwright-Electron E2E test that launches the app for real.
+- **Next: increment 4** — composite + export: wire a real session dir through
+  `render(project, session, t)` and encode a CFR MP4.
 
 **Critical ordering rule:** the transform defines the schemas; the helper is a producer to spec.
 Increment 0's `events.json` / `anchors.json` / `project` schemas must exist before increment 1
@@ -169,6 +177,9 @@ reachable via KVC (`setValue(3, forKey: "captureResolution")`, verified in phase
   SecurityAgent prompt, and an unattended build then hangs *forever* rather than failing. If a
   build wedges, look for the dialog (and answer "Always Allow", not "Allow"). A `timeout` around
   codesign kills the dialog before a human can find it.
+- **A stray `~/node_modules` hijacks module resolution** — the home directory holds a broken pnpm
+  tree (rollup missing its native binary, esbuild built for x64 on an arm64 machine). Anything not
+  installed *locally* may resolve there and fail bizarrely. Install tools as project devDeps.
 - **An empty events.json does not mean the tap is broken** — an automated capture records zero
   events simply because nothing moves the mouse, which is indistinguishable from a dead button
   path. Verifying input needs deliberate input; `fixtures/real-session/` pins the result.

@@ -4,15 +4,20 @@
   "type": "module",
   "scripts": {
     "test": "vitest run",
-    "gate": "node scripts/gate.mjs"
+    "gate": "node scripts/gate.mjs",
+    "app:build": "node app/build.mjs",
+    "app:start": "npm run app:build && electron ."
   },
   "devDependencies": {
     "@types/node": "^26.2.0",
     "ajv": "^8.20.0",
+    "electron": "^43.4.1",
+    "esbuild": "^0.28.2",
     "mp4-muxer": "^5.2.2",
     "mp4box": "^2.4.1",
     "playwright": "^1.62.1",
     "typescript": "^7.0.2",
     "vitest": "^4.1.11"
-  }
+  },
+  "main": "app/dist/main.mjs"
 }
