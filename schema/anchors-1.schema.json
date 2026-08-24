@@ -5,61 +5,153 @@
   "description": "Per-session clock and geometry anchors, written by the helper. t0Ns is boot-relative nanoseconds at session start, as a decimal string because boot-relative ns can exceed 2^53 (~104 days of uptime) and JSON numbers travel through IEEE doubles. All other times in the session are relative to t0Ns.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["version", "timebase", "t0Ns", "display", "capture", "files"],
+  "required": [
+    "version",
+    "timebase",
+    "t0Ns",
+    "display",
+    "capture",
+    "files"
+  ],
   "properties": {
-    "version": { "const": 1 },
+    "version": {
+      "const": 1
+    },
     "timebase": {
       "description": "mach_timebase_info at helper startup. displayTimeNs = displayTime * numer / denom.",
       "type": "object",
       "additionalProperties": false,
-      "required": ["numer", "denom"],
+      "required": [
+        "numer",
+        "denom"
+      ],
       "properties": {
-        "numer": { "type": "integer", "minimum": 1 },
-        "denom": { "type": "integer", "minimum": 1 }
+        "numer": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "denom": {
+          "type": "integer",
+          "minimum": 1
+        }
       }
     },
-    "t0Ns": { "type": "string", "pattern": "^[0-9]+$" },
+    "t0Ns": {
+      "type": "string",
+      "pattern": "^[0-9]+$"
+    },
     "display": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "pointWidth", "pointHeight", "pixelWidth", "pixelHeight", "backingScale", "originX", "originY"],
+      "required": [
+        "id",
+        "pointWidth",
+        "pointHeight",
+        "pixelWidth",
+        "pixelHeight",
+        "backingScale",
+        "originX",
+        "originY"
+      ],
       "properties": {
-        "id": { "type": "integer", "minimum": 0 },
-        "pointWidth": { "type": "integer", "minimum": 1 },
-        "pointHeight": { "type": "integer", "minimum": 1 },
-        "pixelWidth": { "type": "integer", "minimum": 1 },
-        "pixelHeight": { "type": "integer", "minimum": 1 },
-        "backingScale": { "type": "number", "exclusiveMinimum": 0 },
-        "originX": { "type": "number", "description": "global display-space origin of the captured display, in points (CGEvent coordinates are global)" },
-        "originY": { "type": "number" }
+        "id": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "pointWidth": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "pointHeight": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "pixelWidth": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "pixelHeight": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "backingScale": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "originX": {
+          "type": "number",
+          "description": "global display-space origin of the captured display, in points (CGEvent coordinates are global)"
+        },
+        "originY": {
+          "type": "number"
+        }
       }
     },
     "capture": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["width", "height", "codec"],
+      "required": [
+        "width",
+        "height",
+        "codec"
+      ],
       "properties": {
-        "width": { "type": "integer", "minimum": 1, "maximum": 3840 },
-        "height": { "type": "integer", "minimum": 1, "maximum": 2160 },
-        "codec": { "enum": ["h264"] }
+        "width": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 3840
+        },
+        "height": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2160
+        },
+        "codec": {
+          "enum": [
+            "h264"
+          ]
+        },
+        "firstFrameNs": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Session-relative ns of the first captured frame, measured by the helper. The file carries the same offset only as an empty edit quantised to the movie timescale, so this is the exact value to check a recovered offset against."
+        }
       }
     },
     "files": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["display"],
+      "required": [
+        "display"
+      ],
       "properties": {
-        "display": { "type": "string", "minLength": 1 }
+        "display": {
+          "type": "string",
+          "minLength": 1
+        }
       }
     },
     "stop": {
       "description": "Present after a clean stop. t is session-relative ns.",
       "type": "object",
       "additionalProperties": false,
-      "required": ["t", "reason"],
+      "required": [
+        "t",
+        "reason"
+      ],
       "properties": {
-        "t": { "type": "integer", "minimum": 0 },
-        "reason": { "enum": ["user", "display-reconfigured", "device-lost", "error"] }
+        "t": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "reason": {
+          "enum": [
+            "user",
+            "display-reconfigured",
+            "device-lost",
+            "error"
+          ]
+        }
       }
     }
   }

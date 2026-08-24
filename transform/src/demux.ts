@@ -44,12 +44,19 @@ export function demuxDisplayMp4(buf: ArrayBuffer): Promise<DemuxedVideo> {
       // gap. Measured at 231.7 ms on a real capture — about 14 frames of cursor
       // desync, small enough to look like a rendering bug rather than a clock one.
       const movieTimescale = file.moov.mvhd.timescale;
-      const editOffsetNs = (trak.edts?.elst?.entries ?? [])
-        .filter((e: any) => e.media_time === -1)
-        .reduce((sum: number, e: any) => sum + (e.segment_duration / movieTimescale) * 1_000_000_000, 0);
-      if (!Number.isInteger(editOffsetNs)) {
-        throw new Error(`edit-list offset is not an integer ns: ${editOffsetNs}`);
-      }
+      //
+      // Rounded, not exact: segment_duration is expressed in the MOVIE timescale
+      // (600 Hz by default), which cannot represent an arbitrary nanosecond —
+      // a real capture yielded 213333333.33... ns. Rounding is deterministic and
+      // the residue is a constant sub-frame shift of the whole track, bounded by
+      // half a movie tick. The writer raises the movie timescale to shrink that
+      // bound; anchors.capture.firstFrameNs records the exact value the helper
+      // measured, so the recovered offset can be checked rather than trusted.
+      const editOffsetNs = Math.round(
+        (trak.edts?.elst?.entries ?? [])
+          .filter((e: any) => e.media_time === -1)
+          .reduce((sum: number, e: any) => sum + (e.segment_duration / movieTimescale) * 1_000_000_000, 0),
+      );
 
       const collected: any[] = [];
       file.onSamples = (_id: number, _user: unknown, samples: any[]) => {

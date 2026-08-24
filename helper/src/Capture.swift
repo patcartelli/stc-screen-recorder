@@ -36,6 +36,7 @@ final class CaptureSession: NSObject, SCStreamOutput, SCStreamDelegate {
     private var framesDropped = 0
     private var framesNonMonotonic = 0
     private var lastPtsNs: Int64 = -1
+    private var firstFramePtsNs: Int64 = -1
     private var tapReenables = 0
 
     private var tap: CFMachPort?
@@ -100,6 +101,11 @@ final class CaptureSession: NSObject, SCStreamOutput, SCStreamDelegate {
         let url = dir.appendingPathComponent("display.mp4")
         try? FileManager.default.removeItem(at: url)
         let w = try AVAssetWriter(outputURL: url, fileType: .mp4)
+        // The start-to-first-frame gap becomes an empty edit whose duration is
+        // quantised to the MOVIE timescale. At the 600 Hz default that is 1.67 ms
+        // of granularity on a value a reader must recover exactly; 90 kHz cuts
+        // the worst-case recovery error to ~5.5 us.
+        w.movieTimeScale = 90_000
         // PHASE-0 §8, verified settings. AllowFrameReordering=false matters:
         // no B-frames means decode order equals presentation order, which is
         // what lets a sink map a decoded frame back to an index without a sort.
@@ -185,6 +191,7 @@ final class CaptureSession: NSObject, SCStreamOutput, SCStreamDelegate {
                 return
             }
             lastPtsNs = ptsNs
+            if firstFramePtsNs < 0 { firstFramePtsNs = ptsNs }
             lock.unlock()
 
             guard let input, let adaptor, input.isReadyForMoreMediaData else {
@@ -328,7 +335,11 @@ final class CaptureSession: NSObject, SCStreamOutput, SCStreamDelegate {
                         "pixelWidth": pixelW, "pixelHeight": pixelH,
                         "backingScale": pointW > 0 ? Double(pixelW) / Double(pointW) : 1.0,
                         "originX": originX, "originY": originY],
-            "capture": ["width": captureW, "height": captureH, "codec": "h264"],
+            // Exact, from the helper's own clock. The same offset survives in the
+            // file only as a timescale-quantised empty edit, so this is what a
+            // reader checks its recovered value against.
+            "capture": ["width": captureW, "height": captureH, "codec": "h264",
+                        "firstFrameNs": max(0, Int(firstFramePtsNs))],
             "files": ["display": "display.mp4"],
             "stop": ["t": Int(Clock.nowNs() - t0Ns), "reason": reason],
         ], to: "anchors.json")
