@@ -22,8 +22,17 @@ guard let i = args.firstIndex(of: "--out"), i + 1 < args.count else {
 }
 let outURL = URL(fileURLWithPath: args[i + 1])
 
+// Bumped on each rebuild during the signing experiment. Two purposes: it stamps
+// every result file with the build that produced it (so runs can never be
+// confused), and it guarantees the rebuild actually emits different code —
+// swiftc is deterministic and `codesign --timestamp=none` adds no entropy, so
+// an unchanged source rebuilds to an identical CDHash and would make the whole
+// experiment vacuous: TCC would be re-checking code it had already approved.
+let PROBE_BUILD = 3
+
 func writeResult(_ o: [String: Any]) {
     var out = o
+    out["probeBuild"] = PROBE_BUILD
     out["bundleId"] = Bundle.main.bundleIdentifier ?? "none"
     out["bundlePath"] = Bundle.main.bundlePath
     if let d = try? JSONSerialization.data(withJSONObject: out, options: [.prettyPrinted, .sortedKeys]) {

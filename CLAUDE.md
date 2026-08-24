@@ -38,11 +38,12 @@ npm run gate                                       # increment-0 sink-identity g
 - **Increment 0 (transform contract):** DONE — schemas, fixture session (incl. generated
   display.mp4 with exact-ns sample table), pure `render()`, both sinks, and the gate all pass:
   200 sampled t byte-identical between sinks, two independent exports identical, encode works
-- **Increment 1 (helper control plane):** DONE except signing — lifecycle, watchers, command set,
-  and the two-channel IPC (fd3 reliable + seq echo; stdout lossy drop-oldest ring on a dedicated
-  writer thread) all built and tested black-box against the real binary. No capture yet.
-  **Still blocking increment 2: the signing experiments** (see Signing) — those need a human at
-  the GUI and cannot be done from a shell.
+- **Increment 1 (helper control plane):** DONE — lifecycle, watchers, command set, and the
+  two-channel IPC (fd3 reliable + seq echo; stdout lossy drop-oldest ring on a dedicated writer
+  thread) all built and tested black-box against the real binary. No capture yet.
+- **Increment 2 (capture) is UNBLOCKED** — the stable-identity claim is measured, not assumed:
+  a cert-signed bundle kept its Screen Recording grant across two rebuilds and three distinct
+  CDHashes. See PHASE-1.md → Signing for the table.
 
 **Critical ordering rule:** the transform defines the schemas; the helper is a producer to spec.
 Increment 0's `events.json` / `anchors.json` / `project` schemas must exist before increment 1
@@ -81,12 +82,13 @@ See `PHASE-1.md` → "Settled by phase 0" for the full table. The ones most like
   `IO.stat` only.)* When fd3 is absent both fall back to blocking stdout so a bare terminal run
   still works; they must never share fd 1 in split mode, or the lossy writer's partial
   non-blocking writes would interleave with reliable lines.
-- **Signing:** ad-hoc revokes TCC on every rebuild, and this machine currently has **zero**
-  code-signing identities — every build today is ad-hoc. A self-signed cert in the login keychain
-  is needed before increment 2; run both experiments in PHASE-1.md → Signing before capture work
-  starts. Gotcha: `security find-identity -v` filters on *trust*, so a fresh self-signed cert
-  won't appear until its trust is set to "Code Signing" — it signs fine regardless (build.sh
-  already falls back to the unfiltered list).
+- **Signing:** ad-hoc revokes TCC on every rebuild. The self-signed **"STC Dev Signing"** cert
+  (`d9ea4803…`, login keychain) already exists and both the helper and the probe are signed with
+  it — *verified* to keep grants across rebuilds (PHASE-1.md → Signing). `find-identity -v` still
+  reports 0 identities because it filters on *trust*; that is cosmetic and does not affect signing
+  or TCC, and build.sh already falls back to the unfiltered list. **Do not open Keychain Access to
+  "fix" it** — on macOS 27.0 it hung hard enough to require a force reset, and the setting buys
+  nothing.
 
 ## Increment 0 — what to build next
 
@@ -142,3 +144,9 @@ reachable via KVC (`setValue(3, forKey: "captureResolution")`, verified in phase
   global**, not `MP4Box.DataStream` — the latter throws inside the demux promise executor and the
   `await` hangs forever with no error.
 - **mach timebase** — 41.667 ns/tick on this machine; Intel is 1/1. Always `mach_timebase_info()`.
+- **A no-op rebuild is a vacuous TCC test** — `swiftc` is deterministic and
+  `codesign --timestamp=none` adds no entropy, so unchanged source rebuilds to the *same* CDHash.
+  Any "did the grant survive a rebuild?" check must confirm the CDHash actually changed first.
+- **A bare CLI binary has a different TCC identity than a bundle** — exec'ing it inherits the
+  launching terminal's grants (PHASE-0 §6), so terminal-testing the helper proves nothing about
+  the shipped app. Permission work needs a bundle launched via `open`.

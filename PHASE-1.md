@@ -73,11 +73,32 @@ Only the first is blocking. Without Xcode, both are made through Keychain Access
 Assistant; the Developer ID route additionally needs a CSR uploaded at developer.apple.com (and can only
 be issued by the Account Holder, max 5 per team).
 
-**To verify the stable-identity claim rather than assume it** (the whole point of phase 0): two
-experiments — (a) rebuild helper only, re-sign helper, re-sign bundle, re-run preflight; (b) rebuild the
-whole bundle, re-run preflight. They can have different answers. Also: after creating the cert via
-Certificate Assistant, set its trust to "Code Signing" in Keychain Access before running
-`security find-identity` — the default trust settings will not produce a usable identity.
+**VERIFIED 2026-08-24 — a cert-signed bundle keeps its Screen Recording grant across rebuilds.**
+Measured with `tools/signing-probe` (ScreenCaptureKit-only bundle, launched via `open`):
+
+| step | CDHash | verdict |
+|---|---|---|
+| baseline, before grant | `66175e4b…` | denied (`-3801`, preflight false) |
+| after granting in System Settings | `66175e4b…` | granted |
+| rebuild #1 (source changed) | `6822ac87…` | **granted** |
+| rebuild #2 (source changed) | `4ae779a1…` | **granted** |
+
+Three distinct CDHashes, one unchanged designated requirement
+(`identifier "…" and certificate root = H"d9ea4803…"`), grant intact throughout — versus phase 0's
+ad-hoc binary, where a single rebuild silently revoked it. The cert-based DR is what holds the grant.
+**Increment 2 is unblocked.**
+
+Two traps found while measuring:
+- **A no-op rebuild is a vacuous test.** `swiftc` is deterministic and `codesign --timestamp=none`
+  adds no entropy, so rebuilding unchanged source reproduces the *same* CDHash — TCC re-checks code
+  it already approved and "the grant survived" proves nothing. The probe carries a `PROBE_BUILD`
+  constant that is bumped per rebuild, both to force different code and to stamp every result file
+  with the build that produced it.
+- **Trust settings are irrelevant here.** The cert is `CSSMERR_TP_NOT_TRUSTED`, so
+  `find-identity -v` reports 0 identities, yet it signs fine and the grant holds: the DR check is a
+  hash comparison against the cert root with no trust evaluation. `build.sh` already falls back to
+  the unfiltered list. Do not open Keychain Access for this — on macOS 27.0 (26A5416b) it hung hard
+  enough to need a force reset.
 
 ## Increments
 
