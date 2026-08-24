@@ -1,5 +1,5 @@
-import { describe, test, expect, beforeAll, afterEach } from "vitest";
-import { spawn, execFileSync, type ChildProcess } from "node:child_process";
+import { describe, test, expect, afterEach } from "vitest";
+import { spawn, type ChildProcess } from "node:child_process";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,9 +8,7 @@ import type { Readable } from "node:stream";
 const root = join(__dirname, "..", "..");
 const BIN = join(root, "helper", "build", "stc-helper");
 
-beforeAll(() => {
-  execFileSync(join(root, "helper", "build.sh"), { stdio: "pipe" });
-}, 180_000);
+// helper binary is built once by vitest.global-setup.ts
 
 interface Line { ev: string; seq?: number; [k: string]: unknown }
 
