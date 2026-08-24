@@ -64,6 +64,18 @@ recorder.on("helper:stats", (s) => {
   $("elapsed").textContent = s.elapsedMs != null ? `${(s.elapsedMs / 1000).toFixed(1)}s` : "—";
 });
 
+recorder.on("helper:recording-ended", (i) => {
+  // The helper stopped by itself — most often a display change. The file is
+  // valid; what would be wrong is leaving the button saying "Stop".
+  recording = false;
+  recordBtn.textContent = "Record";
+  setState("idle");
+  alertUser(i.reason === "display-reconfigured"
+    ? "Display configuration changed, so the recording was stopped.\nWhat was captured up to that point was saved."
+    : `Recording stopped by the recorder (${i.reason}).\nWhat was captured up to that point was saved.`);
+  if (i.dir) recorder.reveal(i.dir);
+});
+
 recorder.on("helper:recording-lost", (i) => {
   recording = false;
   recordBtn.textContent = "Record";

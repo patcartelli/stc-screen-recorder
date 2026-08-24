@@ -61,6 +61,19 @@ export class HelperSupervisor {
     return r;
   }
 
+  /**
+   * The recording is over without us asking. Distinct from `recording-lost`:
+   * there the helper died and the take is gone, here it stopped cleanly and the
+   * partial file is valid and playable.
+   */
+  private endRecording(reason: string, line?: HelperLine): void {
+    if (this.state !== "recording") return;
+    const dir = this.recordingDir;
+    this.recordingDir = undefined;
+    this.state = "idle";
+    this.emit("recording-ended", { reason, dir, info: line });
+  }
+
   /** Deliberate teardown. Must not look like a crash. */
   async shutdown(): Promise<void> {
     this.shuttingDown = true;
@@ -88,7 +101,24 @@ export class HelperSupervisor {
     });
 
     c.on("*", (line) => this.emit(`helper:${line.ev}`, line));
-    c.on("stats", (line) => this.emit("stats", line));
+    c.on("stats", (line) => {
+      this.emit("stats", line);
+      // The heartbeat carries the helper's own state, which makes it the
+      // authority. Reconciling against it heals ANY desync, not just the one
+      // we know about — including a `stopped` that never reached us because
+      // it raced a respawn.
+      if (this.state === "recording" && line.state === "idle") {
+        this.endRecording("helper-idle");
+      }
+    });
+
+    // A stop nobody asked for: the helper decided, typically because the
+    // display was reconfigured (AVAssetWriter cannot change output dimensions
+    // mid-file, so it stops rather than corrupting the take).
+    c.on("stopped", (line) => {
+      if (typeof line.seq === "number") return;   // answered a request; already handled
+      this.endRecording(String(line.reason ?? "helper-stopped"), line);
+    });
 
     c.waitForExit().then((info) => {
       if (this.shuttingDown) return;

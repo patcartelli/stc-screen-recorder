@@ -39,6 +39,8 @@ function startSupervisor(): void {
   // The helper holds the capture devices: if it dies mid-recording the take is
   // gone, and that must be stated rather than left to look like an idle reset.
   sup.on("recording-lost", (i) => send("helper:recording-lost", i));
+  // Stopped cleanly without being asked — the take is intact, unlike a loss.
+  sup.on("recording-ended", (i) => send("helper:recording-ended", i));
   sup.on("helper:warning", (l) => send("helper:warning", l));
 }
 

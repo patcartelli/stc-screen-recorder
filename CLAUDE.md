@@ -63,8 +63,14 @@ npm run app:start                                  # build + launch the Electron
   proves the agreed answer is right — a uniformly mispositioned or time-shifted cursor passes
   every automated check in this repo. `node scripts/export-one.mjs <sessionDir> [seconds]` writes
   a watchable file. NB the cursor is a placeholder circle, not the real pointer artwork.
-- **Next: increment 5** — manual smoke test: 5-minute recording, no dropped frames at thermal
-  steady state, clean stop on display change, watchable output.
+- **Increment 5 (smoke test):** 5-minute capture PASSED (9311 frames, 0 dropped, 0 non-monotonic,
+  peak 60.0 fps in the second half — no throttling). Display-change stop PASSED (stops cleanly,
+  `stop.reason: "display-reconfigured"`, partial mp4 parses and plays). Remaining: watch an export
+  of longer material.
+- **The helper can stop itself** — a display change makes it stop cleanly and emit an unsolicited
+  `stopped`. Anything holding recording state must reconcile, or it sits there believing a
+  recording is live; the supervisor listens for that event and treats the heartbeat's `state` as
+  the authority so any desync self-heals.
 
 **Critical ordering rule:** the transform defines the schemas; the helper is a producer to spec.
 Increment 0's `events.json` / `anchors.json` / `project` schemas must exist before increment 1

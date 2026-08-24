@@ -94,3 +94,24 @@ describe("HelperSupervisor — recording lifecycle", () => {
     }
   }, 40_000);
 });
+
+describe("HelperSupervisor — the helper can stop itself", () => {
+  test("reconciles when the helper stops on its own (e.g. display reconfigured)", async () => {
+    // A display change makes the helper stop cleanly and emit an unsolicited
+    // `stopped`. Nothing asked for it, so a supervisor that only updates state
+    // inside stopRecording() stays stuck believing it is recording — the UI
+    // keeps offering Stop, and pressing it returns "bad-state: not recording".
+    // Observed for real during the increment-5 display-change test.
+    const s = sup();
+    await s.ready();
+    s.markRecordingForTest("/tmp/whatever");
+    expect(s.state).toBe("recording");
+
+    const notified = new Promise<any>((res) => s.on("recording-ended", res));
+    // The heartbeat reports the helper's own state, which is the backstop for
+    // any desync — not just this one.
+    const info = await notified;
+    expect(info.reason).toBeDefined();
+    expect(s.state).toBe("idle");
+  }, 20_000);
+});

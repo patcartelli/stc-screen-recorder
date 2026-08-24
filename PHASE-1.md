@@ -120,8 +120,9 @@ Two traps found while measuring:
    `display.mp4` via mp4box.js, composite cursor overlay, encode CFR MP4. Sink behind the transform —
    not a port of the spike harness's decode loop. No camera PiP. Gate: pre-encode hash of a 60 s real
    recording matches across two independent exports.
-5. **Smoke test** — manual 5-minute recording; verify no dropped frames at thermal steady-state, clean
-   stop on display change, export produces a watchable file.
+5. **Smoke test** *(5-minute capture and display-change stop both verified 2026-08-24)* — manual
+   5-minute recording; verify no dropped frames at thermal steady-state, clean stop on display
+   change, export produces a watchable file.
 
 ## Non-goals for phase 1
 
