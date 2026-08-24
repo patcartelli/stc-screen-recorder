@@ -1,0 +1,1 @@
+{"capture":{"codec":"h264","firstFrameNs":209118875,"height":2160,"width":3840},"display":{"backingScale":2,"id":3,"originX":0,"originY":0,"pixelHeight":2160,"pixelWidth":3840,"pointHeight":1080,"pointWidth":1920},"files":{"display":"display.mp4"},"stop":{"reason":"user","t":8304574917},"t0Ns":"11276054380541","timebase":{"denom":3,"numer":125},"version":1}

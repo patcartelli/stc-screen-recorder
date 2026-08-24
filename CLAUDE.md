@@ -21,6 +21,8 @@ events → deterministic transform → CFR MP4 with cursor overlay.
 | `fixtures/` | hand-authored 5 s fixture session + deterministic display.mp4 generator |
 | `harness/` | vite-served browser harness hosting both sinks |
 | `scripts/gate.mjs` | increment-0 determinism gate (Playwright + real Chrome) |
+| `tools/test-host/` | signed bundle that spawns the helper for capture tests; `--probe` reports TCC state. **CFBundleIdentifier is load-bearing** — the grant is keyed to it |
+| `fixtures/real-session/` | sidecars from a real recording (mp4 omitted, 9.4 MB) pinning click/drag semantics |
 | `scratch/` | phase-0 spike code and outputs (mp4box.js, harness, sample session dirs) |
 | `council/` | cross-AI reviews of the phase-1 plan |
 
@@ -41,9 +43,12 @@ npm run gate                                       # increment-0 sink-identity g
 - **Increment 1 (helper control plane):** DONE — lifecycle, watchers, command set, and the
   two-channel IPC (fd3 reliable + seq echo; stdout lossy drop-oldest ring on a dedicated writer
   thread) all built and tested black-box against the real binary. No capture yet.
-- **Increment 2 (capture) is UNBLOCKED** — the stable-identity claim is measured, not assumed:
-  a cert-signed bundle kept its Screen Recording grant across two rebuilds and three distinct
-  CDHashes. See PHASE-1.md → Signing for the table.
+- **Increment 2 (capture ported in):** DONE and verified on real hardware. An 8 s recording
+  produced 458 frames / 865 events / 0 dropped, both sidecars schema-valid, clicks and drags
+  correct, and events sharing one time origin with the frame grid. Verified through
+  `tools/test-host` (a signed bundle that spawns the helper, so the helper inherits its TCC
+  identity — the same arrangement Electron will use, now known to work).
+- **Next: increment 3** — Electron shell spawning and supervising the helper.
 
 **Critical ordering rule:** the transform defines the schemas; the helper is a producer to spec.
 Increment 0's `events.json` / `anchors.json` / `project` schemas must exist before increment 1
@@ -159,4 +164,11 @@ reachable via KVC (`setValue(3, forKey: "captureResolution")`, verified in phase
   Any "did the grant survive a rebuild?" check must confirm the CDHash actually changed first.
 - **A bare CLI binary has a different TCC identity than a bundle** — exec'ing it inherits the
   launching terminal's grants (PHASE-0 §6), so terminal-testing the helper proves nothing about
-  the shipped app. Permission work needs a bundle launched via `open`.
+  the shipped app. Permission work needs a bundle launched via `open`. Use `tools/test-host`.
+- **`codesign` blocks on a GUI keychain dialog** — signing with "STC Dev Signing" can raise a
+  SecurityAgent prompt, and an unattended build then hangs *forever* rather than failing. If a
+  build wedges, look for the dialog (and answer "Always Allow", not "Allow"). A `timeout` around
+  codesign kills the dialog before a human can find it.
+- **An empty events.json does not mean the tap is broken** — an automated capture records zero
+  events simply because nothing moves the mouse, which is indistinguishable from a dead button
+  path. Verifying input needs deliberate input; `fixtures/real-session/` pins the result.
