@@ -1,0 +1,46 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "stc:events-1",
+  "title": "stc session cursor events, v1",
+  "description": "Cursor input events recorded by the helper's CGEventTap. t is session-relative integer nanoseconds (CGEvent.timestamp minus anchors.t0Ns; CGEvent.timestamp is already ns, never converted). x/y are global display-space points; subtract anchors.display.originX/Y for display-local coordinates.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "events"],
+  "properties": {
+    "version": { "const": 1 },
+    "events": {
+      "type": "array",
+      "items": {
+        "oneOf": [
+          { "$ref": "#/definitions/moveEvent" },
+          { "$ref": "#/definitions/buttonEvent" }
+        ]
+      }
+    }
+  },
+  "definitions": {
+    "moveEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["t", "kind", "x", "y"],
+      "properties": {
+        "t": { "type": "integer", "minimum": 0 },
+        "kind": { "const": "move" },
+        "x": { "type": "number" },
+        "y": { "type": "number" }
+      }
+    },
+    "buttonEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["t", "kind", "x", "y", "button"],
+      "properties": {
+        "t": { "type": "integer", "minimum": 0 },
+        "kind": { "enum": ["down", "up"] },
+        "x": { "type": "number" },
+        "y": { "type": "number" },
+        "button": { "type": "integer", "minimum": 0 }
+      }
+    }
+  }
+}

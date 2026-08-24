@@ -1,0 +1,31 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "stc:project-1",
+  "title": "stc project (edit document), v1",
+  "description": "Everything the user can change after recording. render(project, session, t) is a pure function of this document plus the session data. Grows to hold PiP geometry in phase 2.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "output", "cursor"],
+  "properties": {
+    "version": { "const": 1 },
+    "output": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fps", "width", "height"],
+      "properties": {
+        "fps": { "enum": [60], "description": "export samples every other 120 Hz sim tick; only 60 supported in phase 1" },
+        "width": { "type": "integer", "minimum": 1, "maximum": 3840 },
+        "height": { "type": "integer", "minimum": 1, "maximum": 2160 }
+      }
+    },
+    "cursor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["style", "scale"],
+      "properties": {
+        "style": { "enum": ["default"] },
+        "scale": { "type": "number", "exclusiveMinimum": 0, "maximum": 8 }
+      }
+    }
+  }
+}

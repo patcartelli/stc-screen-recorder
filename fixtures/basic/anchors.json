@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "timebase": {
+    "numer": 125,
+    "denom": 3
+  },
+  "t0Ns": "348419582729083",
+  "display": {
+    "id": 5,
+    "pointWidth": 640,
+    "pointHeight": 360,
+    "pixelWidth": 640,
+    "pixelHeight": 360,
+    "backingScale": 1,
+    "originX": 0,
+    "originY": 0
+  },
+  "capture": {
+    "width": 640,
+    "height": 360,
+    "codec": "h264"
+  },
+  "files": {
+    "display": "display.mp4"
+  },
+  "stop": {
+    "t": 5000000000,
+    "reason": "user"
+  }
+}

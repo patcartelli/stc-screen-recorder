@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "output": {
+    "fps": 60,
+    "width": 640,
+    "height": 360
+  },
+  "cursor": {
+    "style": "default",
+    "scale": 1
+  }
+}
