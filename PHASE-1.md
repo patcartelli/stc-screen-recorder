@@ -81,8 +81,9 @@ Certificate Assistant, set its trust to "Code Signing" in Keychain Access before
 
 ## Increments
 
-0. **Transform contract** — write `events.json` / `anchors.json` schemas; hand-author a 5-second fixture
-   session (no capture). Implement `render(project, events, t)` against the fixture with two sinks: canvas
+0. **Transform contract** — write `events.json` / `anchors.json` / `project` schemas (versioned;
+   `project` holds PiP geometry, cursor style, output fps — the edit document, even if it's 3 fields
+   for now); hand-author a 5-second fixture session (no capture). Implement `render(project, events, t)` against the fixture with two sinks: canvas
    preview and WebCodecs encode. Gate: for 200 sampled `t` values across the fixture, the pre-encode RGBA
    buffer produced by each sink is byte-identical — preview hash = export hash, and two independent exports
    produce matching pre-encode hashes. The encoded MP4 files need not be byte-identical (container

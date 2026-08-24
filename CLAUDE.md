@@ -15,16 +15,29 @@ events → deterministic transform → CFR MP4 with cursor overlay.
 | `helper/src/main.swift` | App lifecycle, command dispatch |
 | `helper/build.sh` | builds and signs; `SIGN_ID="..." ./build.sh` to override |
 | `app/src/` | Electron app (not yet started) |
+| `scratch/` | phase-0 spike code and outputs (mp4box.js, harness, sample session dirs) |
+| `council/` | cross-AI reviews of the phase-1 plan |
+
+## Build & smoke
+
+```
+helper/build.sh                                    # -> helper/build/stc-helper (see Signing)
+echo '{"cmd":"status"}' | helper/build/stc-helper  # expect ready -> status -> bye JSON lines
+```
 
 ## Current status
 
 - **Increment 0 (transform contract):** NOT STARTED — must happen before increment 1 ships
-- **Increment 1 (helper control plane):** IN PROGRESS — protocol, watchers, and lifecycle are
-  substantially done; no capture yet
+- **Increment 1 (helper control plane):** IN PROGRESS — lifecycle, watchers, and the command set
+  are done; no capture yet. **The IPC as coded is a single blocking stdout channel** (`IO.emit`:
+  one lock, unbuffered blocking writes) — the lossy/reliable split, fd3, sequence numbers, and
+  the bounded ring buffer described under Settled decisions are NOT built. They are prerequisites
+  for increment 2, where capture callbacks would otherwise block on that pipe.
 
 **Critical ordering rule:** the transform defines the schemas; the helper is a producer to spec.
-Do not ship increment 1 until increment 0's `events.json` / `anchors.json` / `project` schemas
-exist and the helper emits to them.
+Increment 0's `events.json` / `anchors.json` / `project` schemas must exist before increment 1
+ships; the helper must emit to them before increment 2 ships. (Increment 1 has no capture and
+writes none of these files — the schema gate is on it existing, not on the helper using it yet.)
 
 ## The non-negotiable
 
@@ -44,14 +57,23 @@ See `PHASE-1.md` → "Settled by phase 0" for the full table. The ones most like
   call count. `stateAt(n)` must be identical whether reached by stepping or seeking.
 - **Clock:** `mach_timebase_info()` at helper startup; numer/denom written into `anchors.json`.
   `displayTimeNs = displayTime × numer / denom` (41.667 ns/tick here, but read it, don't assume).
-  `CGEvent.timestamp` is already nanoseconds — do not convert.
-- **Capture:** VFR at capture, CFR at export. Hardware encode only (`prefer-hardware`).
+  `CGEvent.timestamp` is already nanoseconds — do not convert. `displayTime` is the *scheduled
+  VBL presentation time* — SCK delivers the frame ~7 ms before it. It is when the pixels hit the
+  glass, not when the frame was captured; treat it as such in frame selection.
+- **Capture resolution: ≤3840×2160, H.264.** Hardware encode falls off a cliff immediately above
+  4K (0.81 → 0.25 Gpx/s, software fallback) — and this machine's own display is 6016×3384.
+  Chrome's H.264 *decoder* shares the ceiling, so 4K caps both sides of the pipeline.
+- **Capture:** VFR at capture, CFR at export. Hardware encode only (`prefer-hardware`);
+  `prefer-software` truncated at 19% of frames at 4K60 — it is not a fallback.
 - **IPC:** stdout = lossy/non-blocking stats (drop-oldest, never block capture callbacks);
   stdin + fd3 = reliable request/response with sequence numbers. Never let stats back-pressure
   the capture graph.
-- **Signing:** ad-hoc revokes TCC on every rebuild. A self-signed cert in the login keychain
-  is needed before increment 2. Run both experiments in PHASE-1.md → Signing before capture
-  work starts.
+- **Signing:** ad-hoc revokes TCC on every rebuild, and this machine currently has **zero**
+  code-signing identities — every build today is ad-hoc. A self-signed cert in the login keychain
+  is needed before increment 2; run both experiments in PHASE-1.md → Signing before capture work
+  starts. Gotcha: `security find-identity -v` filters on *trust*, so a fresh self-signed cert
+  won't appear until its trust is set to "Code Signing" — it signs fine regardless (build.sh
+  already falls back to the unfiltered list).
 
 ## Increment 0 — what to build next
 
@@ -73,6 +95,14 @@ segmentation, or fault-injection soak. See `PHASE-1.md` → Non-goals for the ex
 `AVAssetWriter` cannot change output dimensions mid-file — a display resolution change must stop
 the recording cleanly, not rebuild mid-stream (phase 2 concern).
 
+## Toolchain
+
+No Xcode.app — `swiftc` 5.8 with the MacOSX13.3 SDK (Command Line Tools) on macOS 27. SwiftPM
+cannot resolve without full Xcode, so **build with `helper/build.sh`, not `swift build`**
+(`Package.swift` is kept for when Xcode lands). macOS 14+ SCK API (`SCContentSharingPicker`, HDR,
+`SCScreenshotManager`) is out of reach; `captureResolution` is absent from the 13.3 headers but
+reachable via KVC (`setValue(3, forKey: "captureResolution")`, verified in phase 0).
+
 ## Correctness traps to watch for
 
 - **Byte-identical MP4 is not the gate** — muxer timestamps and encoder state differ between
@@ -85,4 +115,10 @@ the recording cleanly, not rebuild mid-stream (phase 2 concern).
 - **WebCodecs demux** — WebCodecs accepts `EncodedVideoChunk`, not MP4. mp4box.js (already in
   `scratch/`) is the demuxer. `VideoDecoder` is async; the sink needs a pre-decoded frame cache,
   not synchronous decoder calls inside `render()`.
+- **WebCodecs tab-killers** (all three crashed the spike harness — PHASE-0 §4b): (1) drive a
+  `VideoDecoder` with exactly **one in-flight request** — any scrub/seek UI needs a coalescing
+  queue keeping only the latest requested frame; (2) close `VideoFrame`s in the output callback,
+  never buffer them (~30 MB each at 6K); (3) mp4box.js exposes `DataStream` as a **browser
+  global**, not `MP4Box.DataStream` — the latter throws inside the demux promise executor and the
+  `await` hangs forever with no error.
 - **mach timebase** — 41.667 ns/tick on this machine; Intel is 1/1. Always `mach_timebase_info()`.
