@@ -89,7 +89,18 @@ export class ForwardFrameSource {
     }
     if (this.flushed && this.pending.length === 0) return false;
 
-    await new Promise<void>((resolve) => { this.wake = () => { this.wake = null; resolve(); }; });
+    // BOUNDED wait, for the same reason SeekingFrameSource needs one: a decoder
+    // can swallow everything it was given and emit nothing (it buffers before
+    // its first output), and an unbounded wait then parks forever on a perfectly
+    // healthy decoder. Re-looping feeds more, which is what actually unblocks it.
+    //
+    // This never fired at 4K, where frames are large enough that output starts
+    // almost immediately. It deadlocks reliably on small frames — found by
+    // pointing the export at the 640x360 fixture.
+    await new Promise<void>((resolve) => {
+      const timer = setTimeout(() => { this.wake = null; resolve(); }, 50);
+      this.wake = () => { this.wake = null; clearTimeout(timer); resolve(); };
+    });
     return true;
   }
 

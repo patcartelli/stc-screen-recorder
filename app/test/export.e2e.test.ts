@@ -1,28 +1,18 @@
 import { describe, test, expect, afterEach } from "vitest";
 import { _electron as electron, type ElectronApplication } from "playwright";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, cpSync, existsSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { tmpdir, homedir } from "node:os";
+import { existsSync, readFileSync, statSync } from "node:fs";
+
 import { join } from "node:path";
+import { makeTakeFolder } from "./_take-fixture.js";
 
 const root = join(__dirname, "..", "..");
 let app: ElectronApplication | undefined;
 afterEach(async () => { await app?.close().catch(() => {}); app = undefined; });
 
-function realTake(): string | undefined {
-  const stc = join(homedir(), "Desktop", "stc");
-  if (!existsSync(stc)) return undefined;
-  return readdirSync(stc).map((n) => join(stc, n))
-    .filter((p) => existsSync(join(p, "display.mp4")) && existsSync(join(p, "anchors.json")))
-    .sort().pop();
-}
 
 async function launchWithTake() {
-  const src = realTake();
-  if (!src) throw new Error("no real recording to export — record one first (~/Desktop/stc)");
-  const dir = mkdtempSync(join(tmpdir(), "stc-export-e2e-"));
-  const takeDir = join(dir, "2026-08-24_10-00-00");
-  cpSync(src, takeDir, { recursive: true });
+  const { dir, takeDir } = makeTakeFolder();
   execFileSync("node", [join(root, "app", "build.mjs")], { cwd: root, stdio: "pipe" });
   app = await electron.launch({
     args: [root], cwd: root, env: { ...process.env, STC_RECORDINGS_DIR: dir },

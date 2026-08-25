@@ -4,9 +4,9 @@
     "numer": 125,
     "denom": 3
   },
-  "t0Ns": "348419582729083",
+  "t0Ns": "1000000000",
   "display": {
-    "id": 5,
+    "id": 1,
     "pointWidth": 640,
     "pointHeight": 360,
     "pixelWidth": 640,
@@ -18,13 +18,14 @@
   "capture": {
     "width": 640,
     "height": 360,
-    "codec": "h264"
+    "codec": "h264",
+    "firstFrameNs": 0
   },
   "files": {
     "display": "display.mp4"
   },
   "stop": {
-    "t": 5000000000,
+    "t": 5000000016,
     "reason": "user"
   }
 }

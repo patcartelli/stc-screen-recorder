@@ -23,7 +23,10 @@ const anchors = JSON.parse(readFileSync(join(sessionDir, "anchors.json"), "utf8"
 const server = await createServer({
   configFile: false, root: "harness", publicDir: false,
   resolve: { alias: { "@transform": new URL("../transform/src", import.meta.url).pathname } },
-  server: { fs: { allow: ["."] } },
+  // HMR reloads the page when vite re-optimises deps, destroying any in-flight
+  // evaluate ("resulting promise was garbage collected").
+  server: { fs: { allow: ["."] }, hmr: false },
+  optimizeDeps: { include: ["mp4box"] },
   plugins: [{
     name: "serve-session",
     configureServer(s) {
@@ -44,6 +47,8 @@ page.on("pageerror", (e) => console.error("page error:", String(e)));
 let out = 1;
 try {
   await page.goto("http://localhost:5201/export.html");
+  await page.waitForFunction(() => window.__exportReady === true, { timeout: 60_000 });
+  await page.reload({ waitUntil: "domcontentloaded" });
   await page.waitForFunction(() => window.__exportReady === true, { timeout: 60_000 });
   const project = {
     version: 1,

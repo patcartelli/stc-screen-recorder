@@ -42,11 +42,10 @@ const server = await createServer({
   root: "harness",
   publicDir: false,
   resolve: { alias: { "@transform": new URL("../transform/src", import.meta.url).pathname } },
-  server: {
-    fs: { allow: ["."] },
-    // Serve the session from wherever it actually lives, read-only.
-    proxy: {},
-  },
+  // HMR reloads the page when vite re-optimises deps, destroying any in-flight
+  // evaluate ("resulting promise was garbage collected"). Nothing here needs it.
+  server: { fs: { allow: ["."] }, hmr: false },
+  optimizeDeps: { include: ["mp4box"] },
   plugins: [{
     name: "serve-session",
     configureServer(s) {
@@ -74,6 +73,8 @@ const fail = (m) => { failed = true; console.error("FAIL:", m); };
 try {
   await page.goto("http://localhost:5200/export.html");
   await page.waitForFunction(() => window.__exportReady === true, { timeout: 60_000 });
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await page.waitForFunction(() => window.__exportReady === true, { timeout: 60_000 });
 
   const project = {
     version: 1,
@@ -81,9 +82,19 @@ try {
     cursor: { style: "default", scale: 1 },
   };
 
-  const runOne = (mf) => page.evaluate(
+  // Vite may still reload once while pre-bundling; retry rather than fail.
+  const withRetry = async (fn) => {
+    for (let a = 1; a <= 3; a++) {
+      try { return await fn(); }
+      catch (e) {
+        if (a === 3 || !String(e).includes("garbage collected")) throw e;
+        await page.waitForFunction(() => window.__exportReady === true, { timeout: 60_000 });
+      }
+    }
+  };
+  const runOne = (mf) => withRetry(() => page.evaluate(
     ([p, mfr]) => window.exportSession("/session", p, { maxFrames: mfr ?? undefined, encode: true }),
-    [project, mf ?? null]);
+    [project, mf ?? null]));
 
   console.log("\nexport run A…");
   const a = await runOne(maxFrames);

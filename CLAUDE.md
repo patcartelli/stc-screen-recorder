@@ -215,6 +215,10 @@ reachable via KVC (`setValue(3, forKey: "captureResolution")`, verified in phase
   promise wrapping it never settles and the caller waits forever with no error and no stack.
   `demux.ts` checks `sawReady` after the synchronous parse and carries a watchdog. Any callback
   API wrapped in a promise needs the same question asked: what happens when it stays silent?
+- **Tests must not depend on `~/Desktop/stc`** — four E2E files used to reach for "whatever real
+  recording is there". That broke the moment those takes were deleted and CI could never have run
+  them. `app/test/_take-fixture.ts` copies the committed `fixtures/basic` session instead; the
+  GATES still default to a real take, which is where 4K behaviour gets exercised.
 - **A `VideoDecoder` can swallow input and emit nothing** — it buffers before its first output,
   so waiting for output when the queue has drained deadlocks on a perfectly healthy decoder. Feed
   more, flush only when there is nothing left to feed, and never wait unbounded. Related: flushing
