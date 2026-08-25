@@ -47,6 +47,10 @@ final class LossyChannel {
     private func writeLoop() {
         while true {
             cond.lock()
+            // Unbounded BY DESIGN, and the only such wait left in the helper: this
+            // is a dedicated writer thread with nothing to do until something is
+            // offered, and every offer signals. Idling here cannot wedge a
+            // caller — no request is waiting on it — and process exit ends it.
             while ring.count == 0 { cond.wait() }
             let item = ring.take()!
             let drops = ring.takeDropCount()

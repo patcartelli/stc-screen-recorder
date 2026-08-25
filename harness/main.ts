@@ -5,6 +5,7 @@ import { decodeAll } from "@transform/decode";
 import { composite } from "@transform/compositor";
 import type { Project, Session } from "@transform/types";
 import { Muxer, ArrayBufferTarget } from "mp4-muxer";
+import { withTimeout } from "@transform/timeout";
 
 const status = document.getElementById("status")!;
 const say = (s: string) => { status.textContent += `\n${s}`; };
@@ -73,7 +74,7 @@ async function runExport(
     encoder.encode(vf, { keyFrame: k % 60 === 0 });
     vf.close();
   }
-  await encoder.flush();
+  await withTimeout(encoder.flush(), 120_000, "encoder flush (harness)");
   muxer.finalize();
   encoder.close();
   bitmaps.forEach((b) => b.close());

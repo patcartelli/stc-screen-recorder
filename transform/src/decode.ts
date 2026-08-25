@@ -1,4 +1,5 @@
 import type { DemuxedVideo } from "./demux.js";
+import { withTimeout } from "./timeout.js";
 
 /**
  * Decode-all frame cache for the increment-0 harness: the fixture is 90 small
@@ -36,9 +37,13 @@ export async function decodeAll(video: DemuxedVideo): Promise<ImageBitmap[]> {
       type: c.type, timestamp: c.timestampUs, data: c.data as BufferSource,
     }));
   }
-  await Promise.race([decoder.flush(), failure]);
+  // flush() is a promise from the decoder; nothing guarantees it settles. The
+  // `failure` side only fires on an error callback, so racing them still leaves
+  // both able to hang together.
+  await withTimeout(Promise.race([decoder.flush(), failure]), 60_000, "decoder flush");
   decoder.close();
-  const bitmaps = await Promise.all(bitmapPromises);
+  const bitmaps = await withTimeout(Promise.all(bitmapPromises), 60_000,
+                                    "decoding frames to bitmaps");
   if (bitmaps.length !== video.chunks.length) {
     throw new Error(`decoded ${bitmaps.length} frames, expected ${video.chunks.length}`);
   }

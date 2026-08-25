@@ -129,6 +129,12 @@ export class HelperClient {
     return () => this.handlers.get(ev)?.delete(handler);
   }
 
+  /**
+   * Resolves when the helper exits. Deliberately UNBOUNDED: a helper that is
+   * running normally should never resolve this, and the supervisor uses it as a
+   * long-lived crash signal. Callers that need an answer within a deadline must
+   * race it themselves, as `shutdown()` does.
+   */
   waitForExit(): Promise<{ code: number | null; signal: string | null }> {
     if (this.exitInfo) return Promise.resolve(this.exitInfo);
     return new Promise((resolve) => this.exitWaiters.push(resolve));

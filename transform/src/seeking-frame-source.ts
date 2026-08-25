@@ -1,4 +1,5 @@
 import type { DemuxedVideo } from "./demux.js";
+import { withTimeout } from "./timeout.js";
 
 /**
  * Random-access frame source for the preview sink.
@@ -155,7 +156,8 @@ export class SeekingFrameSource {
     // pending 0, waiting forever with a perfectly healthy decoder.
     if (d.decodeQueueSize === 0) {
       if (!exhausted) return true;
-      await d.flush().catch((e) => { this.failure = e instanceof Error ? e : new Error(String(e)); });
+      await withTimeout(d.flush(), 30_000, "decoder flush at end of stream")
+        .catch((e) => { this.failure = e instanceof Error ? e : new Error(String(e)); });
       this.needsKeyframe = true;
       return this.pending.length > 0;
     }

@@ -5,6 +5,7 @@ import { composite } from "./compositor.js";
 import type { LoadedSession } from "./session.js";
 import type { Project } from "./types.js";
 import { Muxer, ArrayBufferTarget } from "mp4-muxer";
+import { withTimeout } from "./timeout.js";
 
 /**
  * The export sink. ONE implementation, called by both the CLI gates and the
@@ -137,7 +138,10 @@ export async function exportSession(
     let encoded: Uint8Array | undefined;
     if (encoderError) throw encoderError;
     if (encoder && muxer && !cancelled) {
-      await encoder.flush();
+      // The per-frame back-pressure loop is bounded; this final flush was not.
+      // An encoder that accepts every frame and then never finishes would hang
+      // the export at 100% with the file unwritten — the worst moment to hang.
+      await withTimeout(encoder.flush(), 120_000, "encoder flush at end of export");
       muxer.finalize();
       const buf = (muxer.target as ArrayBufferTarget).buffer;
       encodedBytes = buf.byteLength;
