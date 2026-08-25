@@ -5,12 +5,27 @@ on:
     branches: [master, main]
   pull_request:
 
+# macOS runners bill at 10x on a private repo against a 2,000 min/month
+# allowance — roughly 840 minutes went in a single day before this was added.
+# A superseded run is wasted money, so cancel it. Never cancel on master: a
+# green tick there is the record that a commit was verified.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
+
 jobs:
   test:
     # macOS is not a preference: the helper is Swift against ScreenCaptureKit,
     # and the transform's sinks need a Chrome with H.264 (WebCodecs).
     runs-on: macos-15
     timeout-minutes: 30
+
+    # A post-merge master run re-verifies a tree CI already approved as a PR
+    # head, which is the largest remaining duplication. It is NOT skipped by
+    # matching commit messages: a direct push whose message happened to contain
+    # "(#" would be silently unverified, and nothing would notice. Paying twice
+    # beats not checking at all. Remove the master push trigger if the
+    # duplication ever outweighs the record.
 
     steps:
       - uses: actions/checkout@v4
