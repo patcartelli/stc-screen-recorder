@@ -25,12 +25,31 @@ async function launchWithTake() {
   return { win, takeDir };
 }
 
+/**
+ * Waits for the export to REACH A CONCLUSION — done, failed or cancelled — and
+ * returns the status plus any alert text. Polling only for success meant a
+ * failure burned the full 10-minute timeout and then reported nothing about
+ * the cause; the reason was sitting in the alert the whole time.
+ */
+async function settledStatus(win: any): Promise<{ text: string; alert: string }> {
+  await expect.poll(async () => {
+    const t = (await win.textContent("#exportstatus")) ?? "";
+    return /^Done —/.test(t) || t === "Failed." || t === "Cancelled.";
+  }, { timeout: 600_000 }).toBe(true);
+  return {
+    text: (await win.textContent("#exportstatus")) ?? "",
+    alert: (await win.locator("#alert").isVisible())
+      ? ((await win.textContent("#alert")) ?? "(no alert)")
+      : "(no alert shown)",
+  };
+}
+
 describe("export from the app", () => {
   test("exports a playable file and a manifest, with progress", async () => {
     const { win, takeDir } = await launchWithTake();
     await win.click("#export");
-    await expect.poll(() => win.textContent("#exportstatus"), { timeout: 600_000 })
-      .toMatch(/^Done —/);
+    const status = await settledStatus(win);
+    expect(status.text, `export did not finish: ${status.alert}`).toMatch(/^Done —/);
 
     const mp4 = join(takeDir, "export-2026-08-24_10-00-00.mp4");
     const manifest = join(takeDir, "export-2026-08-24_10-00-00.json");

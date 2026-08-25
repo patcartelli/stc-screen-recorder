@@ -21,16 +21,13 @@ import Foundation
 /// Bounded, drop-oldest ring feeding a dedicated writer thread.
 final class LossyChannel {
     private let fd: Int32
-    private let capacity: Int
-    private var ring: [Data?]
-    private var head = 0, tail = 0, count = 0
-    private var dropped: UInt64 = 0
+    /// Semantics live in Ring.swift so they can be tested without a pipe.
+    private var ring: DropOldestRing
     private let cond = NSCondition()
 
     init(fd: Int32, capacity: Int = 256) {
         self.fd = fd
-        self.capacity = capacity
-        self.ring = Array(repeating: nil, count: capacity)
+        self.ring = DropOldestRing(capacity: capacity)
         let flags = fcntl(fd, F_GETFL, 0)
         _ = fcntl(fd, F_SETFL, flags | O_NONBLOCK)
         let t = Thread { [weak self] in self?.writeLoop() }
@@ -42,15 +39,7 @@ final class LossyChannel {
     /// wait is another producer's memcpy, which is never held across I/O.
     func offer(_ line: Data) {
         cond.lock()
-        if count == capacity {
-            ring[tail] = nil
-            tail = (tail + 1) % capacity
-            count -= 1
-            dropped &+= 1
-        }
-        ring[head] = line
-        head = (head + 1) % capacity
-        count += 1
+        ring.offer(line)
         cond.signal()
         cond.unlock()
     }
@@ -58,13 +47,9 @@ final class LossyChannel {
     private func writeLoop() {
         while true {
             cond.lock()
-            while count == 0 { cond.wait() }
-            let item = ring[tail]!
-            ring[tail] = nil
-            tail = (tail + 1) % capacity
-            count -= 1
-            let drops = dropped
-            dropped = 0
+            while ring.count == 0 { cond.wait() }
+            let item = ring.take()!
+            let drops = ring.takeDropCount()
             cond.unlock()
 
             // Loss is reported, never silent — a gap in telemetry that the

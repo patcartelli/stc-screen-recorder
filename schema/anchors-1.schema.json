@@ -149,8 +149,13 @@
             "user",
             "display-reconfigured",
             "device-lost",
-            "error"
-          ]
+            "error",
+            "user-timeout",
+            "display-reconfigured-timeout",
+            "device-lost-timeout",
+            "error-timeout"
+          ],
+          "description": "Why the recording ended. A '-timeout' suffix means the writer did not finalise in time and the sidecars were written anyway \u2014 display.mp4 may be incomplete."
         }
       }
     }

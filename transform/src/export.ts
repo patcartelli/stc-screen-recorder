@@ -109,8 +109,19 @@ export async function exportSession(
         const vf = new VideoFrame(ctx.canvas, { timestamp: Math.round((tNs - originNs) / 1000) });
         encoder.encode(vf, { keyFrame: k % fps === 0 });
         vf.close();
+        // Bounded. An encoder that stops draining — no hardware encoder on the
+        // machine, a codec it cannot actually service — would otherwise spin
+        // here forever. Observed on a CI runner: 21 of 300 frames, then ten
+        // minutes of nothing. Fail with a reason instead.
+        const queueDeadline = performance.now() + 30_000;
         while (encoder.encodeQueueSize > 30) {
           if (opts.signal?.aborted) break;
+          if (performance.now() > queueDeadline) {
+            throw new Error(
+              `encoder stopped draining at frame ${k} of ${total} ` +
+              `(queue stuck at ${encoder.encodeQueueSize}) — no usable H.264 encoder?`,
+            );
+          }
           await new Promise((r) => setTimeout(r, 1));
         }
       }
