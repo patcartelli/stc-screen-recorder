@@ -63,12 +63,29 @@ jobs:
           npm run gate:export -- "$TAKE"
           node scripts/identity-gate.mjs "$TAKE"
 
+      # The helper has crashed three times on CI and each time produced only a
+      # signal number (STC-254). The stack trace lives in the OS crash report,
+      # which is discarded with the runner unless collected here.
+      - name: Collect crash reports
+        if: failure()
+        run: |
+          mkdir -p crash-reports
+          for d in ~/Library/Logs/DiagnosticReports /Library/Logs/DiagnosticReports; do
+            [ -d "$d" ] || continue
+            find "$d" -name "stc-helper*" -o -name "Electron*" 2>/dev/null \
+              | while read -r f; do cp "$f" crash-reports/ 2>/dev/null || true; done
+          done
+          echo "collected $(ls crash-reports 2>/dev/null | wc -l | tr -d ' ') report(s)"
+          ls -la crash-reports 2>/dev/null || true
+
       - name: Upload failure artifacts
         if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: failure-logs
           path: |
+            crash-reports/
             helper/build/
             app/dist/
           retention-days: 5
+          if-no-files-found: ignore

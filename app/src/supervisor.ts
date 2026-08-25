@@ -126,7 +126,12 @@ export class HelperSupervisor {
       // A recording in flight when the helper died is lost — the sidecars are
       // written on stop, which never happened. Say so loudly.
       if (this.recordingDir) {
-        this.emit("recording-lost", { dir: this.recordingDir, ...info });
+        this.emit("recording-lost", {
+          dir: this.recordingDir, ...info,
+          // Whatever the helper managed to say on its way out — for a fault
+          // signal that is "[helper] FATAL signal SIGSEGV" (STC-254).
+          stderr: c.recentStderr.trim() || undefined,
+        });
         this.recordingDir = undefined;
       }
 
