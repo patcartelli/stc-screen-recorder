@@ -336,23 +336,46 @@ final class CaptureSession: NSObject, SCStreamOutput, SCStreamDelegate {
     }
 
     /// Tears down capture and writes events.json and anchors.json.
+    ///
+    /// Answers exactly once, by whichever path gets there first. `start` was
+    /// given this guarantee in increment 2 and `stop` was not — and it is
+    /// arguably more important here: neither `stopCapture` nor `finishWriting`
+    /// promises to call back, and when they do not the parent is left holding a
+    /// recording it cannot end. Seen on a CI runner as
+    /// `request "stop" (seq 2) timed out after 30000ms`.
+    ///
+    /// On timeout the sidecars are still written. A take whose display.mp4 was
+    /// never finalised is worth more with its events and anchors than without:
+    /// the video may still be readable, and if it is not, the sidecars say what
+    /// was attempted.
     func stop(reason: String, completion: @escaping ([String: Any]) -> Void) {
         if let tap { CGEvent.tapEnable(tap: tap, enable: false) }
         if let tapRunLoop { CFRunLoopStop(tapRunLoop) }
 
-        let finishUp: () -> Void = { [weak self] in
+        let lock = NSLock()
+        var answered = false
+        let finishUp: (String) -> Void = { [weak self] actualReason in
+            lock.lock()
+            if answered { lock.unlock(); return }
+            answered = true
+            lock.unlock()
             guard let self else { return }
-            let s = self.stats()
-            self.writeSidecars(reason: reason)
+            var s = self.stats()
+            if actualReason != reason { s["stopWarning"] = "writer did not finalise in time" }
+            self.writeSidecars(reason: actualReason)
             completion(s)
         }
 
-        guard let stream else { finishUp(); return }
+        DispatchQueue.global().asyncAfter(deadline: .now() + 20) {
+            finishUp("\(reason)-timeout")
+        }
+
+        guard let stream else { finishUp(reason); return }
         stream.stopCapture { [weak self] _ in
             guard let self else { return }
             self.input?.markAsFinished()
-            guard let writer = self.writer else { finishUp(); return }
-            writer.finishWriting { finishUp() }
+            guard let writer = self.writer else { finishUp(reason); return }
+            writer.finishWriting { finishUp(reason) }
         }
     }
 
