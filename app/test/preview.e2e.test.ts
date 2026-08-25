@@ -76,9 +76,19 @@ describe("preview player in the app", () => {
     await win.click("#playpause");
     await expect.poll(() => win.textContent("#clock"), { timeout: 20_000 }).not.toMatch(/^0:00 /);
     await win.click("#playpause");
-    // Settle first: the click and the last in-flight frame are both async, so
-    // sampling instantly races the pause rather than testing it.
-    await new Promise((r) => setTimeout(r, 400));
+    // Wait for the UI to CONFIRM the pause rather than for a fixed delay. The
+    // click, the last in-flight frame and the repaint are all async, so a
+    // timeout is a race wearing a wait's clothing — it passed alone and failed
+    // under the load of a full suite run, which is how it hid for two phases.
+    await expect.poll(() => win.textContent("#playpause"), { timeout: 20_000 }).toBe("Play");
+    // One more frame may already have been in flight when pause landed; let it
+    // finish, then require the clock to be genuinely still.
+    await expect.poll(async () => {
+      const a = await win.textContent("#clock");
+      await new Promise((r) => setTimeout(r, 250));
+      return a === (await win.textContent("#clock"));
+    }, { timeout: 20_000 }).toBe(true);
+
     const stopped = await win.textContent("#clock");
     await new Promise((r) => setTimeout(r, 900));
     expect(await win.textContent("#clock")).toBe(stopped);   // paused really is paused
