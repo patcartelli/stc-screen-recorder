@@ -41,6 +41,7 @@ npm run test:slow                                  # cross-implementation export
 npm run gate / gate:export / gate:seek / gate:identity
 npm run gate                                       # increment-0 sink-identity gate (needs Chrome)
 npm run app:start                                  # build + launch the Electron shell
+npm run merge -- <pr>                              # merge a PR, but ONLY if its CI is green
 ```
 
 ## Current status
@@ -225,6 +226,12 @@ reachable via KVC (`setValue(3, forKey: "captureResolution")`, verified in phase
   recording is there". That broke the moment those takes were deleted and CI could never have run
   them. `app/test/_take-fixture.ts` copies the committed `fixtures/basic` session instead; the
   GATES still default to a real take, which is where 4K behaviour gets exercised.
+- **`gh pr merge --auto` does NOT wait for CI here** — auto-merge waits for *required* status
+  checks, and requiring one needs branch protection, which needs GitHub Pro or a public repo. This
+  is a free private repo, so there are no required checks and `--auto` merges IMMEDIATELY. It
+  landed PR #2 while its run was still in progress. Use `npm run merge -- <pr>`
+  (`scripts/merge-when-green.mjs`), which polls the run matching the PR's head SHA and refuses to
+  merge anything not green.
 - **Every wait needs a bound and a reason** — the rule this codebase kept re-learning. Five hangs
   in one day traced to promises settled only by someone else's callback: mp4box, `VideoDecoder`,
   `VideoEncoder`, `AVAssetWriter` and `SCStream` all signal trouble by never calling back. Wrap
