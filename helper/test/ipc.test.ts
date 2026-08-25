@@ -158,30 +158,40 @@ describe("lossy channel — stdout stats never back-pressure the capture graph",
   }, 20_000);
 
   test("stalled consumer: drops are reported, and backlog is bounded by capacity not stall length", async () => {
-    // One experiment, two conclusions. Measured capacity is ~2615 idle stat
-    // lines (pipe ~122 KB at 48 B/line, plus the 256-entry ring), so a stall
-    // must exceed ~3 s to overflow at all — that number is the kernel's, not
-    // ours, which is why the bound below is relative rather than absolute:
-    // doubling the stall must NOT double what survives.
+    // How long a stall must last before anything is dropped depends on the
+    // KERNEL's pipe buffer, not on us. A fixed stall calibrated to one machine
+    // is a portability bug: 4 s overflowed the author's pipe and never
+    // overflowed CI's, where this test failed on the first run it ever had.
+    // So find the threshold instead of assuming it.
     const measure = async (stallMs: number) => {
       const h = spawnHelper({ drainStdout: false, statsIntervalMs: 1 });
       await waitFor(() => find(h.fd3, "ready"));
       await sleep(stallMs);
       h.drainStdout();
-      const note = await waitFor(() => find(h.out, "stats-dropped"), 15_000, `drop notice after ${stallMs}ms`);
+      const note = await waitFor(() => find(h.out, "stats-dropped"), 20_000, `drop notice after ${stallMs}ms`)
+        .catch(() => undefined);
       await sleep(400);
       const survived = h.out.filter((l) => l.ev === "stats").length;
       h.kill();
-      return { dropped: note.n as number, survived };
+      return note ? { dropped: note.n as number, survived } : undefined;
     };
 
-    const short = await measure(4000);
-    const long = await measure(8000);
+    let stall = 2000;
+    let short: { dropped: number; survived: number } | undefined;
+    for (let attempt = 0; attempt < 5 && !short; attempt++) {
+      short = await measure(stall);
+      if (!short) stall *= 2;          // bigger pipe than expected — stall longer
+    }
+    expect(short, `no drops even after a ${stall}ms stall — the ring may not be dropping at all`)
+      .toBeDefined();
 
-    expect(short.dropped).toBeGreaterThan(0);
-    expect(long.dropped).toBeGreaterThan(short.dropped);   // 2x the stall, more lost...
-    expect(long.survived).toBeLessThan(short.survived * 1.5 + 300); // ...same bounded backlog
-  }, 60_000);
+    // Twice the stall, same bounded backlog. An unbounded queue would deliver
+    // roughly twice as much from the longer window.
+    const long = await measure(stall * 2);
+    expect(long).toBeDefined();
+    expect(long!.dropped).toBeGreaterThan(short!.dropped);
+    expect(long!.survived).toBeLessThan(short!.survived * 1.5 + 300);
+  }, 180_000);
 });
 
 describe("no fd3 — a bare terminal run still works", () => {
