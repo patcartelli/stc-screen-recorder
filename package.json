@@ -11,7 +11,8 @@
     "test:capture": "vitest run --config vitest.grant.config.ts",
     "gate:seek": "node scripts/seek-gate.mjs",
     "gate:identity": "node scripts/identity-gate.mjs",
-    "test:slow": "vitest run --config vitest.slow.config.ts"
+    "test:slow": "vitest run --config vitest.slow.config.ts",
+    "merge": "node scripts/merge-when-green.mjs"
   },
   "devDependencies": {
     "@types/node": "^26.2.0",
