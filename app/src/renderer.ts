@@ -13,6 +13,7 @@ declare const recorder: {
   readTakeFile(name: string): Promise<ArrayBuffer>;
   takeFileSize(name: string): Promise<number>;
   readTakeChunk(name: string, offset: number, length: number): Promise<ArrayBuffer>;
+  writeProject(bytes: ArrayBuffer): Promise<boolean>;
   writeExport(name: string, bytes: ArrayBuffer): Promise<string>;
   start(): Promise<{ ok: boolean; dir?: string; code?: string; detail?: string }>;
   stop(): Promise<{ ok: boolean; info?: any }>;
@@ -24,6 +25,10 @@ import { loadSession, type LoadedSession } from "@transform/session";
 import { PreviewPlayer } from "@transform/preview";
 import { exportSession } from "@transform/export";
 import type { Project } from "@transform/types";
+import {
+  parseProject, projectForWrite, exportWindow, estimateExportMs,
+  clampTrim, isFullTake, minTrimNs,
+} from "@transform/trim";
 
 const $ = (id: string) => document.getElementById(id)!;
 const recordBtn = $("record") as HTMLButtonElement;
@@ -126,6 +131,48 @@ const fmtClock = (ns: number) => {
   const s = Math.max(0, Math.round(ns / 1e9));
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 };
+const fmtEstimate = (ms: number) => {
+  const s = Math.max(1, Math.round(ms / 1000));
+  if (s < 60) return `~${s}s to export`;
+  return `~${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")} to export`;
+};
+
+function updateTrimUI(): void {
+  if (!player || !openProject) return;
+  const d = player.durationNs || 1;
+  const start = openProject.trim?.startNs ?? 0;
+  const end = openProject.trim?.endNs ?? player.durationNs;
+  const inPct = (start / d) * 100;
+  const outPct = (end / d) * 100;
+  ($("trim-in") as HTMLElement).style.left = `${inPct}%`;
+  ($("trim-out") as HTMLElement).style.left = `${outPct}%`;
+  const kept = $("kept") as HTMLElement;
+  kept.style.left = `${inPct}%`;
+  kept.style.width = `${Math.max(0, outPct - inPct)}%`;
+
+  const w = exportWindow(openProject, player.durationNs);
+  const est = fmtEstimate(estimateExportMs(w.maxFrames));
+  $("triminfo").textContent = isFullTake(openProject, player.durationNs)
+    ? `Full take · ${fmtClock(player.durationNs)} · ${est}`
+    : `${fmtClock(w.startNs)}–${fmtClock(w.endNs)} · ${fmtClock(w.endNs - w.startNs)} · ${est}`;
+}
+
+async function persistProject(): Promise<void> {
+  if (!openProject || !player) return;
+  const doc = projectForWrite(openProject, player.durationNs);
+  await recorder.writeProject(
+    new TextEncoder().encode(JSON.stringify(doc, null, 2)).buffer as ArrayBuffer,
+  );
+}
+
+function setTrim(startNs: number, endNs: number, persist: boolean): void {
+  if (!openProject || !player) return;
+  const next = clampTrim(startNs, endNs, player.durationNs, openProject.output.fps);
+  if (next.startNs === 0 && next.endNs === player.durationNs) delete openProject.trim;
+  else openProject.trim = next;
+  updateTrimUI();
+  if (persist) void persistProject().catch((e: any) => alertUser(String(e?.message ?? e)));
+}
 
 async function openPreview(take: Take): Promise<void> {
   try {
@@ -169,18 +216,19 @@ async function openPreviewOrThrow(take: Take): Promise<void> {
   // Bytes come over IPC from the take main deliberately opened; the renderer
   // never names a path.
   const dec = new TextDecoder();
-  const [anchors, events, mp4] = await Promise.all([
+  const [anchors, events, mp4, projectRaw] = await Promise.all([
     recorder.readTakeFile("anchors.json").then((b) => JSON.parse(dec.decode(b))),
     recorder.readTakeFile("events.json").then((b) => JSON.parse(dec.decode(b)))
       .catch(() => ({ version: 1, events: [] })),
     readVideo(),
+    recorder.readTakeFile("project.json").then((b) => JSON.parse(dec.decode(b)))
+      .catch(() => null),
   ]);
   const session = await loadSession({ anchors, events, displayMp4: mp4 });
-  const project: Project = {
-    version: 1,
-    output: { fps: 60, width: anchors.capture.width, height: anchors.capture.height },
-    cursor: { style: "default", scale: 1 },
-  };
+  const durationNs = session.frames[session.frames.length - 1] ?? 0;
+  const project = parseProject(
+    projectRaw, anchors.capture.width, anchors.capture.height, durationNs,
+  );
 
   openSession = session;
   openProject = project;
@@ -199,6 +247,7 @@ async function openPreviewOrThrow(take: Take): Promise<void> {
   // command), so seeking to zero is correct by the contract — "no frame yet" —
   // and shows the user a black rectangle that looks like a broken player.
   await player.seek(player.firstRenderableNs);
+  updateTrimUI();
   $("player").removeAttribute("hidden");
 }
 
@@ -226,6 +275,60 @@ $("scrub").addEventListener("input", () => {
   // queue up dozens of decodes.
   void player.seek((Number(($("scrub") as HTMLInputElement).value) / 1000) * player.durationNs);
 });
+
+$("markin").addEventListener("click", () => {
+  if (!player || !openProject) return;
+  const t = player.currentNs;
+  const end = openProject.trim?.endNs ?? player.durationNs;
+  const min = minTrimNs(openProject.output.fps);
+  setTrim(t, t + min > end ? player.durationNs : end, true);
+});
+$("markout").addEventListener("click", () => {
+  if (!player || !openProject) return;
+  const t = player.currentNs;
+  const start = openProject.trim?.startNs ?? 0;
+  const min = minTrimNs(openProject.output.fps);
+  setTrim(t < start + min ? 0 : start, t, true);
+});
+$("resettrim").addEventListener("click", () => {
+  if (!player) return;
+  setTrim(0, player.durationNs, true);
+});
+
+function nsAtClientX(clientX: number): number {
+  const r = $("timeline").getBoundingClientRect();
+  const t = r.width <= 0 ? 0 : (clientX - r.left) / r.width;
+  return Math.round(Math.max(0, Math.min(1, t)) * (player?.durationNs ?? 0));
+}
+
+let dragging: "in" | "out" | undefined;
+function onHandleDown(which: "in" | "out", e: PointerEvent): void {
+  e.preventDefault();
+  e.stopPropagation();
+  dragging = which;
+  (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+}
+function onHandleMove(e: PointerEvent): void {
+  if (!dragging || !player || !openProject) return;
+  const t = nsAtClientX(e.clientX);
+  const start = openProject.trim?.startNs ?? 0;
+  const end = openProject.trim?.endNs ?? player.durationNs;
+  if (dragging === "in") setTrim(t, end, false);
+  else setTrim(start, t, false);
+}
+function onHandleUp(): void {
+  if (!dragging) return;
+  dragging = undefined;
+  void persistProject().catch((e: any) => alertUser(String(e?.message ?? e)));
+}
+$("trim-in").addEventListener("pointerdown", (e) => onHandleDown("in", e as PointerEvent));
+$("trim-out").addEventListener("pointerdown", (e) => onHandleDown("out", e as PointerEvent));
+$("trim-in").addEventListener("pointermove", (e) => onHandleMove(e as PointerEvent));
+$("trim-out").addEventListener("pointermove", (e) => onHandleMove(e as PointerEvent));
+$("trim-in").addEventListener("pointerup", onHandleUp);
+$("trim-out").addEventListener("pointerup", onHandleUp);
+$("trim-in").addEventListener("pointercancel", onHandleUp);
+$("trim-out").addEventListener("pointercancel", onHandleUp);
 
 // ---- export --------------------------------------------------------------
 
@@ -264,12 +367,14 @@ async function runExport(): Promise<void> {
 
     const name = `export-${openTakeName}.mp4`;
     await recorder.writeExport(name, result.encoded!.buffer as ArrayBuffer);
+    const lastNs = openSession.frames[openSession.frames.length - 1] ?? 0;
     await recorder.writeExport(`export-${openTakeName}.json`, new TextEncoder().encode(JSON.stringify({
       version: 1,
       frames: result.frames,
       preEncodeHash: result.hash,
       encodedBytes: result.encodedBytes,
       output: openProject.output,
+      trim: projectForWrite(openProject, lastNs).trim ?? null,
       exportDurationMs: result.durationMs,
     }, null, 2)).buffer as ArrayBuffer);
 

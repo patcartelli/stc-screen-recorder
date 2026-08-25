@@ -85,6 +85,27 @@ describe("schemas reject malformed documents", () => {
     doc.version = 2;
     expect(validate(doc)).toBe(false);
   });
+
+  test("project: optional trim is accepted", () => {
+    const validate = compile("schema/project-1.schema.json");
+    const doc = clone(load("fixtures/basic/project.json"));
+    doc.trim = { startNs: 1_000_000_000, endNs: 3_000_000_000 };
+    expect(validate(doc), JSON.stringify(validate.errors)).toBe(true);
+  });
+
+  test("project: trim without endNs is rejected", () => {
+    const validate = compile("schema/project-1.schema.json");
+    const doc = clone(load("fixtures/basic/project.json"));
+    doc.trim = { startNs: 0 };
+    expect(validate(doc)).toBe(false);
+  });
+
+  test("project: float trim times are rejected (integer ns only)", () => {
+    const validate = compile("schema/project-1.schema.json");
+    const doc = clone(load("fixtures/basic/project.json"));
+    doc.trim = { startNs: 0.5, endNs: 1 };
+    expect(validate(doc)).toBe(false);
+  });
 });
 
 describe("fixture frame grid", () => {

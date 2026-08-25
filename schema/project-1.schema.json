@@ -26,6 +26,16 @@
         "style": { "enum": ["default"] },
         "scale": { "type": "number", "exclusiveMinimum": 0, "maximum": 8 }
       }
+    },
+    "trim": {
+      "type": "object",
+      "description": "Non-destructive in/out. Absent means the full take. Session-relative integer ns; endNs must be greater than startNs.",
+      "additionalProperties": false,
+      "required": ["startNs", "endNs"],
+      "properties": {
+        "startNs": { "type": "integer", "minimum": 0 },
+        "endNs": { "type": "integer", "minimum": 0 }
+      }
     }
   }
 }

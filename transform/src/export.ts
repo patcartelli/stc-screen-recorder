@@ -4,6 +4,7 @@ import { ForwardFrameSource } from "./frame-source.js";
 import { composite } from "./compositor.js";
 import type { LoadedSession } from "./session.js";
 import type { Project } from "./types.js";
+import { exportWindow } from "./trim.js";
 import { Muxer, ArrayBufferTarget } from "mp4-muxer";
 import { withTimeout } from "./timeout.js";
 
@@ -63,8 +64,9 @@ export async function exportSession(
 
   const lastFrameNs = session.frames[session.frames.length - 1]!;
   const available = Math.floor((lastFrameNs * fps) / 1_000_000_000) + 1;
-  const from = Math.max(0, Math.min(opts.fromFrame ?? 0, available - 1));
-  const total = Math.min(opts.maxFrames ?? Number.MAX_SAFE_INTEGER, available - from);
+  const clip = exportWindow(project, lastFrameNs);
+  const from = Math.max(0, Math.min(opts.fromFrame ?? clip.fromFrame, available - 1));
+  const total = Math.min(opts.maxFrames ?? clip.maxFrames, available - from);
   // An exported clip is its own file and its timeline starts at zero. render()
   // still receives SESSION time — cursor state depends on where we are in the
   // recording, not where this clip begins.
