@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { existsSync, readdirSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import { HelperSupervisor } from "./supervisor.js";
-import { newTakeDir, takesRoot, listTakes } from "./takes.js";
+import { newTakeDir, takesRoot, listTakes, setTakeLabel } from "./takes.js";
 
 /**
  * Electron main process. Owns the helper: it is spawned as a CHILD of this
@@ -100,6 +100,36 @@ ipcMain.handle("recorder:stop", async () => {
 });
 
 ipcMain.handle("recorder:takes", async () => listTakes(process.env));
+
+ipcMain.handle("take:label", async (_e, dir: string, label: string) => {
+  await setTakeLabel(process.env, dir, label);
+  return true;
+});
+
+ipcMain.handle("take:delete", async (_e, dir: string) => {
+  const root = takesRoot(process.env);
+  if (!dir.startsWith(root) || dir === root) {
+    throw new Error("refusing to delete a path outside the recordings folder");
+  }
+  if (!win) throw new Error("no window");
+
+  // The only irreversible action in the app, so it asks first — and then does
+  // not actually destroy anything: shell.trashItem moves the take to the Trash,
+  // where a mistaken click is one restore away. Never unlink.
+  const { response } = await dialog.showMessageBox(win, {
+    type: "warning",
+    buttons: ["Move to Trash", "Cancel"],
+    defaultId: 1,
+    cancelId: 1,
+    message: "Move this recording to the Trash?",
+    detail: dir,
+  });
+  if (response !== 0) return { deleted: false };
+
+  if (openTake === dir) openTake = undefined;
+  await shell.trashItem(dir);
+  return { deleted: true };
+});
 
 ipcMain.handle("preview:open", async (_e, dir: string) => {
   const root = takesRoot(process.env);

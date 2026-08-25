@@ -8,6 +8,8 @@ import { contextBridge, ipcRenderer } from "electron";
 contextBridge.exposeInMainWorld("recorder", {
   status: () => ipcRenderer.invoke("recorder:status"),
   takes: () => ipcRenderer.invoke("recorder:takes"),
+  labelTake: (dir: string, label: string) => ipcRenderer.invoke("take:label", dir, label),
+  deleteTake: (dir: string) => ipcRenderer.invoke("take:delete", dir),
   openPreview: (dir: string) => ipcRenderer.invoke("preview:open", dir),
   closePreview: () => ipcRenderer.invoke("preview:close"),
   readTakeFile: (name: string) => ipcRenderer.invoke("preview:read", name),

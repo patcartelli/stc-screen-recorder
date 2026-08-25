@@ -1,11 +1,13 @@
 /** UI: a record button, live telemetry, and anything that went wrong stated plainly. */
 interface Take {
   dir: string; name: string; durationMs: number;
-  width: number; height: number; events: number; bytes: number;
+  width: number; height: number; events: number; bytes: number; label?: string;
 }
 declare const recorder: {
   status(): Promise<{ state: string; pid?: number }>;
   takes(): Promise<{ takes: Take[]; invalid: { name: string; reason: string }[] }>;
+  labelTake(dir: string, label: string): Promise<boolean>;
+  deleteTake(dir: string): Promise<{ deleted: boolean }>;
   openPreview(dir: string): Promise<boolean>;
   closePreview(): Promise<void>;
   readTakeFile(name: string): Promise<ArrayBuffer>;
@@ -266,7 +268,17 @@ async function refreshTakes(): Promise<void> {
     row.className = "take";
     const left = document.createElement("div");
     const title = document.createElement("div");
-    title.textContent = t.name;
+    // Show the label when there is one, but keep the timestamp visible: it is
+    // how the take is identified on disk and in every path the app hands out.
+    title.textContent = t.label ? `${t.label}` : t.name;
+    title.className = "take-title";
+    title.title = t.dir;
+    if (t.label) {
+      const stamp = document.createElement("span");
+      stamp.className = "stamp";
+      stamp.textContent = ` ${t.name}`;
+      title.append(stamp);
+    }
     const meta = document.createElement("div");
     meta.className = "meta";
     meta.textContent = `${fmtDuration(t.durationMs)} · ${t.width}×${t.height} · ` +
@@ -275,11 +287,47 @@ async function refreshTakes(): Promise<void> {
     const openBtn = document.createElement("button");
     openBtn.textContent = "Preview";
     openBtn.addEventListener("click", () => void openPreview(t));
+    const renameBtn = document.createElement("button");
+    renameBtn.textContent = "Rename";
+    renameBtn.className = "rename";
+    renameBtn.addEventListener("click", () => {
+      const input = document.createElement("input");
+      input.type = "text";
+      input.className = "labelinput";
+      input.value = t.label ?? "";
+      input.placeholder = "Name this recording";
+      input.maxLength = 120;
+      const commit = async () => {
+        const v = input.value.trim();
+        input.replaceWith(title);
+        if (v && v !== t.label) {
+          try { await recorder.labelTake(t.dir, v); await refreshTakes(); }
+          catch (e: any) { alertUser(String(e?.message ?? e)); }
+        }
+      };
+      input.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") void commit();
+        if (e.key === "Escape") input.replaceWith(title);
+      });
+      input.addEventListener("blur", () => void commit());
+      title.replaceWith(input);
+      input.focus();
+      input.select();
+    });
+    const delBtn = document.createElement("button");
+    delBtn.textContent = "Delete";
+    delBtn.className = "delete";
+    delBtn.addEventListener("click", async () => {
+      try {
+        const r = await recorder.deleteTake(t.dir);
+        if (r.deleted) { if (player) await closePreview(); await refreshTakes(); }
+      } catch (e: any) { alertUser(String(e?.message ?? e)); }
+    });
     const btn = document.createElement("button");
     btn.textContent = "Show";
     btn.addEventListener("click", () => recorder.reveal(t.dir));
     const actions = document.createElement("div");
-    actions.append(openBtn, btn);
+    actions.append(openBtn, renameBtn, btn, delBtn);
     actions.style.display = "flex";
     actions.style.gap = "6px";
     row.append(left, actions);

@@ -59,6 +59,8 @@ npm run app:start                                  # build + launch the Electron
 - **Increment 3 (Electron shell):** DONE — `app/src/{helper-client,supervisor,main,preload,renderer}.ts`.
   Client and supervisor are Electron-free and tested against the real helper binary; the shell is
   verified by a Playwright-Electron E2E test that launches the app for real.
+- **PHASE 2 IS COMPLETE** — record → preview → export in the app; take library, labelling, delete
+  to Trash.
 - **Increment 4 (composite + export):** DONE — gate passed on a 60 s real recording (3414 source
   frames -> 3617 CFR output frames, two independent exports byte-identical pre-encode, peak
   buffered 16 frames). `npm run gate:export [sessionDir]` — defaults to the newest take.
@@ -196,6 +198,12 @@ reachable via KVC (`setValue(3, forKey: "captureResolution")`, verified in phase
   SecurityAgent prompt, and an unattended build then hangs *forever* rather than failing. If a
   build wedges, look for the dialog (and answer "Always Allow", not "Allow"). A `timeout` around
   codesign kills the dialog before a human can find it.
+- **`~/.Trash` cannot be enumerated** — macOS refuses `scandir` on it (EPERM) without Full Disk
+  Access, for the test runner AND for Electron, while still allowing a targeted `existsSync`. A
+  test that lists the Trash silently asserts nothing.
+- **`await import()` inside a Playwright `evaluate` is rewritten by vitest** into
+  `__vite_ssr_dynamic_import__`, which does not exist in the process the code is shipped to. Use
+  `process.getBuiltinModule(...)`.
 - **Seeking to a frame's exact PTS can land BEFORE it** — `seek()` floors time to a 120 Hz tick,
   and the floor of a first frame at 209.1 ms is 208.33 ms, where frame selection correctly reports
   "nothing yet" and paints black. Round up: `PreviewPlayer.firstRenderableNs`.

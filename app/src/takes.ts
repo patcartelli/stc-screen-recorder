@@ -33,7 +33,7 @@ export function newTakeDir(env: NodeJS.ProcessEnv, at: Date = new Date(),
   return join(root, name);
 }
 
-import { readdir, stat, readFile } from "node:fs/promises";
+import { readdir, stat, readFile, writeFile } from "node:fs/promises";
 
 /** A recording that can be listed, played and exported. */
 export interface TakeInfo {
@@ -45,7 +45,11 @@ export interface TakeInfo {
   height: number;
   events: number;
   bytes: number;
+  /** User-chosen display name. Never the identity, never the sort key. */
+  label?: string;
 }
+
+export const MAX_LABEL_LENGTH = 120;
 
 /** A directory that looks like a take but is not usable, and why. */
 export interface InvalidTake {
@@ -125,6 +129,14 @@ export async function listTakes(env: NodeJS.ProcessEnv): Promise<TakeList> {
       events = Array.isArray(doc?.events) ? doc.events.length : 0;
     } catch { /* absent or malformed: 0 */ }
 
+    // A label is decoration. Losing it must never cost the recording, so a
+    // corrupt take.json degrades to "no label" rather than invalidating a take.
+    let label: string | undefined;
+    try {
+      const doc = JSON.parse(await readFile(join(dir, "take.json"), "utf8"));
+      if (typeof doc?.label === "string" && doc.label.trim()) label = doc.label.trim();
+    } catch { /* absent or malformed */ }
+
     let recordedAt = 0;
     try { recordedAt = (await stat(join(dir, "anchors.json"))).mtimeMs; } catch { /* keep 0 */ }
 
@@ -133,7 +145,7 @@ export async function listTakes(env: NodeJS.ProcessEnv): Promise<TakeList> {
       durationMs: Math.round((anchors.stop?.t ?? 0) / 1e6),
       width: anchors.capture?.width ?? 0,
       height: anchors.capture?.height ?? 0,
-      events,
+      events, label,
       bytes: await dirSize(dir, await readdir(dir).catch(() => [])),
     });
   }
@@ -142,4 +154,23 @@ export async function listTakes(env: NodeJS.ProcessEnv): Promise<TakeList> {
   // it survives files being copied around, which mtime does not.
   takes.sort((a, b) => b.name.localeCompare(a.name));
   return { takes, invalid };
+}
+
+/**
+ * Names a take without renaming its directory.
+ *
+ * The directory name is a timestamp, and it is both the take's identity and the
+ * sort key. Renaming it would scramble chronological order, break any open
+ * preview, and invalidate paths already handed out for exports — so the label
+ * lives beside the recording instead.
+ */
+export async function setTakeLabel(env: NodeJS.ProcessEnv, dir: string, label: string): Promise<void> {
+  const root = takesRoot(env);
+  if (!dir.startsWith(root)) throw new Error("refusing to label a directory outside the recordings folder");
+  const trimmed = label.trim();
+  if (!trimmed) throw new Error("a label cannot be empty");
+  if (trimmed.length > MAX_LABEL_LENGTH) {
+    throw new Error(`label is too long (max ${MAX_LABEL_LENGTH} characters)`);
+  }
+  await writeFile(join(dir, "take.json"), JSON.stringify({ version: 1, label: trimmed }, null, 2));
 }

@@ -2,7 +2,7 @@ import { describe, test, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { listTakes } from "../src/takes.js";
+import { listTakes, setTakeLabel } from "../src/takes.js";
 
 let root: string;
 beforeEach(() => { root = mkdtempSync(join(tmpdir(), "stc-lib-")); });
@@ -115,5 +115,55 @@ describe("listTakes — broken takes are reported, never fatal", () => {
     expect(takes.length).toBe(1);
     expect(takes[0]!.events).toBe(0);
     expect(invalid).toEqual([]);
+  });
+});
+
+describe("take labels", () => {
+  test("a take with no label reports none, and keeps its directory name", async () => {
+    makeTake("2026-08-24_10-00-00");
+    const { takes } = await listTakes(env());
+    expect(takes[0]!.label).toBeUndefined();
+    expect(takes[0]!.name).toBe("2026-08-24_10-00-00");
+  });
+
+  test("a label is read from take.json without disturbing identity", async () => {
+    const dir = makeTake("2026-08-24_10-00-00");
+    writeFileSync(join(dir, "take.json"), JSON.stringify({ version: 1, label: "Onboarding demo" }));
+    const { takes } = await listTakes(env());
+    expect(takes[0]!.label).toBe("Onboarding demo");
+    // The directory name is the take's identity and its sort key — a label
+    // must never become the thing the app orders or addresses takes by.
+    expect(takes[0]!.name).toBe("2026-08-24_10-00-00");
+  });
+
+  test("labels do not affect ordering", async () => {
+    const a = makeTake("2026-08-24_09-00-00");
+    makeTake("2026-08-24_11-00-00");
+    writeFileSync(join(a, "take.json"), JSON.stringify({ version: 1, label: "zzz last alphabetically" }));
+    const { takes } = await listTakes(env());
+    expect(takes.map((t) => t.name)).toEqual(["2026-08-24_11-00-00", "2026-08-24_09-00-00"]);
+  });
+
+  test("a corrupt take.json costs the label, not the take", async () => {
+    const dir = makeTake("2026-08-24_10-00-00");
+    writeFileSync(join(dir, "take.json"), "{ broken");
+    const { takes, invalid } = await listTakes(env());
+    expect(takes.length).toBe(1);
+    expect(takes[0]!.label).toBeUndefined();
+    expect(invalid).toEqual([]);
+  });
+
+  test("an over-long or blank label is rejected at write time", async () => {
+    const dir = makeTake("2026-08-24_10-00-00");
+    await expect(setTakeLabel(env(), dir, "   ")).rejects.toThrow(/empty/i);
+    await expect(setTakeLabel(env(), dir, "x".repeat(300))).rejects.toThrow(/long/i);
+  });
+
+  test("setTakeLabel round-trips, and refuses a directory outside the folder", async () => {
+    const dir = makeTake("2026-08-24_10-00-00");
+    await setTakeLabel(env(), dir, "Bug repro");
+    const { takes } = await listTakes(env());
+    expect(takes[0]!.label).toBe("Bug repro");
+    await expect(setTakeLabel(env(), "/etc", "nope")).rejects.toThrow(/outside/i);
   });
 });

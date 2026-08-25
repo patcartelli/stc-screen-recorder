@@ -1,4 +1,9 @@
-# Phase 2 — finish the product loop
+# Phase 2 — finish the product loop  ✅ COMPLETE
+
+Record → preview → export, all inside the app. Take library, scrub-safe preview player, export
+with progress and cancellation, and labelling/deletion. 121 tests; five gates
+(`gate`, `gate:export`, `gate:seek`, `gate:identity`, plus `test:slow` for
+cross-implementation export identity).
 
 **Goal:** make the thing usable by a person. Phase 1 proved record → composite → export works;
 the app can only do the first of those. Export exists solely as a CLI script that spins up Vite,
@@ -88,7 +93,17 @@ Two things this settles:
    implementation in `transform/src/export.ts` called by both the app and the gates; a second copy
    would make that gate compare two programs rather than verify one. Each export writes a manifest
    recording its pre-encode hash — an export nobody can verify is an export nobody can trust.
-5. **Take management** — reveal in Finder, delete with confirmation, rename.
+5. **Take management** *(done)* — reveal in Finder, delete with confirmation, rename.
+
+   "Rename" became **labelling**, deliberately. The directory name is a timestamp and is both the
+   take's identity and the sort key; renaming it would scramble chronological order, break an open
+   preview, and invalidate paths already handed out for exports. A `take.json` sidecar carries the
+   friendly name, the timestamp stays visible, and a corrupt sidecar costs the label rather than
+   the recording.
+
+   Delete confirms and then calls `shell.trashItem` — it never unlinks. The gate proves the take is
+   in the Trash rather than merely gone, which is a different claim: "it vanished" is also what
+   `rm -rf` looks like.
 
 ## Non-goals for phase 2
 
