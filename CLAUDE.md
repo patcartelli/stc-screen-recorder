@@ -30,6 +30,50 @@ events → deterministic transform → CFR MP4 with cursor overlay.
 | `scratch/` | phase-0 spike code and outputs (mp4box.js, harness, sample session dirs) |
 | `council/` | cross-AI reviews of the phase-1 plan |
 
+## Where things stand (2026-08-25)
+
+**Phases 0, 1 and 2 are complete.** The app records, previews and exports, verified on real
+hardware and confirmed by eye on the composited cursor. 134 tests, four gates, CI green.
+
+Repo: https://github.com/patcartelli/stc-screen-recorder — **public** (unlimited Actions minutes;
+macOS bills 10x on private repos and burned ~42% of a monthly allowance in one day).
+
+### Workflow — master is protected
+
+`master` requires the `test` check and enforces it on admins, so **direct pushes are blocked**.
+Everything goes through a PR:
+
+```
+git checkout -b accounts/stc-NNN-slug
+# work, commit
+git push -u origin HEAD
+gh pr create --base master
+npm run merge -- <pr>      # merges ONLY if that PR's CI is green
+```
+
+Use `npm run merge`, not `gh pr merge --auto` — see the trap below about why `--auto` was useless
+here (it is now backed by a required check, but the script also refuses to read a green result
+belonging to a different commit).
+
+### Next up
+
+| ticket | what | needs |
+|---|---|---|
+| STC-249 | lossy ring under REAL capture load — the semantics are tested, the live scenario is not | a recording with a stalled stats consumer |
+| STC-254 | helper SIGSEGV on CI. Diagnostics landed; the crash itself is unfixed and unreproduced | the next occurrence, which will now carry stderr + a crash report |
+| STC-232 | phase 3: camera PiP — recommended first, it avoids §2a's CoreAudio wedge entirely | a scope decision |
+| STC-247 | multi-display capture | a second display |
+| STC-251/252 | preview memory ceiling (~15 min at 4K); Node 20 actions deprecation | — |
+
+`PHASE-2.md` records the measured limits (export 1.52x realtime, preview ~1.2x file size in RAM).
+
+### Open PR from another agent
+
+`#3 STC-241: in-app trim before export` — a separate agent, working in the linked worktree at
+`../stc-screen-recorder-stc-241`. Untouched by this session. It overlaps `transform/src/export.ts`
+and the app UI; git reports no textual conflict, but `test:slow` (UI vs CLI export identity) is the
+gate that would catch a semantic one, and it does not run in CI.
+
 ## Build & smoke
 
 ```
