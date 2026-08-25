@@ -76,6 +76,11 @@ final class CaptureSession: NSObject, SCStreamOutput, SCStreamDelegate {
     }
 
     private func begin(display: SCDisplay, completion: @escaping (Result<[String: Any], Error>) -> Void) {
+        // CaptureDecisions.swift hardcodes this so it can be compiled without
+        // ScreenCaptureKit. If the framework ever renumbers, fail loudly here
+        // rather than silently discarding every frame as "not complete".
+        precondition(SCFrameStatus.complete.rawValue == SCFrameStatusCompleteRaw,
+                     "SCFrameStatus.complete is no longer \(SCFrameStatusCompleteRaw)")
         displayID = display.displayID
         pointW = display.width
         pointH = display.height
@@ -199,26 +204,29 @@ final class CaptureSession: NSObject, SCStreamOutput, SCStreamDelegate {
                             as? [[SCStreamFrameInfo: Any]],
                   let att = arr.first,
                   let statusRaw = att[.status] as? Int,
-                  statusRaw == SCFrameStatus.complete.rawValue,
                   let dtRaw = att[.displayTime] as? UInt64,
                   let pb = CMSampleBufferGetImageBuffer(sb)
-            else { return }   // idle/blank/suppressed: VFR emits nothing, not a repeat
+            else { return }
 
-            // displayTime is mach ticks (41.667 ns here) and MUST be converted;
-            // it is also the scheduled VBL presentation time, ~7 ms ahead of
-            // delivery — which is the right reference for "what the user saw".
-            let dtNs = Clock.toNs(dtRaw)
-            guard dtNs >= t0Ns else { return }
-            let ptsNs = Int64(dtNs - t0Ns)
-
+            // The decision itself lives in CaptureDecisions.swift so it can be
+            // tested without a live stream. displayTime is mach ticks and is
+            // converted there; it is the scheduled VBL presentation time, ~7 ms
+            // ahead of delivery, which is the right reference for what the user saw.
             lock.lock()
-            if ptsNs <= lastPtsNs {
-                framesNonMonotonic += 1
-                lock.unlock()
-                return
+            let decision = decideFrame(statusRaw: statusRaw, displayTimeRaw: dtRaw,
+                                       timebase: (Clock.timebase.numer, Clock.timebase.denom),
+                                       t0Ns: t0Ns, lastPtsNs: lastPtsNs)
+            let ptsNs: Int64
+            switch decision {
+            case .skip:
+                lock.unlock(); return       // idle/blank/suppressed: VFR emits nothing
+            case .nonMonotonic:
+                framesNonMonotonic += 1; lock.unlock(); return
+            case .accept(let pts):
+                ptsNs = pts
+                lastPtsNs = pts
+                if firstFramePtsNs < 0 { firstFramePtsNs = pts }
             }
-            lastPtsNs = ptsNs
-            if firstFramePtsNs < 0 { firstFramePtsNs = ptsNs }
             lock.unlock()
 
             guard let input, let adaptor, input.isReadyForMoreMediaData else {
@@ -286,32 +294,23 @@ final class CaptureSession: NSObject, SCStreamOutput, SCStreamDelegate {
     }
 
     private func handleTapEvent(type: CGEventType, event: CGEvent) {
-        if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+        // CGEvent.timestamp is ALREADY nanoseconds on the same epoch as the
+        // converted displayTime — converting it would be a 41.667x error in the
+        // other direction. The mapping lives in CaptureDecisions.swift.
+        switch decideCursorEvent(type: type, timestampNs: event.timestamp, t0Ns: t0Ns) {
+        case .reenableTap:
             if let tap { CGEvent.tapEnable(tap: tap, enable: true) }
             lock.lock(); tapReenables += 1; lock.unlock()
+        case .ignore, .beforeStart:
             return
+        case .event(let t, let kind, let button):
+            let loc = event.location
+            var e: [String: Any] = ["t": t, "kind": kind, "x": loc.x, "y": loc.y]
+            if let button { e["button"] = button }
+            lock.lock()
+            events.append(e)
+            lock.unlock()
         }
-        let kind: String
-        var button: Int? = nil
-        switch type {
-        case .mouseMoved, .leftMouseDragged, .rightMouseDragged: kind = "move"
-        case .leftMouseDown:  kind = "down"; button = 0
-        case .leftMouseUp:    kind = "up";   button = 0
-        case .rightMouseDown: kind = "down"; button = 1
-        case .rightMouseUp:   kind = "up";   button = 1
-        default: return
-        }
-        // CGEvent.timestamp is ALREADY nanoseconds on the same epoch as the
-        // converted displayTime — converting it would be a 41.667x error.
-        let ts = event.timestamp
-        guard ts >= t0Ns else { return }
-        let loc = event.location
-        var e: [String: Any] = ["t": Int(ts - t0Ns), "kind": kind,
-                                "x": loc.x, "y": loc.y]
-        if let button { e["button"] = button }
-        lock.lock()
-        events.append(e)
-        lock.unlock()
     }
 
     // MARK: - stats and stop
