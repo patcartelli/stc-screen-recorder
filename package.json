@@ -10,7 +10,8 @@
     "gate:export": "node scripts/export-gate.mjs",
     "test:capture": "vitest run --config vitest.grant.config.ts",
     "gate:seek": "node scripts/seek-gate.mjs",
-    "gate:identity": "node scripts/identity-gate.mjs"
+    "gate:identity": "node scripts/identity-gate.mjs",
+    "test:slow": "vitest run --config vitest.slow.config.ts"
   },
   "devDependencies": {
     "@types/node": "^26.2.0",

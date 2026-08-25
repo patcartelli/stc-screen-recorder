@@ -37,6 +37,8 @@ helper/build.sh                                    # -> helper/build/stc-helper 
 echo '{"cmd":"status"}' | helper/build/stc-helper  # expect ready -> status -> bye JSON lines
 npm test                                           # everything that runs anywhere (must be green)
 npm run test:capture                               # the one test needing a Screen Recording grant
+npm run test:slow                                  # cross-implementation export identity (minutes)
+npm run gate / gate:export / gate:seek / gate:identity
 npm run gate                                       # increment-0 sink-identity gate (needs Chrome)
 npm run app:start                                  # build + launch the Electron shell
 ```

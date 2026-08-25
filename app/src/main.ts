@@ -2,7 +2,7 @@ import { app, BrowserWindow, ipcMain, dialog, shell } from "electron";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { existsSync, readdirSync } from "node:fs";
-import { readFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { HelperSupervisor } from "./supervisor.js";
 import { newTakeDir, takesRoot, listTakes } from "./takes.js";
 
@@ -109,6 +109,18 @@ ipcMain.handle("preview:open", async (_e, dir: string) => {
 });
 
 ipcMain.handle("preview:close", async () => { openTake = undefined; });
+
+ipcMain.handle("export:write", async (_e, name: string, bytes: ArrayBuffer) => {
+  if (!openTake) throw new Error("no take is open");
+  // The renderer chooses a filename; constrain it to a leaf name with a known
+  // extension so it cannot traverse out of the take directory.
+  if (!/^[A-Za-z0-9._-]+\.(mp4|json)$/.test(name) || name.includes("..")) {
+    throw new Error(`refusing to write "${name}"`);
+  }
+  const dest = join(openTake, name);
+  await writeFile(dest, Buffer.from(bytes));
+  return dest;
+});
 
 ipcMain.handle("preview:read", async (_e, name: string) => {
   if (!openTake) throw new Error("no take is open");

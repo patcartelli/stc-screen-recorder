@@ -31,6 +31,10 @@
     .transport { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
     .transport input[type=range] { flex: 1; }
     #clock { font-variant-numeric: tabular-nums; font-size: 12px; opacity: .7; min-width: 84px; }
+    #exportbar { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
+    #exportbar[hidden] { display: none; }
+    #exportprogress { flex: 1; }
+    #exportstatus { font-size: 12px; opacity: .75; min-width: 150px; font-variant-numeric: tabular-nums; }
   </style>
 </head>
 <body>
@@ -56,7 +60,13 @@
       <button id="playpause">Play</button>
       <input id="scrub" type="range" min="0" max="1000" value="0" step="1">
       <span id="clock">0:00 / 0:00</span>
+      <button id="export">Export</button>
       <button id="closepreview">Close</button>
+    </div>
+    <div id="exportbar" hidden>
+      <progress id="exportprogress" max="1000" value="0"></progress>
+      <span id="exportstatus"></span>
+      <button id="cancelexport">Cancel</button>
     </div>
   </div>
 

@@ -9,14 +9,16 @@ declare const recorder: {
   openPreview(dir: string): Promise<boolean>;
   closePreview(): Promise<void>;
   readTakeFile(name: string): Promise<ArrayBuffer>;
+  writeExport(name: string, bytes: ArrayBuffer): Promise<string>;
   start(): Promise<{ ok: boolean; dir?: string; code?: string; detail?: string }>;
   stop(): Promise<{ ok: boolean; info?: any }>;
   reveal(dir: string): Promise<void>;
   on(event: string, cb: (p: any) => void): () => void;
 };
 
-import { loadSession } from "@transform/session";
+import { loadSession, type LoadedSession } from "@transform/session";
 import { PreviewPlayer } from "@transform/preview";
+import { exportSession } from "@transform/export";
 import type { Project } from "@transform/types";
 
 const $ = (id: string) => document.getElementById(id)!;
@@ -111,6 +113,10 @@ const fmtSize = (b: number) =>
 
 let player: PreviewPlayer | undefined;
 let scrubbing = false;
+let openSession: LoadedSession | undefined;
+let openProject: Project | undefined;
+let openTakeName = "";
+let exportAbort: AbortController | undefined;
 
 const fmtClock = (ns: number) => {
   const s = Math.max(0, Math.round(ns / 1e9));
@@ -137,6 +143,9 @@ async function openPreview(take: Take): Promise<void> {
     cursor: { style: "default", scale: 1 },
   };
 
+  openSession = session;
+  openProject = project;
+  openTakeName = take.name;
   player = new PreviewPlayer($("stage") as HTMLCanvasElement, session, project);
   const scrub = $("scrub") as HTMLInputElement;
   player.onTime = (tNs, playing) => {
@@ -153,8 +162,11 @@ async function openPreview(take: Take): Promise<void> {
 }
 
 async function closePreview(): Promise<void> {
+  exportAbort?.abort();
   player?.close();
   player = undefined;
+  openSession = undefined;
+  openProject = undefined;
   $("player").setAttribute("hidden", "");
   await recorder.closePreview();
 }
@@ -173,6 +185,66 @@ $("scrub").addEventListener("input", () => {
   // queue up dozens of decodes.
   void player.seek((Number(($("scrub") as HTMLInputElement).value) / 1000) * player.durationNs);
 });
+
+// ---- export --------------------------------------------------------------
+
+async function runExport(): Promise<void> {
+  if (!openSession || !openProject || exportAbort) return;
+  player?.pause();
+  exportAbort = new AbortController();
+
+  const bar = $("exportbar");
+  const progress = $("exportprogress") as HTMLProgressElement;
+  const status = $("exportstatus");
+  bar.removeAttribute("hidden");
+  ($("export") as HTMLButtonElement).disabled = true;
+  progress.value = 0;
+  status.textContent = "Exporting…";
+  clearAlert();
+
+  const started = performance.now();
+  try {
+    const result = await exportSession(openSession, openProject, {
+      // Hashing costs a full pixel read-back per frame and exists for the
+      // gates. It is on here so the manifest can record a verifiable hash —
+      // an export nobody can check is an export nobody can trust.
+      hash: true,
+      signal: exportAbort.signal,
+      onProgress: (done, total) => {
+        progress.value = Math.round((done / total) * 1000);
+        const elapsed = (performance.now() - started) / 1000;
+        const rate = done / Math.max(elapsed, 0.001);
+        const left = Math.max(0, Math.round((total - done) / Math.max(rate, 0.001)));
+        status.textContent = `${done} / ${total} frames · ~${left}s left`;
+      },
+    });
+
+    if (result.cancelled) { status.textContent = "Cancelled."; return; }
+
+    const name = `export-${openTakeName}.mp4`;
+    await recorder.writeExport(name, result.encoded!.buffer as ArrayBuffer);
+    await recorder.writeExport(`export-${openTakeName}.json`, new TextEncoder().encode(JSON.stringify({
+      version: 1,
+      frames: result.frames,
+      preEncodeHash: result.hash,
+      encodedBytes: result.encodedBytes,
+      output: openProject.output,
+      exportDurationMs: result.durationMs,
+    }, null, 2)).buffer as ArrayBuffer);
+
+    status.textContent = `Done — ${result.frames} frames, ${(result.encodedBytes / 1e6).toFixed(1)} MB`;
+    await refreshTakes();
+  } catch (e: any) {
+    status.textContent = "Failed.";
+    alertUser(`Export failed: ${e?.message ?? e}`);
+  } finally {
+    exportAbort = undefined;
+    ($("export") as HTMLButtonElement).disabled = false;
+  }
+}
+
+$("export").addEventListener("click", () => void runExport());
+$("cancelexport").addEventListener("click", () => exportAbort?.abort());
 
 // ---- library -------------------------------------------------------------
 

@@ -82,8 +82,12 @@ Two things this settles:
    preview visiting them **shuffled** (a scrub is not a playthrough), 0 mismatches. Plus three
    E2E tests driving the real app: a take renders actual pixels rather than an empty canvas,
    scrubbing changes the frame, and pause really pauses.
-4. **Export from the UI** — with progress and cancellation. Gate: a UI export and a CLI export of
-   the same take produce identical pre-encode hashes.
+4. **Export from the UI** *(done)* — with progress and cancellation. Gate: a UI export and a CLI
+   export of the same take produce identical pre-encode hashes (`npm run test:slow` — it runs one
+   UI export and two CLI exports, so it takes minutes and is not in `npm test`). Export is ONE
+   implementation in `transform/src/export.ts` called by both the app and the gates; a second copy
+   would make that gate compare two programs rather than verify one. Each export writes a manifest
+   recording its pre-encode hash — an export nobody can verify is an export nobody can trust.
 5. **Take management** — reveal in Finder, delete with confirmation, rename.
 
 ## Non-goals for phase 2
