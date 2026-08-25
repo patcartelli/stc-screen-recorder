@@ -77,10 +77,18 @@ final class CaptureSession: NSObject, SCStreamOutput, SCStreamDelegate {
 
     private func begin(display: SCDisplay, completion: @escaping (Result<[String: Any], Error>) -> Void) {
         // CaptureDecisions.swift hardcodes this so it can be compiled without
-        // ScreenCaptureKit. If the framework ever renumbers, fail loudly here
+        // ScreenCaptureKit. If the framework ever renumbers, refuse to start
         // rather than silently discarding every frame as "not complete".
-        precondition(SCFrameStatus.complete.rawValue == SCFrameStatusCompleteRaw,
-                     "SCFrameStatus.complete is no longer \(SCFrameStatusCompleteRaw)")
+        //
+        // NOT a precondition: this is the capture helper, and the whole protocol
+        // rests on it answering every request. Trapping turns a diagnosable
+        // "start failed, here is why" into the parent seeing SIGTRAP and having
+        // to guess. It cost a CI failure to notice.
+        guard SCFrameStatus.complete.rawValue == SCFrameStatusCompleteRaw else {
+            completion(.failure(CaptureError.frameStatusMismatch(
+                actual: SCFrameStatus.complete.rawValue)))
+            return
+        }
         displayID = display.displayID
         pointW = display.width
         pointH = display.height
@@ -388,6 +396,7 @@ enum CaptureError: Error, CustomStringConvertible {
     case writerFailed(Error?)
     case streamFailed(Error)
     case startTimedOut
+    case frameStatusMismatch(actual: Int)
 
     var description: String {
         switch self {
@@ -397,6 +406,9 @@ enum CaptureError: Error, CustomStringConvertible {
         case .writerFailed(let e): return "AVAssetWriter failed to start: \(e.map { "\($0)" } ?? "unknown")"
         case .streamFailed(let e): return "SCStream failed to start: \(e)"
         case .startTimedOut: return "capture did not start within 15s and reported no error"
+        case .frameStatusMismatch(let actual):
+            return "SCFrameStatus.complete is \(actual), not \(SCFrameStatusCompleteRaw) — "
+                 + "CaptureDecisions.swift must be updated or every frame will be discarded"
         }
     }
     var code: String {
@@ -406,6 +418,7 @@ enum CaptureError: Error, CustomStringConvertible {
         case .writerFailed: return "writer-failed"
         case .streamFailed: return "stream-failed"
         case .startTimedOut: return "start-timeout"
+        case .frameStatusMismatch: return "frame-status-mismatch"
         }
     }
 }
