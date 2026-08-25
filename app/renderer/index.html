@@ -2,7 +2,7 @@
 <html>
 <head>
   <meta charset="utf-8">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'unsafe-inline'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; img-src 'self' data:">
   <title>stc recorder</title>
   <style>
     :root { color-scheme: light dark; font: 13px/1.5 -apple-system, system-ui, sans-serif; }
@@ -26,6 +26,11 @@
     .take button { padding: 3px 10px; font-size: 12px; }
     .broken { color: #c2553c; font-size: 12px; padding: 6px 0; }
     #empty { opacity: .5; padding: 6px 0; }
+    #player[hidden] { display: none; }
+    #stage { width: 100%; height: auto; background: #000; border-radius: 6px; display: block; }
+    .transport { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
+    .transport input[type=range] { flex: 1; }
+    #clock { font-variant-numeric: tabular-nums; font-size: 12px; opacity: .7; min-width: 84px; }
   </style>
 </head>
 <body>
@@ -45,6 +50,16 @@
       <tr><td>elapsed</td><td id="elapsed">—</td></tr>
     </tbody>
   </table>
+  <div id="player" hidden>
+    <canvas id="stage"></canvas>
+    <div class="transport">
+      <button id="playpause">Play</button>
+      <input id="scrub" type="range" min="0" max="1000" value="0" step="1">
+      <span id="clock">0:00 / 0:00</span>
+      <button id="closepreview">Close</button>
+    </div>
+  </div>
+
   <h2 id="lib-heading">Recordings</h2>
   <div id="takes"></div>
   <script src="../dist/renderer.js"></script>

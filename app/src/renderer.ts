@@ -6,11 +6,18 @@ interface Take {
 declare const recorder: {
   status(): Promise<{ state: string; pid?: number }>;
   takes(): Promise<{ takes: Take[]; invalid: { name: string; reason: string }[] }>;
+  openPreview(dir: string): Promise<boolean>;
+  closePreview(): Promise<void>;
+  readTakeFile(name: string): Promise<ArrayBuffer>;
   start(): Promise<{ ok: boolean; dir?: string; code?: string; detail?: string }>;
   stop(): Promise<{ ok: boolean; info?: any }>;
   reveal(dir: string): Promise<void>;
   on(event: string, cb: (p: any) => void): () => void;
 };
+
+import { loadSession } from "@transform/session";
+import { PreviewPlayer } from "@transform/preview";
+import type { Project } from "@transform/types";
 
 const $ = (id: string) => document.getElementById(id)!;
 const recordBtn = $("record") as HTMLButtonElement;
@@ -100,6 +107,75 @@ const fmtDuration = (ms: number) => {
 const fmtSize = (b: number) =>
   b >= 1e9 ? `${(b / 1e9).toFixed(1)} GB` : `${Math.round(b / 1e6)} MB`;
 
+// ---- preview -------------------------------------------------------------
+
+let player: PreviewPlayer | undefined;
+let scrubbing = false;
+
+const fmtClock = (ns: number) => {
+  const s = Math.max(0, Math.round(ns / 1e9));
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+};
+
+async function openPreview(take: Take): Promise<void> {
+  await closePreview();
+  await recorder.openPreview(take.dir);
+
+  // Bytes come over IPC from the take main deliberately opened; the renderer
+  // never names a path.
+  const dec = new TextDecoder();
+  const [anchors, events, mp4] = await Promise.all([
+    recorder.readTakeFile("anchors.json").then((b) => JSON.parse(dec.decode(b))),
+    recorder.readTakeFile("events.json").then((b) => JSON.parse(dec.decode(b)))
+      .catch(() => ({ version: 1, events: [] })),
+    recorder.readTakeFile("display.mp4"),
+  ]);
+  const session = await loadSession({ anchors, events, displayMp4: mp4 });
+  const project: Project = {
+    version: 1,
+    output: { fps: 60, width: anchors.capture.width, height: anchors.capture.height },
+    cursor: { style: "default", scale: 1 },
+  };
+
+  player = new PreviewPlayer($("stage") as HTMLCanvasElement, session, project);
+  const scrub = $("scrub") as HTMLInputElement;
+  player.onTime = (tNs, playing) => {
+    $("clock").textContent = `${fmtClock(tNs)} / ${fmtClock(player!.durationNs)}`;
+    ($("playpause") as HTMLButtonElement).textContent = playing ? "Pause" : "Play";
+    if (!scrubbing) scrub.value = String(Math.round((tNs / (player!.durationNs || 1)) * 1000));
+  };
+  $("player").removeAttribute("hidden");
+  // Open on the first frame that actually renders, not on t=0. A take's first
+  // frame lands a couple of hundred milliseconds in (capture starts after the
+  // command), so seeking to zero is correct by the contract — "no frame yet" —
+  // and shows the user a black rectangle that looks like a broken player.
+  await player.seek(player.firstRenderableNs);
+}
+
+async function closePreview(): Promise<void> {
+  player?.close();
+  player = undefined;
+  $("player").setAttribute("hidden", "");
+  await recorder.closePreview();
+}
+
+$("playpause").addEventListener("click", () => {
+  if (!player) return;
+  player.isPlaying ? player.pause() : player.play();
+  ($("playpause") as HTMLButtonElement).textContent = player.isPlaying ? "Pause" : "Play";
+});
+$("closepreview").addEventListener("click", () => void closePreview());
+$("scrub").addEventListener("pointerdown", () => { scrubbing = true; });
+$("scrub").addEventListener("pointerup", () => { scrubbing = false; });
+$("scrub").addEventListener("input", () => {
+  if (!player) return;
+  // Fire and forget: the source supersedes stale requests, so a drag does not
+  // queue up dozens of decodes.
+  void player.seek((Number(($("scrub") as HTMLInputElement).value) / 1000) * player.durationNs);
+});
+
+// ---- library -------------------------------------------------------------
+
 async function refreshTakes(): Promise<void> {
   const { takes, invalid } = await recorder.takes();
   const host = $("takes");
@@ -124,10 +200,17 @@ async function refreshTakes(): Promise<void> {
     meta.textContent = `${fmtDuration(t.durationMs)} · ${t.width}×${t.height} · ` +
                        `${t.events} events · ${fmtSize(t.bytes)}`;
     left.append(title, meta);
+    const openBtn = document.createElement("button");
+    openBtn.textContent = "Preview";
+    openBtn.addEventListener("click", () => void openPreview(t));
     const btn = document.createElement("button");
     btn.textContent = "Show";
     btn.addEventListener("click", () => recorder.reveal(t.dir));
-    row.append(left, btn);
+    const actions = document.createElement("div");
+    actions.append(openBtn, btn);
+    actions.style.display = "flex";
+    actions.style.gap = "6px";
+    row.append(left, actions);
     host.append(row);
   }
 

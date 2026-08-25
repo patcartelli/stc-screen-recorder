@@ -2,6 +2,7 @@ import { app, BrowserWindow, ipcMain, dialog, shell } from "electron";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { existsSync, readdirSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { HelperSupervisor } from "./supervisor.js";
 import { newTakeDir, takesRoot, listTakes } from "./takes.js";
 
@@ -17,6 +18,18 @@ const HELPER = join(here, "..", "..", "helper", "build", "stc-helper");
 
 let win: BrowserWindow | undefined;
 let sup: HelperSupervisor | undefined;
+/** The take the renderer may currently read, set only by preview:open. */
+let openTake: string | undefined;
+
+// The renderer is sandboxed and cannot read files. It gets bytes over IPC and
+// never names a path: it may ask for one of three fixed filenames, and only
+// from the take the main process deliberately opened.
+//
+// A custom protocol was the first attempt and cannot work here — the window is
+// loaded from file://, and Chromium refuses cross-origin fetches from a file
+// origin to any non-http scheme. Serving the app itself over a custom scheme
+// would fix that, but IPC removes the origin question altogether.
+const TAKE_FILES = new Set(["anchors.json", "events.json", "display.mp4"]);
 
 function send(channel: string, payload: unknown): void {
   if (win && !win.isDestroyed()) win.webContents.send(channel, payload);
@@ -87,6 +100,22 @@ ipcMain.handle("recorder:stop", async () => {
 });
 
 ipcMain.handle("recorder:takes", async () => listTakes(process.env));
+
+ipcMain.handle("preview:open", async (_e, dir: string) => {
+  const root = takesRoot(process.env);
+  if (!dir.startsWith(root)) throw new Error("refusing to open a path outside the recordings folder");
+  openTake = dir;
+  return true;
+});
+
+ipcMain.handle("preview:close", async () => { openTake = undefined; });
+
+ipcMain.handle("preview:read", async (_e, name: string) => {
+  if (!openTake) throw new Error("no take is open");
+  if (!TAKE_FILES.has(name)) throw new Error(`refusing to read "${name}"`);
+  const buf = await readFile(join(openTake, name));
+  return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+});
 
 ipcMain.handle("recorder:reveal", async (_e, dir: string) => {
   // Only ever reveal something inside the recordings folder: `dir` arrives from

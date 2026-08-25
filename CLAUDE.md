@@ -194,6 +194,13 @@ reachable via KVC (`setValue(3, forKey: "captureResolution")`, verified in phase
   SecurityAgent prompt, and an unattended build then hangs *forever* rather than failing. If a
   build wedges, look for the dialog (and answer "Always Allow", not "Allow"). A `timeout` around
   codesign kills the dialog before a human can find it.
+- **Seeking to a frame's exact PTS can land BEFORE it** — `seek()` floors time to a 120 Hz tick,
+  and the floor of a first frame at 209.1 ms is 208.33 ms, where frame selection correctly reports
+  "nothing yet" and paints black. Round up: `PreviewPlayer.firstRenderableNs`.
+- **A custom protocol cannot be fetched from a `file://` window** — Chromium blocks cross-origin
+  fetches from a file origin to any non-http scheme, so `protocol.handle` is useless unless the
+  app itself is served over a custom scheme. The preview passes bytes over IPC instead, which also
+  means the renderer never names a path.
 - **A `VideoDecoder` can swallow input and emit nothing** — it buffers before its first output,
   so waiting for output when the queue has drained deadlocks on a perfectly healthy decoder. Feed
   more, flush only when there is nothing left to feed, and never wait unbounded. Related: flushing

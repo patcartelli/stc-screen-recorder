@@ -77,10 +77,11 @@ Two things this settles:
    `VideoFrame` is leaked. Verification pixel-probes the 12-bit index block row that
    `fixtures/gen-display.swift` draws into every frame, so a seek proves it returned the frame
    asked for rather than a plausible neighbour.
-3. **Preview player** — canvas + transport, every frame from `render()` and the shared
-   compositor. **Gate: preview at time `t` is byte-identical to export at time `t`, measured in
-   the app.** This is the increment-0 gate re-run against the real product rather than a harness,
-   and it is the one that proves the two-sink contract actually holds where it matters.
+3. **Preview player** *(done — `npm run gate:identity`)* — canvas + transport, every frame from
+   `render()` and the shared compositor. Gate: 60 sampled `t`, export visiting them ascending and
+   preview visiting them **shuffled** (a scrub is not a playthrough), 0 mismatches. Plus three
+   E2E tests driving the real app: a take renders actual pixels rather than an empty canvas,
+   scrubbing changes the frame, and pause really pauses.
 4. **Export from the UI** — with progress and cancellation. Gate: a UI export and a CLI export of
    the same take produce identical pre-encode hashes.
 5. **Take management** — reveal in Finder, delete with confirmation, rename.
