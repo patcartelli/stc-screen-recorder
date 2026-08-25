@@ -113,3 +113,35 @@ describe("HelperClient — lifecycle", () => {
     await expect(exited).resolves.toBeDefined();
   });
 });
+
+describe("HelperClient — diagnostics when the helper dies", () => {
+  test("keeps the helper's stderr instead of discarding it", async () => {
+    const c = client();
+    await c.ready();
+    // The helper logs its shutdown reason to stderr.
+    await c.request("quit").catch(() => {});
+    await c.waitForExit();
+    expect(c.recentStderr).toMatch(/shutdown/i);
+  });
+
+  test("a crash rejects with the helper's own last words, not just a signal", async () => {
+    // Three separate crashes on CI produced only "helper exited (code null,
+    // signal SIGSEGV|SIGTRAP)" — no stack, no message, nothing to act on —
+    // because stderr was drained and thrown away. See STC-254.
+    const c = client();
+    await c.ready();
+    await c.request("quit").catch(() => {});
+    await c.waitForExit();
+
+    const err = await c.request("status").catch((e) => e as Error);
+    expect(err).toBeInstanceOf(Error);
+    expect(err.message).toMatch(/exited/);
+    expect(err.message, "the exit error should carry stderr").toMatch(/shutdown/i);
+  });
+
+  test("stderr is bounded — a chatty helper cannot grow memory without limit", async () => {
+    const c = client();
+    await c.ready();
+    expect(c.recentStderr.length).toBeLessThan(64 * 1024);
+  });
+});

@@ -179,7 +179,38 @@ final class App {
 
     /// Phase 0 §2a: being killed while holding a capture device wedged CoreAudio system-wide.
     /// Background queue on purpose — these must fire even if the main thread is blocked.
+    /// Leaves a trace when the process is killed by a fault rather than asked to
+    /// stop. SIGSEGV/SIGBUS/SIGILL/SIGABRT do not go through the graceful path,
+    /// so without this the parent sees only a signal number — which is exactly
+    /// what three CI crashes produced (STC-254).
+    ///
+    /// Deliberately minimal: only async-signal-safe work. `write(2)` to fd 2 is
+    /// safe; anything that allocates, locks, or formats is not, and a crash
+    /// handler that crashes tells you even less than none.
+    private func installCrashHandlers() {
+        for sig in [SIGSEGV, SIGBUS, SIGILL, SIGFPE, SIGABRT] {
+            signal(sig) { received in
+                let name: StaticString
+                switch received {
+                case SIGSEGV: name = "SIGSEGV\n"
+                case SIGBUS:  name = "SIGBUS\n"
+                case SIGILL:  name = "SIGILL\n"
+                case SIGFPE:  name = "SIGFPE\n"
+                default:      name = "SIGABRT\n"
+                }
+                let prefix: StaticString = "[helper] FATAL signal "
+                prefix.withUTF8Buffer { _ = write(2, $0.baseAddress, $0.count) }
+                name.withUTF8Buffer { _ = write(2, $0.baseAddress, $0.count) }
+                // Restore the default and re-raise so the OS still writes a
+                // crash report — the stack trace lives there, not here.
+                signal(received, SIG_DFL)
+                raise(received)
+            }
+        }
+    }
+
     private func installSignalHandlers() {
+        installCrashHandlers()
         for sig in [SIGINT, SIGTERM, SIGHUP] {
             signal(sig, SIG_IGN)
             let src = DispatchSource.makeSignalSource(signal: sig,

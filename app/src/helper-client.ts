@@ -45,10 +45,13 @@ export class HelperClient {
   private readonly pending = new Map<number, Pending>();
   private readonly handlers = new Map<string, Set<Handler>>();
   private readonly defaultTimeoutMs: number;
+  /** Bounded: a chatty helper must not grow this without limit. */
+  private static readonly STDERR_KEEP = 16 * 1024;
   private seq = 0;
   private exitInfo: { code: number | null; signal: string | null } | undefined;
   private readonly exitWaiters: ((v: { code: number | null; signal: string | null }) => void)[] = [];
   private readyLine: HelperLine | undefined;
+  private stderrTail = "";
   private readyWaiters: ((l: HelperLine) => void)[] = [];
 
   private constructor(private readonly proc: ChildProcess, opts: SpawnOptions) {
@@ -80,11 +83,21 @@ export class HelperClient {
     // a dropped stat must never look like a lost response.
     this.readLines(proc.stdout!, (line) => this.emit(line));
 
+    // Keep the helper's last words. Three crashes on CI produced only a signal
+    // number — SIGTRAP, then a hung stop, then SIGSEGV — with no stack and no
+    // message, because stderr was drained and discarded here. A dying child
+    // process's stderr is usually the only thing that explains it (STC-254).
+    proc.stderr?.on("data", (chunk: Buffer) => {
+      this.stderrTail = (this.stderrTail + chunk.toString("utf8")).slice(-HelperClient.STDERR_KEEP);
+    });
     proc.stderr?.resume();
 
     proc.on("exit", (code, signal) => {
       this.exitInfo = { code, signal };
-      const err = new Error(`helper exited (code ${code}, signal ${signal})`);
+      const err = new Error(
+        `helper exited (code ${code}, signal ${signal})` +
+        (this.stderrTail.trim() ? `\nhelper stderr:\n${this.stderrTail.trim()}` : ""),
+      );
       for (const [, p] of this.pending) { clearTimeout(p.timer); p.reject(err); }
       this.pending.clear();
       this.exitWaiters.splice(0).forEach((w) => w(this.exitInfo!));
@@ -96,6 +109,9 @@ export class HelperClient {
     const proc = spawn(binPath, argv, { stdio: ["pipe", "pipe", "pipe", "pipe"] });
     return new HelperClient(proc, opts);
   }
+
+  /** The helper's most recent stderr, kept for when it dies without explaining itself. */
+  get recentStderr(): string { return this.stderrTail; }
 
   /** Resolves with the helper's `ready` line (immediately if already seen). */
   ready(timeoutMs = 10_000): Promise<HelperLine> {
@@ -109,7 +125,10 @@ export class HelperClient {
   request(cmd: string, params: Record<string, unknown> = {},
           opts: { timeoutMs?: number } = {}): Promise<HelperLine> {
     if (this.exitInfo) {
-      return Promise.reject(new Error(`helper already exited (code ${this.exitInfo.code})`));
+      return Promise.reject(new Error(
+        `helper already exited (code ${this.exitInfo.code}, signal ${this.exitInfo.signal})` +
+        (this.stderrTail.trim() ? `\nhelper stderr:\n${this.stderrTail.trim()}` : ""),
+      ));
     }
     const seq = ++this.seq;
     const timeoutMs = opts.timeoutMs ?? this.defaultTimeoutMs;
