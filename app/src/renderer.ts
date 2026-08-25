@@ -11,6 +11,8 @@ declare const recorder: {
   openPreview(dir: string): Promise<boolean>;
   closePreview(): Promise<void>;
   readTakeFile(name: string): Promise<ArrayBuffer>;
+  takeFileSize(name: string): Promise<number>;
+  readTakeChunk(name: string, offset: number, length: number): Promise<ArrayBuffer>;
   writeExport(name: string, bytes: ArrayBuffer): Promise<string>;
   start(): Promise<{ ok: boolean; dir?: string; code?: string; detail?: string }>;
   stop(): Promise<{ ok: boolean; info?: any }>;
@@ -138,6 +140,28 @@ async function openPreview(take: Take): Promise<void> {
   }
 }
 
+/** Slice size: big enough that the per-message overhead is noise, small enough
+ *  that the transient copy is a rounding error against the take itself. */
+const VIDEO_CHUNK_BYTES = 32 * 1024 * 1024;
+
+/**
+ * Reads display.mp4 into ONE buffer allocated up front.
+ *
+ * A single-message read makes the file exist twice at the same instant — the
+ * copy IPC delivers plus the copy the renderer keeps — which measured ~949 MB
+ * of heap for a 458 MB take. Assembling slices into a pre-allocated destination
+ * keeps the peak at roughly the file size plus one slice.
+ */
+async function readVideo(): Promise<ArrayBuffer> {
+  const size = await recorder.takeFileSize("display.mp4");
+  const out = new Uint8Array(size);
+  for (let offset = 0; offset < size; offset += VIDEO_CHUNK_BYTES) {
+    const length = Math.min(VIDEO_CHUNK_BYTES, size - offset);
+    out.set(new Uint8Array(await recorder.readTakeChunk("display.mp4", offset, length)), offset);
+  }
+  return out.buffer;
+}
+
 async function openPreviewOrThrow(take: Take): Promise<void> {
   await closePreview();
   await recorder.openPreview(take.dir);
@@ -149,7 +173,7 @@ async function openPreviewOrThrow(take: Take): Promise<void> {
     recorder.readTakeFile("anchors.json").then((b) => JSON.parse(dec.decode(b))),
     recorder.readTakeFile("events.json").then((b) => JSON.parse(dec.decode(b)))
       .catch(() => ({ version: 1, events: [] })),
-    recorder.readTakeFile("display.mp4"),
+    readVideo(),
   ]);
   const session = await loadSession({ anchors, events, displayMp4: mp4 });
   const project: Project = {

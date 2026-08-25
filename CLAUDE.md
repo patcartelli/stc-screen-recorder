@@ -215,6 +215,12 @@ reachable via KVC (`setValue(3, forKey: "captureResolution")`, verified in phase
   promise wrapping it never settles and the caller waits forever with no error and no stack.
   `demux.ts` checks `sawReady` after the synchronous parse and carries a watchdog. Any callback
   API wrapped in a promise needs the same question asked: what happens when it stays silent?
+- **`performance.memory.usedJSHeapSize` does not count ArrayBuffers** — they live outside V8's
+  heap, so a 458 MB buffer can read as "0 MB heap growth". Measure renderer RSS via
+  `app.getAppMetrics()` instead; anything else quietly measures nothing.
+- **Preview holds the whole video in memory** — measured 458 MB file → +548 MB renderer RSS
+  (chunked; it was +862 MB read in one message). Roughly 1.2x the file, so a ~15-minute 4K take is
+  the practical ceiling before the renderer is in trouble.
 - **Tests must not depend on `~/Desktop/stc`** — four E2E files used to reach for "whatever real
   recording is there". That broke the moment those takes were deleted and CI could never have run
   them. `app/test/_take-fixture.ts` copies the committed `fixtures/basic` session instead; the

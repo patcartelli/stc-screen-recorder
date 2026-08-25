@@ -2,7 +2,7 @@ import { app, BrowserWindow, ipcMain, dialog, shell } from "electron";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { existsSync, readdirSync } from "node:fs";
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile, writeFile, stat, open } from "node:fs/promises";
 import { HelperSupervisor } from "./supervisor.js";
 import { newTakeDir, takesRoot, listTakes, setTakeLabel } from "./takes.js";
 
@@ -157,6 +157,36 @@ ipcMain.handle("preview:read", async (_e, name: string) => {
   if (!TAKE_FILES.has(name)) throw new Error(`refusing to read "${name}"`);
   const buf = await readFile(join(openTake, name));
   return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+});
+
+ipcMain.handle("preview:size", async (_e, name: string) => {
+  if (!openTake) throw new Error("no take is open");
+  if (!TAKE_FILES.has(name)) throw new Error(`refusing to stat "${name}"`);
+  return (await stat(join(openTake, name))).size;
+});
+
+/**
+ * One slice of a take file.
+ *
+ * Reading a whole recording in a single IPC message means the buffer exists
+ * twice at once — measured at ~949 MB of renderer heap for a 458 MB take — and
+ * that peak, not the transfer (835 ms, fast), is what limits how long a take
+ * can be. Slices land directly in a destination the renderer allocated once.
+ */
+ipcMain.handle("preview:chunk", async (_e, name: string, offset: number, length: number) => {
+  if (!openTake) throw new Error("no take is open");
+  if (!TAKE_FILES.has(name)) throw new Error(`refusing to read "${name}"`);
+  if (!Number.isInteger(offset) || offset < 0 || !Number.isInteger(length) || length <= 0) {
+    throw new Error("bad chunk range");
+  }
+  const fh = await open(join(openTake, name), "r");
+  try {
+    const buf = Buffer.allocUnsafe(length);
+    const { bytesRead } = await fh.read(buf, 0, length, offset);
+    return buf.buffer.slice(buf.byteOffset, buf.byteOffset + bytesRead);
+  } finally {
+    await fh.close();
+  }
 });
 
 ipcMain.handle("recorder:reveal", async (_e, dir: string) => {

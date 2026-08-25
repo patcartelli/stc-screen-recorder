@@ -111,6 +111,14 @@ Trimming and editing (the `project` schema has room; the UI does not), real curs
 camera PiP, audio of any kind, uploads, anything cross-platform. Recording remains
 start/stop-only — no pause.
 
+## Known limits (measured)
+
+| | |
+|---|---|
+| preview memory | 458 MB take → +548 MB renderer RSS (~1.2x). A ~15-minute 4K take is the practical ceiling. |
+| export speed | 11.0 ms/frame at 4K = 1.52x realtime. A 5-minute take exports in ~3.3 min. |
+| cursor | a placeholder circle, not real pointer artwork |
+
 ## Risks
 
 | risk | approach |
