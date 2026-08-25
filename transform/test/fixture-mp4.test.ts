@@ -76,3 +76,36 @@ describe("demux honours the edit list", () => {
     expect(video.framesNs).toEqual(framesNs);
   });
 });
+
+describe("demux refuses unreadable input instead of hanging", () => {
+  // A promise that never settles is the least debuggable failure available: no
+  // error, no stack, no timeout — just a button that does nothing forever.
+  // mp4box calls neither onReady nor onError for a file with no valid boxes.
+  const settles = async (buf: ArrayBuffer) => {
+    const { demuxDisplayMp4 } = await import("../src/demux.js");
+    return Promise.race([
+      demuxDisplayMp4(buf).then(() => "resolved", (e) => `rejected: ${e.message}`),
+      new Promise<string>((r) => setTimeout(() => r("HUNG"), 4000)),
+    ]);
+  };
+
+  test("garbage bytes reject", async () => {
+    const out = await settles(new Uint8Array(8192).fill(0x41).buffer);
+    expect(out).not.toBe("HUNG");
+    expect(out).toMatch(/rejected/);
+  }, 15_000);
+
+  test("an empty file rejects", async () => {
+    const out = await settles(new ArrayBuffer(0));
+    expect(out).not.toBe("HUNG");
+    expect(out).toMatch(/rejected/);
+  }, 15_000);
+
+  test("a truncated real mp4 rejects rather than hanging", async () => {
+    const full = readFileSync(join(root, "fixtures", "basic", "display.mp4"));
+    const half = full.subarray(0, Math.floor(full.length / 3));
+    const ab = half.buffer.slice(half.byteOffset, half.byteOffset + half.byteLength) as ArrayBuffer;
+    const out = await settles(ab);
+    expect(out).not.toBe("HUNG");
+  }, 15_000);
+});

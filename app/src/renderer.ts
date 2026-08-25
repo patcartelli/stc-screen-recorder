@@ -126,6 +126,19 @@ const fmtClock = (ns: number) => {
 };
 
 async function openPreview(take: Take): Promise<void> {
+  try {
+    await openPreviewOrThrow(take);
+  } catch (e: any) {
+    // loadSession and the demuxer write specific, actionable messages — an
+    // offset disagreement, an unsupported version, a file with no frames.
+    // Swallowing them leaves a button that does nothing, which is the least
+    // debuggable failure the app can have.
+    await closePreview();
+    alertUser(`Could not open "${take.label ?? take.name}".\n${e?.message ?? e}`);
+  }
+}
+
+async function openPreviewOrThrow(take: Take): Promise<void> {
   await closePreview();
   await recorder.openPreview(take.dir);
 
@@ -155,12 +168,14 @@ async function openPreview(take: Take): Promise<void> {
     ($("playpause") as HTMLButtonElement).textContent = playing ? "Pause" : "Play";
     if (!scrubbing) scrub.value = String(Math.round((tNs / (player!.durationNs || 1)) * 1000));
   };
-  $("player").removeAttribute("hidden");
+  // Revealed only once a frame has actually been drawn, so a failure part-way
+  // through never leaves a half-open player on screen.
   // Open on the first frame that actually renders, not on t=0. A take's first
   // frame lands a couple of hundred milliseconds in (capture starts after the
   // command), so seeking to zero is correct by the contract — "no frame yet" —
   // and shows the user a black rectangle that looks like a broken player.
   await player.seek(player.firstRenderableNs);
+  $("player").removeAttribute("hidden");
 }
 
 async function closePreview(): Promise<void> {

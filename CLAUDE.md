@@ -211,6 +211,10 @@ reachable via KVC (`setValue(3, forKey: "captureResolution")`, verified in phase
   fetches from a file origin to any non-http scheme, so `protocol.handle` is useless unless the
   app itself is served over a custom scheme. The preview passes bytes over IPC instead, which also
   means the renderer never names a path.
+- **mp4box reports a malformed file by never calling back** — no `onReady`, no `onError`, so a
+  promise wrapping it never settles and the caller waits forever with no error and no stack.
+  `demux.ts` checks `sawReady` after the synchronous parse and carries a watchdog. Any callback
+  API wrapped in a promise needs the same question asked: what happens when it stays silent?
 - **A `VideoDecoder` can swallow input and emit nothing** — it buffers before its first output,
   so waiting for output when the queue has drained deadlocks on a perfectly healthy decoder. Feed
   more, flush only when there is nothing left to feed, and never wait unbounded. Related: flushing

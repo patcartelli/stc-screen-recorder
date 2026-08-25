@@ -22,10 +22,25 @@ export interface DemuxedVideo {
 export function demuxDisplayMp4(buf: ArrayBuffer): Promise<DemuxedVideo> {
   return new Promise((resolve, reject) => {
     const file = MP4Box.createFile();
-    file.onError = (e: unknown) => reject(new Error(`mp4box: ${String(e)}`));
+    let sawReady = false;
+    let settled = false;
+    const finish = (fn: () => void) => { if (!settled) { settled = true; fn(); } };
+    const fail = (msg: string) => finish(() => reject(new Error(msg)));
+
+    // Backstop. mp4box signals a malformed file by simply never calling back —
+    // no onReady, no onError — so without this the promise never settles and
+    // the caller waits forever with no error, no stack and nothing to debug.
+    // Same shape as PHASE-0 §4b.5, reached from a different direction.
+    const watchdog = setTimeout(
+      () => fail("timed out reading display.mp4 — the file may be truncated or not an MP4"),
+      15_000,
+    );
+
+    file.onError = (e: unknown) => { clearTimeout(watchdog); fail(`mp4box: ${String(e)}`); };
     file.onReady = (info: any) => {
+      sawReady = true;
       const track = info.videoTracks[0];
-      if (!track) { reject(new Error("no video track")); return; }
+      if (!track) { clearTimeout(watchdog); fail("no video track in display.mp4"); return; }
 
       // avcC description: serialize the box, strip the 8-byte box header.
       // NB PHASE-0 §4b.5: DataStream must come off the module export in use.
@@ -68,7 +83,8 @@ export function demuxDisplayMp4(buf: ArrayBuffer): Promise<DemuxedVideo> {
           if (!Number.isInteger(pts)) throw new Error(`non-integer ns PTS: cts=${s.cts} timescale=${s.timescale}`);
           return pts;
         });
-        resolve({
+        clearTimeout(watchdog);
+        finish(() => resolve({
           framesNs,
           codec: track.codec,
           codedWidth: track.track_width,
@@ -79,14 +95,27 @@ export function demuxDisplayMp4(buf: ArrayBuffer): Promise<DemuxedVideo> {
             timestampUs: Math.round((s.cts * (1_000_000_000 / s.timescale) + editOffsetNs) / 1000),
             data: s.data as Uint8Array,
           })),
-        });
+        }));
       };
       file.setExtractionOptions(track.id, null, { nbSamples: track.nb_samples });
       file.start();
     };
     const ab = buf as ArrayBuffer & { fileStart: number };
     ab.fileStart = 0;
-    file.appendBuffer(ab);
-    file.flush();
+    try {
+      file.appendBuffer(ab);
+      file.flush();
+    } catch (e) {
+      clearTimeout(watchdog);
+      fail(`could not parse display.mp4: ${String(e)}`);
+      return;
+    }
+
+    // Parsing is synchronous: by this point a valid file has produced onReady.
+    // If it has not, there is no usable moov and no callback is coming.
+    if (!sawReady) {
+      clearTimeout(watchdog);
+      fail("display.mp4 is not a readable MP4 — no track information found");
+    }
   });
 }

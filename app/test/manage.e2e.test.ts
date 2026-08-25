@@ -115,3 +115,26 @@ describe("take management", () => {
     expect(await win.textContent("#takes")).toContain("2026-08-24_10-00-00");
   }, 120_000);
 });
+
+describe("opening a take that cannot be read", () => {
+  test("reports the failure instead of leaving a dead button", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "stc-corrupt-"));
+    const takeDir = fakeTake(dir, "2026-08-24_10-00-00");
+    // Lists fine (anchors valid, video non-empty) but is not decodable. This is
+    // the shape of a truncated or half-written recording.
+    writeFileSync(join(takeDir, "display.mp4"), Buffer.alloc(8192, 0x41));
+
+    const win = await launch(dir);
+    await expect.poll(() => win.textContent("#takes"), { timeout: 20_000 }).toContain("2026-08-24");
+    await win.click("#takes >> text=Preview");
+
+    // loadSession writes careful error messages; they must reach the user
+    // rather than becoming an unhandled rejection nobody sees.
+    await expect.poll(() => win.locator("#alert").isVisible(), { timeout: 30_000 }).toBe(true);
+    expect(await win.textContent("#alert")).toMatch(/could not open|no frames|unreadable|failed/i);
+
+    // The player must not be left half-open, and the app must stay usable.
+    expect(await win.isVisible("#player")).toBe(false);
+    expect(await win.locator("#takes >> text=Preview").isEnabled()).toBe(true);
+  }, 120_000);
+});
