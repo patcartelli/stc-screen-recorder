@@ -1,0 +1,74 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+
+jobs:
+  test:
+    # macOS is not a preference: the helper is Swift against ScreenCaptureKit,
+    # and the transform's sinks need a Chrome with H.264 (WebCodecs).
+    runs-on: macos-15
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Show toolchain
+        run: |
+          swift --version
+          xcrun --show-sdk-path
+          node --version
+
+      # A non-zero exit must fail the job: swiftc leaves the PREVIOUS binary in
+      # place on failure, so an unchecked build silently tests stale code.
+      - name: Build helper
+        run: ./helper/build.sh
+
+      - name: Typecheck
+        run: npx tsc --noEmit
+
+      # Everything that runs anywhere. Excludes *.grant.test.ts (needs a Screen
+      # Recording grant, which no CI runner can give) and *.slow.test.ts.
+      - name: Test
+        run: npm test
+
+      # Real Chrome, not bundled Chromium: the bundled build lacks H.264, and
+      # every sink in this project is H.264 end to end.
+      - name: Install Chrome
+        run: npx playwright install chrome
+
+      - name: Determinism gate (fixture)
+        run: npm run gate
+
+      - name: Seek gate (fixture)
+        run: npm run gate:seek
+
+      # Gates that need a recorded session build one from the committed fixture,
+      # since CI has no screen to record and no grant to record it with.
+      - name: Export and identity gates (fixture session)
+        run: |
+          TAKE="$(mktemp -d)/2026-01-01_00-00-00"
+          mkdir -p "$TAKE"
+          cp fixtures/basic/anchors.json fixtures/basic/events.json fixtures/basic/display.mp4 "$TAKE/"
+          npm run gate:export -- "$TAKE"
+          node scripts/identity-gate.mjs "$TAKE"
+
+      - name: Upload failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: failure-logs
+          path: |
+            helper/build/
+            app/dist/
+          retention-days: 5
