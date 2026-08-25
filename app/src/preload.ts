@@ -16,6 +16,7 @@ contextBridge.exposeInMainWorld("recorder", {
   takeFileSize: (name: string) => ipcRenderer.invoke("preview:size", name),
   readTakeChunk: (name: string, offset: number, length: number) =>
     ipcRenderer.invoke("preview:chunk", name, offset, length),
+  writeProject: (bytes: ArrayBuffer) => ipcRenderer.invoke("preview:writeProject", bytes),
   writeExport: (name: string, bytes: ArrayBuffer) => ipcRenderer.invoke("export:write", name, bytes),
   start: () => ipcRenderer.invoke("recorder:start"),
   stop: () => ipcRenderer.invoke("recorder:stop"),

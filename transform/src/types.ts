@@ -35,10 +35,18 @@ export interface Anchors {
 }
 
 /** Mirrors schema/project-1.schema.json. */
+export interface Trim {
+  startNs: number;
+  endNs: number;
+}
+
+/** Mirrors schema/project-1.schema.json. */
 export interface Project {
   version: 1;
   output: { fps: 60; width: number; height: number };
   cursor: { style: "default"; scale: number };
+  /** Absent means the full take. */
+  trim?: Trim;
 }
 
 /**
