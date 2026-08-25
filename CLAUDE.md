@@ -225,6 +225,12 @@ reachable via KVC (`setValue(3, forKey: "captureResolution")`, verified in phase
   recording is there". That broke the moment those takes were deleted and CI could never have run
   them. `app/test/_take-fixture.ts` copies the committed `fixtures/basic` session instead; the
   GATES still default to a real take, which is where 4K behaviour gets exercised.
+- **Every wait needs a bound and a reason** — the rule this codebase kept re-learning. Five hangs
+  in one day traced to promises settled only by someone else's callback: mp4box, `VideoDecoder`,
+  `VideoEncoder`, `AVAssetWriter` and `SCStream` all signal trouble by never calling back. Wrap
+  them in `withTimeout(p, ms, what)` from `transform/src/timeout.ts`; `what` becomes the error
+  message. Two waits are deliberately unbounded and say so in comments — the lossy writer thread
+  idling on its condition, and the event tap's `CFRunLoopRun` — because nothing is waiting on them.
 - **A `VideoDecoder` can swallow input and emit nothing** — it buffers before its first output,
   so waiting for output when the queue has drained deadlocks on a perfectly healthy decoder. Feed
   more, flush only when there is nothing left to feed, and never wait unbounded. Related: flushing

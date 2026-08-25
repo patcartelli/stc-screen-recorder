@@ -1,4 +1,5 @@
 import type { DemuxedVideo } from "./demux.js";
+import { withTimeout } from "./timeout.js";
 
 /**
  * Forward-only streaming frame source for export.
@@ -84,7 +85,9 @@ export class ForwardFrameSource {
 
     if (this.nextChunk >= this.video.chunks.length && !this.flushed) {
       this.flushed = true;
-      await this.decoder.flush();
+      // The wake wait below is bounded; this was not. A decoder that never
+      // finishes flushing would hang an export just as effectively.
+      await withTimeout(this.decoder.flush(), 30_000, "decoder flush at end of stream");
       return this.pending.length > 0;
     }
     if (this.flushed && this.pending.length === 0) return false;

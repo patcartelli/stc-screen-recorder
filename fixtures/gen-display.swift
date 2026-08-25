@@ -88,9 +88,14 @@ for (i, ptsNs) in framesNs.enumerated() {
 }
 input.markAsFinished()
 writer.endSession(atSourceTime: CMTime(value: CMTimeValue(5_000_000_000 + offsetNs), timescale: 1_000_000_000))
+// Bounded like everything else: AVAssetWriter does not promise to call back,
+// and a fixture generator that hangs forever is a build that hangs forever.
 let sem = DispatchSemaphore(value: 0)
 writer.finishWriting { sem.signal() }
-sem.wait()
+if sem.wait(timeout: .now() + 120) == .timedOut {
+    FileHandle.standardError.write("finishWriting did not complete within 120s\n".data(using: .utf8)!)
+    exit(1)
+}
 guard writer.status == .completed else {
     FileHandle.standardError.write("writer failed: \(String(describing: writer.error))\n".data(using: .utf8)!)
     exit(1)

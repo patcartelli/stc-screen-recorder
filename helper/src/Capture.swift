@@ -295,6 +295,9 @@ final class CaptureSession: NSObject, SCStreamOutput, SCStreamDelegate {
             self.tapRunLoop = CFRunLoopGetCurrent()
             CFRunLoopAddSource(CFRunLoopGetCurrent(), src, .commonModes)
             CGEvent.tapEnable(tap: tap, enable: true)
+            // Runs until stop() calls CFRunLoopStop. Unbounded by design: this
+            // is the tap's own thread, and a run loop that returned early would
+            // silently stop delivering input for the rest of the recording.
             CFRunLoopRun()
         }
         t.name = "event-tap"
