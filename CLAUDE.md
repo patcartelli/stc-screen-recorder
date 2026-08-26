@@ -33,7 +33,11 @@ events → deterministic transform → CFR MP4 with cursor overlay.
 ## Where things stand (2026-08-25)
 
 **Phases 0, 1 and 2 are complete.** The app records, previews and exports, verified on real
-hardware and confirmed by eye on the composited cursor. 134 tests, four gates, CI green.
+hardware and confirmed by eye on the composited cursor. 135 tests, four gates.
+
+CI on `master` went red on 2026-08-25 (the `#6` and `#7` merges) with the STC-254 crash —
+intermittent, so PR runs passed while the push runs failed. Root-caused and fixed; see the
+append/teardown trap below. **Do not read a green PR run as proof for an intermittent fault.**
 
 Repo: https://github.com/patcartelli/stc-screen-recorder — **public** (unlimited Actions minutes;
 macOS bills 10x on private repos and burned ~42% of a monthly allowance in one day).
@@ -60,7 +64,7 @@ belonging to a different commit).
 | ticket | what | needs |
 |---|---|---|
 | STC-249 | lossy ring under REAL capture load — the semantics are tested, the live scenario is not | a recording with a stalled stats consumer |
-| STC-254 | helper SIGSEGV on CI. Diagnostics landed; the crash itself is unfixed and unreproduced | the next occurrence, which will now carry stderr + a crash report |
+| STC-254 | **root-caused and fixed** (append/teardown race, part 2). The crash-handler gap below is the remaining piece | a run of green CI to call it closed |
 | STC-232 | phase 3: camera PiP — recommended first, it avoids §2a's CoreAudio wedge entirely | a scope decision |
 | STC-247 | multi-display capture | a second display |
 | STC-251/252 | preview memory ceiling (~15 min at 4K); Node 20 actions deprecation | — |
@@ -302,6 +306,20 @@ reachable via KVC (`setValue(3, forKey: "captureResolution")`, verified in phase
   as `-3805 "application connection being interrupted"`. Wiring only the completion left `start`
   permanently unanswered. Every request path must resolve exactly once: the delegate answers a
   pending start, and a 15 s backstop answers if neither fires.
+- **An `AVAssetWriter` append and its teardown must not overlap** — a take's FIRST append lazily
+  creates the video compressor and takes milliseconds. If `markAsFinished`/`finishWriting` run on
+  another thread inside that window, AVFoundation retains a track it has already released and the
+  process dies. This was STC-254: intermittent on CI, invisible here, because on this machine the
+  first frame lands long before any stop and on a CI VM it can land inside one. Appending *after*
+  `markAsFinished` has returned is safe — it returns `false` — so guarding the nil checks alone
+  fixes nothing; the fatal window is the append's own duration. `WriterGate` holds its lock across
+  the append. Reproduces out of process in one to two iterations (`helper/test/writer-gate/`).
+- **The crash handler does not cover SIGTRAP** — `main.swift` installs handlers for
+  SIGSEGV/BUS/ILL/FPE/ABRT only, and the same use-after-free lands as `EXC_BREAKPOINT`/SIGTRAP
+  about as often as it lands as SIGSEGV (both CI reports were the former; the local repro was the
+  latter). A trap-variant death therefore writes NO `[helper] FATAL signal …` line and the parent
+  sees a bare signal. The switch's `default:` also prints "SIGABRT" for anything unlisted, so
+  adding a signal to the loop without touching the switch mislabels it. Worth closing.
 - **An empty events.json does not mean the tap is broken** — an automated capture records zero
   events simply because nothing moves the mouse, which is indistinguishable from a dead button
   path. Verifying input needs deliberate input; `fixtures/real-session/` pins the result.
