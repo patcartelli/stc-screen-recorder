@@ -1,6 +1,7 @@
 import Foundation
 import AppKit
 import CoreGraphics
+import AVFoundation
 
 /// Long-running capture helper. Controlled over stdin; reports over stdout.
 /// Increment 1: control plane, watchers, lifecycle. Capture lands in increment 2.
@@ -47,6 +48,21 @@ final class App {
                      "elapsedMs": state == .recording ? (Clock.nowNs() - startedAtNs) / 1_000_000 : 0])
         case "devices":
             Watchers.enumerateDevices { IO.send("devices", seq: seq, $0) }
+        case "camera-probe":
+            // Status only — never opens a device. Opening one here would light
+            // the camera LED on every `npm test` run.
+            let auth: String
+            switch AVCaptureDevice.authorizationStatus(for: .video) {
+            case .authorized:    auth = "authorized"
+            case .denied:        auth = "denied"
+            case .restricted:    auth = "restricted"
+            case .notDetermined: auth = "notDetermined"
+            @unknown default:    auth = "unknown"
+            }
+            let devices = AVCaptureDevice.DiscoverySession(
+                deviceTypes: [.builtInWideAngleCamera, .externalUnknown],
+                mediaType: .video, position: .unspecified).devices.map { $0.localizedName }
+            IO.send("camera-probe", seq: seq, ["auth": auth, "devices": devices])
         case "start":
             start(cmd, seq: seq)
         case "stop":
