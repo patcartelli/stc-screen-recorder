@@ -48,6 +48,13 @@ final class CaptureSession: NSObject, SCStreamOutput, SCStreamDelegate {
     /// forever. A protocol where some requests are never answered is worse than
     /// one that answers with an error.
     private var startCompletion: ((Result<[String: Any], Error>) -> Void)?
+    /// How long a `start` may take before it is answered with `start-timeout`.
+    /// Covers the WHOLE request — content enumeration included (STC-258).
+    /// `helper/test/capture.test.ts` bounds its own waits above this; if this
+    /// value grows, those bounds must grow with it or the test races the
+    /// backstop instead of observing it.
+    static let startTimeoutSeconds: Double = 15
+
     private let startLock = NSLock()
 
     private var tap: CFMachPort?
@@ -62,22 +69,44 @@ final class CaptureSession: NSObject, SCStreamOutput, SCStreamDelegate {
     // MARK: - start
 
     func start(displayId: CGDirectDisplayID?, completion: @escaping (Result<[String: Any], Error>) -> Void) {
+        // The backstop is armed HERE, before the first callback API is called,
+        // so it covers the whole request rather than only the part after
+        // SCShareableContent answers (STC-258).
+        //
+        // `getExcludingDesktopWindows` is a callback API, and this codebase's
+        // rule is to ask what happens when one stays silent: with the backstop
+        // armed inside begin() it never ran, so a content enumeration that
+        // never called back left `start` unanswered forever. It also meant the
+        // request's real bound was "content latency + 15 s" rather than 15 s,
+        // which is what made capture.test.ts flaky under load.
+        startLock.lock(); startCompletion = completion; startLock.unlock()
+        DispatchQueue.global().asyncAfter(deadline: .now() + Self.startTimeoutSeconds) { [weak self] in
+            self?.finishStart(.failure(CaptureError.startTimedOut))
+        }
+
         SCShareableContent.getExcludingDesktopWindows(true, onScreenWindowsOnly: true) { [weak self] content, err in
             guard let self else { return }
             guard let content, !content.displays.isEmpty else {
                 // PHASE-0 §6: this is the ungranted path and it fails in ~10 ms
                 // with -3801 rather than hanging. Report it as a permission
                 // problem, which is what it almost always is.
-                completion(.failure(CaptureError.noDisplays(underlying: err)))
+                //
+                // Answers through finishStart, not the completion directly:
+                // the backstop is already armed, so a direct call here would be
+                // a second answer to the same request.
+                self.finishStart(.failure(CaptureError.noDisplays(underlying: err)))
                 return
             }
             let display = displayId.flatMap { id in content.displays.first { $0.displayID == id } }
                 ?? content.displays[0]
-            self.begin(display: display, completion: completion)
+            self.begin(display: display)
         }
     }
 
-    private func begin(display: SCDisplay, completion: @escaping (Result<[String: Any], Error>) -> Void) {
+    /// Takes no completion: `start` owns it and every path below answers through
+    /// `finishStart`, which is call-once. Handing this a second reference to the
+    /// same completion is how a request gets answered twice.
+    private func begin(display: SCDisplay) {
         // CaptureDecisions.swift hardcodes this so it can be compiled without
         // ScreenCaptureKit. If the framework ever renumbers, refuse to start
         // rather than silently discarding every frame as "not complete".
@@ -87,7 +116,7 @@ final class CaptureSession: NSObject, SCStreamOutput, SCStreamDelegate {
         // "start failed, here is why" into the parent seeing SIGTRAP and having
         // to guess. It cost a CI failure to notice.
         guard SCFrameStatus.complete.rawValue == SCFrameStatusCompleteRaw else {
-            completion(.failure(CaptureError.frameStatusMismatch(
+            finishStart(.failure(CaptureError.frameStatusMismatch(
                 actual: SCFrameStatus.complete.rawValue)))
             return
         }
@@ -105,13 +134,9 @@ final class CaptureSession: NSObject, SCStreamOutput, SCStreamDelegate {
         }
         (captureW, captureH) = captureSize(pixelW, pixelH)
 
-        startLock.lock(); startCompletion = completion; startLock.unlock()
-
-        // Backstop: if neither the completion nor the delegate ever fires, the
-        // caller still gets an answer rather than a permanently pending request.
-        DispatchQueue.global().asyncAfter(deadline: .now() + 15) { [weak self] in
-            self?.finishStart(.failure(CaptureError.startTimedOut))
-        }
+        // No backstop is armed here: start() armed one covering this whole
+        // request before it called SCShareableContent (STC-258). Arming a
+        // second one would answer the same request twice.
 
         do {
             try setupWriter()

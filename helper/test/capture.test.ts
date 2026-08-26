@@ -56,17 +56,44 @@ async function waitFor<T>(fn: () => T | undefined | false, ms = 15_000, what = "
 const find = (ls: Line[], ev: string) => ls.find((l) => l.ev === ev);
 const session = () => mkdtempSync(join(tmpdir(), "stc-cap-"));
 
+// The helper answers a start within its own backstop (CaptureSession
+// .startTimeoutSeconds, 15 s) — and since STC-258 that backstop covers the
+// whole request, content enumeration included. These waits must sit clearly
+// ABOVE it so a slow-but-correct start is observed rather than raced: at 20 s
+// there were only 5 s left for process spawn and IPC, and under a parallel
+// suite that was not enough (seen failing at 20970 ms).
+const START_BOUND_MS = 30_000;
+
 /** Did this environment's TCC identity get a Screen Recording grant? */
 async function probeGranted(): Promise<boolean> {
   const h = spawnHelper();
   await waitFor(() => find(h.fd3, "ready"), 10_000, "ready");
   h.send({ cmd: "start", dir: session(), seq: 1 });
-  const r = await waitFor(() => h.fd3.find((l) => l.seq === 1), 20_000, "start outcome");
+  const r = await waitFor(() => h.fd3.find((l) => l.seq === 1), START_BOUND_MS, "start outcome");
   if (r.ev === "started") h.send({ cmd: "stop", seq: 2 });
   await sleep(200);
   h.kill();
   return r.ev === "started";
 }
+
+describe("start bound vs the helper's own backstop", () => {
+  // STC-258 was two correctly-bounded waits set too close together: the test
+  // allowed 20 s and the helper answered at up to 15 s, leaving 5 s for spawn
+  // and IPC. Nothing connected the two numbers, so they drifted into a flake
+  // that only appeared under a loaded parallel suite. This asserts the coupling
+  // so a change to either side fails loudly here instead of intermittently
+  // somewhere else.
+  test("the test's start bound stays clear of the helper's backstop", () => {
+    const src = readFileSync(join(root, "helper/src/Capture.swift"), "utf8");
+    const m = src.match(/startTimeoutSeconds:\s*Double\s*=\s*([\d.]+)/);
+    expect(m, "startTimeoutSeconds not found in Capture.swift — did it get renamed?")
+      .not.toBeNull();
+    const backstopMs = Number(m![1]) * 1000;
+    expect(backstopMs).toBeGreaterThan(0);
+    // Enough headroom to absorb process spawn, IPC, and a contended machine.
+    expect(START_BOUND_MS).toBeGreaterThanOrEqual(backstopMs + 10_000);
+  });
+});
 
 describe("capture — behaviour without a Screen Recording grant", () => {
   test("start reports a specific, actionable error rather than hanging", async () => {
@@ -74,7 +101,7 @@ describe("capture — behaviour without a Screen Recording grant", () => {
     const h = spawnHelper();
     await waitFor(() => find(h.fd3, "ready"));
     h.send({ cmd: "start", dir: session(), seq: 1 });
-    const r = await waitFor(() => h.fd3.find((l) => l.seq === 1), 20_000, "start outcome");
+    const r = await waitFor(() => h.fd3.find((l) => l.seq === 1), START_BOUND_MS, "start outcome");
     expect(r.ev).toBe("error");
     // The environment decides WHICH failure: with no grant at all the display
     // list is empty; with a partial one the list arrives and the stream is then
@@ -84,20 +111,25 @@ describe("capture — behaviour without a Screen Recording grant", () => {
             "writer-rejected-input", "start-timeout"]).toContain(r.code);
     expect(String(r.detail ?? "").length).toBeGreaterThan(0);
     if (r.code === "no-displays") expect(String(r.detail)).toMatch(/Screen Recording/i);
-  }, 60_000);
+    // Budget: probeGranted (START_BOUND_MS) + this start (START_BOUND_MS),
+    // plus spawn overhead. A per-test timeout equal to the sum of its own
+    // waits cannot pass when those waits actually run.
+  }, 90_000);
 
   test("a denied start leaves the helper idle and retryable, not wedged", async () => {
     if (await probeGranted()) return;
     const h = spawnHelper();
     await waitFor(() => find(h.fd3, "ready"));
     h.send({ cmd: "start", dir: session(), seq: 1 });
-    await waitFor(() => h.fd3.find((l) => l.seq === 1), 20_000, "first start");
+    await waitFor(() => h.fd3.find((l) => l.seq === 1), START_BOUND_MS, "first start");
     h.send({ cmd: "status", seq: 2 });
     const st = await waitFor(() => h.fd3.find((l) => l.seq === 2), 10_000, "status");
     expect(st.state).toBe("idle");
     // and it can be asked again — the failure is not terminal
     h.send({ cmd: "start", dir: session(), seq: 3 });
-    const again = await waitFor(() => h.fd3.find((l) => l.seq === 3), 20_000, "second start");
+    const again = await waitFor(() => h.fd3.find((l) => l.seq === 3), START_BOUND_MS, "second start");
     expect(again.ev).toBe("error");
-  }, 90_000);
+    // Budget: probeGranted + two starts (START_BOUND_MS each) + the status
+    // wait, so ~100 s of waits in the worst case. Same rule as above.
+  }, 150_000);
 });
