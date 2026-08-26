@@ -9,8 +9,8 @@ that produced this.
 
 ## What changed underneath you
 
-The PR branched at `68b5666` and is now ~10 commits behind. Master moved a lot
-on 2026-08-26:
+The PR branched at `68b5666` and is now eight commits behind. Master moved a
+lot on 2026-08-26:
 
 | commit | what |
 |---|---|
@@ -77,22 +77,68 @@ export interface Project {
 `transform/src/session.ts` already accepts anchors v1 **and** v2 and treats the
 v2 additions as optional, so nothing there should need changing.
 
+### The version gate that will bite you on that path
+
+Moving `trim` into project-2 is the right call, but the PR's own parser and
+writer are hardcoded to v1, and neither the textual merge nor `npm test` will
+tell you:
+
+| where | what it does |
+|---|---|
+| `transform/src/trim.ts:75` | `if (doc.version !== 1) return fallback;` — every v2 document is discarded and replaced with a default |
+| `trim.ts:59`, `trim.ts:92` | `defaultProject` and `projectForWrite` both emit `version: 1` |
+
+So after a naive move you get a write path still emitting **v1** documents
+carrying a `trim` the v1 schema no longer declares, and any real **v2**
+document — the ones STC-232 mints for PiP — silently losing both `pip` and
+`trim` on load. The comment above that gate frames the fallback as
+corruption-tolerance, so it will not look like a bug when it fires.
+
+Widen the version gate and the write path in the same change as the schema
+move. `test:slow` will **not** catch this: it compares the UI export against
+the CLI one, and both would lose the trim identically.
+
+Version gates are inconsistent across the repo generally, which is what makes
+this easy to miss: `transform/src/session.ts:44` takes anchors v1 **or** v2,
+while `app/src/takes.ts:110` still rejects anything but v1. That one is
+pre-existing and not yours to fix, but it is the same shape of bug.
+
 ### A convention worth settling while you are here
 
 Your PR extends a versioned schema in place; STC-232 mints a new version for
 the same kind of change. Both are defensible, the repo should pick one, and
 right now it does both. Worth a line in `CLAUDE.md` once decided.
 
-## 3. A bug in the PR as it stands
+## 3. The trim invariant is already enforced — do not add a second check
 
-`schema/project-1.schema.json`'s new `trim` block says in its description:
+An earlier version of this handoff claimed the `endNs > startNs` invariant was
+documented but unchecked, and that a reversed trim would silently produce a
+negative-length export. That was wrong. It is corrected here rather than
+quietly deleted, because the old text is still in this branch's history.
+
+`clampTrim` enforces it:
+
+```ts
+// transform/src/trim.ts:26
+const end = Math.max(start + min, Math.min(Math.round(endNs), dur));
+```
+
+`min` is one 60 fps frame, so `end` always lands at least a frame past `start`.
+Every path that touches a trim goes through it — `parseProject` on load
+(`trim.ts:85`), `exportWindow` on export (`trim.ts:46`), the renderer on edit
+(`renderer.ts:170`) — and `export.ts:67` is the only export consumer, reaching
+it through `exportWindow`. That function also floors `endFrame` at `fromFrame`
+independently, so `maxFrames >= 1` even if the clamp were somehow bypassed. A
+reversed trim is corrected to a one-frame window, never a negative one.
+
+What is worth a minute: `schema/project-1.schema.json` says
 
 > endNs must be greater than startNs
 
-Nothing enforces it. JSON Schema cannot express that comparison, so the
-transform must — otherwise it is a documented invariant with no check behind
-it, and a reversed trim silently produces a negative-length export. Add the
-validation and a test for it wherever the trim is consumed.
+which reads as an obligation on whoever consumes the document. JSON Schema
+cannot express the comparison and the transform already discharges it, so point
+that description at `clampTrim` instead — otherwise the next reader takes it
+for an open TODO, as this handoff did.
 
 ## 4. How to verify the rebase
 
