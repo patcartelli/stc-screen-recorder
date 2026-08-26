@@ -16,6 +16,7 @@ import Foundation
 import ScreenCaptureKit
 import CoreGraphics
 import AppKit
+import AVFoundation
 import IOKit.hid
 
 let args = CommandLine.arguments
@@ -60,9 +61,24 @@ func runProbe() {
         let hidAccess = IOHIDCheckAccess(kIOHIDRequestTypeListenEvent)
         let hidName = hidAccess == kIOHIDAccessTypeGranted ? "granted"
                     : hidAccess == kIOHIDAccessTypeDenied ? "denied" : "unknown"
+        // Camera is a SEPARATE grant from Screen Recording and from Input
+        // Monitoring. authorizationStatus does not prompt; it reports.
+        let camAuth: String
+        switch AVCaptureDevice.authorizationStatus(for: .video) {
+        case .authorized:    camAuth = "authorized"
+        case .denied:        camAuth = "denied"
+        case .restricted:    camAuth = "restricted"
+        case .notDetermined: camAuth = "notDetermined"
+        @unknown default:    camAuth = "unknown"
+        }
+        let cams = AVCaptureDevice.DiscoverySession(
+            deviceTypes: [.builtInWideAngleCamera, .externalUnknown],
+            mediaType: .video, position: .unspecified).devices.map { $0.localizedName }
+
         var o: [String: Any] = ["verdict": n > 0 ? "granted" : "denied", "granted": n > 0,
                                 "preflight": preflight, "displays": n,
-                                "inputMonitoring": hidName]
+                                "inputMonitoring": hidName,
+                                "cameraAuth": camAuth, "cameraDevices": cams]
         if let err { o["error"] = String(describing: err) }
         writeResult(o)
         exit(0)
