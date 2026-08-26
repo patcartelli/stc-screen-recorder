@@ -30,14 +30,15 @@ events → deterministic transform → CFR MP4 with cursor overlay.
 | `scratch/` | phase-0 spike code and outputs (mp4box.js, harness, sample session dirs) |
 | `council/` | cross-AI reviews of the phase-1 plan |
 
-## Where things stand (2026-08-25)
+## Where things stand (2026-08-26)
 
 **Phases 0, 1 and 2 are complete.** The app records, previews and exports, verified on real
-hardware and confirmed by eye on the composited cursor. 135 tests, four gates.
+hardware and confirmed by eye on the composited cursor. 137 tests, four gates.
 
 CI on `master` went red on 2026-08-25 (the `#6` and `#7` merges) with the STC-254 crash —
-intermittent, so PR runs passed while the push runs failed. Root-caused and fixed; see the
-append/teardown trap below. **Do not read a green PR run as proof for an intermittent fault.**
+intermittent, so PR runs passed while the push runs failed. Root-caused and fixed on 2026-08-26;
+master is green again. See the append/teardown trap below. **Do not read a green PR run as proof
+for an intermittent fault** — the regression test is the evidence, the green tick is corroboration.
 
 Repo: https://github.com/patcartelli/stc-screen-recorder — **public** (unlimited Actions minutes;
 macOS bills 10x on private repos and burned ~42% of a monthly allowance in one day).
@@ -64,7 +65,7 @@ belonging to a different commit).
 | ticket | what | needs |
 |---|---|---|
 | STC-249 | lossy ring under REAL capture load — the semantics are tested, the live scenario is not | a recording with a stalled stats consumer |
-| STC-254 | **root-caused and fixed** (append/teardown race, part 2). The crash-handler gap below is the remaining piece | a run of green CI to call it closed |
+| STC-254 | **done** — append/teardown race fixed (part 2), SIGTRAP crash handler closed (part 3). Master CI green again | nothing; watch that master stays green |
 | STC-232 | phase 3: camera PiP — recommended first, it avoids §2a's CoreAudio wedge entirely | a scope decision |
 | STC-247 | multi-display capture | a second display |
 | STC-251/252 | preview memory ceiling (~15 min at 4K); Node 20 actions deprecation | — |
@@ -314,12 +315,14 @@ reachable via KVC (`setValue(3, forKey: "captureResolution")`, verified in phase
   `markAsFinished` has returned is safe — it returns `false` — so guarding the nil checks alone
   fixes nothing; the fatal window is the append's own duration. `WriterGate` holds its lock across
   the append. Reproduces out of process in one to two iterations (`helper/test/writer-gate/`).
-- **The crash handler does not cover SIGTRAP** — `main.swift` installs handlers for
-  SIGSEGV/BUS/ILL/FPE/ABRT only, and the same use-after-free lands as `EXC_BREAKPOINT`/SIGTRAP
-  about as often as it lands as SIGSEGV (both CI reports were the former; the local repro was the
-  latter). A trap-variant death therefore writes NO `[helper] FATAL signal …` line and the parent
-  sees a bare signal. The switch's `default:` also prints "SIGABRT" for anything unlisted, so
-  adding a signal to the loop without touching the switch mislabels it. Worth closing.
+- **A fault does not pick one signal** — the same use-after-free landed as `EXC_BREAKPOINT`/SIGTRAP
+  on CI (both reports) and as `EXC_BAD_ACCESS`/SIGSEGV in the local repro, depending on what the
+  freed memory happened to hold. The crash handler originally covered SIGSEGV/BUS/ILL/FPE/ABRT but
+  not SIGTRAP, so the variant that actually reached CI died mute — the parent saw a bare signal
+  number from precisely the fault the handler existed to explain. SIGTRAP is now installed and
+  every signal is named explicitly; the old `default: "SIGABRT"` would have mislabelled anything
+  added to the loop, and a diagnostic that lies is worse than one that admits ignorance.
+  `helper/test/crash-signals.test.ts` signals the real binary and asserts the stderr line.
 - **An empty events.json does not mean the tap is broken** — an automated capture records zero
   events simply because nothing moves the mouse, which is indistinguishable from a dead button
   path. Verifying input needs deliberate input; `fixtures/real-session/` pins the result.

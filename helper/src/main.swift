@@ -188,15 +188,25 @@ final class App {
     /// safe; anything that allocates, locks, or formats is not, and a crash
     /// handler that crashes tells you even less than none.
     private func installCrashHandlers() {
-        for sig in [SIGSEGV, SIGBUS, SIGILL, SIGFPE, SIGABRT] {
+        // SIGTRAP is here because it is how a Swift runtime trap and a CoreFoundation
+        // assertion arrive, and both STC-254 crash reports were EXC_BREAKPOINT/SIGTRAP
+        // rather than SIGSEGV. Without it the helper died mute for the variant that
+        // actually reached CI, which is the blindness this handler exists to remove.
+        for sig in [SIGSEGV, SIGBUS, SIGILL, SIGFPE, SIGABRT, SIGTRAP] {
             signal(sig) { received in
                 let name: StaticString
+                // Every installed signal is named explicitly and the fallback says
+                // it does not know. The previous `default: "SIGABRT"` would have
+                // labelled any signal added above as SIGABRT — a diagnostic that
+                // lies is worse than one that admits ignorance.
                 switch received {
                 case SIGSEGV: name = "SIGSEGV\n"
                 case SIGBUS:  name = "SIGBUS\n"
                 case SIGILL:  name = "SIGILL\n"
                 case SIGFPE:  name = "SIGFPE\n"
-                default:      name = "SIGABRT\n"
+                case SIGABRT: name = "SIGABRT\n"
+                case SIGTRAP: name = "SIGTRAP\n"
+                default:      name = "UNKNOWN\n"
                 }
                 let prefix: StaticString = "[helper] FATAL signal "
                 prefix.withUTF8Buffer { _ = write(2, $0.baseAddress, $0.count) }
