@@ -643,7 +643,7 @@ describe("PiP placement and track bounds", () => {
 
   test("PiP sits in the bottom-right corner at the configured size", () => {
     const { project, session } = pipSession();   // 3840x2160, widthPct 0.125, margin 32
-    const pip = render(project, session, CAM_FIRST)!.pip!;
+    const pip = render(project, session, CAM_FIRST).pip!;
     expect(pip.width).toBe(480);                 // 3840 * 0.125
     expect(pip.height).toBe(270);                // 480 * 720/1280
     expect(pip.x).toBe(3840 - 480 - 32);
@@ -677,14 +677,21 @@ describe("PiP placement and track bounds", () => {
   });
 
   test("PiP placement is identical whether reached by stepping or seeking", () => {
-    // The determinism property the two sinks depend on.
-    const { project, session } = pipSession();
+    // The determinism property the two sinks depend on. render() memoises the
+    // cursor sim per Session, so the comparison must be against a SEPARATELY
+    // loaded session with a cold cache — comparing two renders of the same
+    // warmed session would pass no matter what the cache did.
     const t = CAM_FIRST + 40 * CAM_INTERVAL;
-    const seeked = render(project, session, t).pip;
-    let stepped = null;
-    for (let u = 0; u <= t; u += 8_333_333) stepped = render(project, session, u).pip;
-    stepped = render(project, session, t).pip;
+
+    const cold = pipSession();
+    const seeked = render(cold.project, cold.session, t).pip;
+
+    const warm = pipSession();
+    for (let u = 0; u < t; u += 8_333_333) render(warm.project, warm.session, u);
+    const stepped = render(warm.project, warm.session, t).pip;
+
     expect(stepped).toEqual(seeked);
+    expect(seeked).not.toBeNull();   // a test comparing two nulls proves nothing
   });
 });
 ```
