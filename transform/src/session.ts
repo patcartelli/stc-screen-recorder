@@ -37,8 +37,12 @@ const OFFSET_TOLERANCE_NS = 50_000;
 export async function loadSession(input: SessionInput): Promise<LoadedSession> {
   const { anchors, events } = input;
 
-  if (anchors?.version !== 1) {
-    throw new SessionLoadError(`anchors.json version ${anchors?.version} is not supported (expected 1)`);
+  // v1 and v2 differ only by additions the transform treats as optional
+  // (camera track, pip geometry), so v1 loads as a v2 with both absent. The
+  // helper does not emit v2 until increment 3; refusing v1 here would break
+  // every grant test in the gap.
+  if (anchors?.version !== 1 && anchors?.version !== 2) {
+    throw new SessionLoadError(`anchors.json version ${anchors?.version} is not supported (expected 1 or 2)`);
   }
   if (events?.version !== 1) {
     throw new SessionLoadError(`events.json version ${events?.version} is not supported (expected 1)`);
