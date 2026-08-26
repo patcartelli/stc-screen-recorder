@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -9,78 +10,110 @@ const root = join(__dirname, "..", "..");
  * Compiles a Swift source set into a throwaway binary, runs it, and returns
  * stdout.
  *
- * Both steps are BOUNDED, and that is the point of this module existing.
- * `execFileSync` is synchronous, so vitest's own `testTimeout` cannot interrupt
- * it: a harness that wedges takes the entire run down with it and nothing in
- * the test framework can stop it. On CI run 32997261497 the writer-gate harness
- * hung, burned the job's full 30-minute `timeout-minutes`, and the only trace
- * left behind was GitHub terminating an orphan process — no failing test, no
- * message, just a job that stopped.
+ * Both steps are bounded, and the SHAPE of the bound is the point.
  *
- * Four test files had this same unbounded shape copied between them, which is
- * why the bound lives here now rather than in each of them.
+ * The first attempt used `execFileSync(..., { timeout })`. Being synchronous,
+ * it blocks the worker's event loop for its entire duration — so vitest's own
+ * `testTimeout` cannot fire while it runs. That timer is a JS timer and a
+ * blocked loop never reaches it. The suite therefore had exactly one bound in
+ * play (execFileSync's own), and if that one did not fire for any reason there
+ * was nothing behind it: on CI the job died silently at its 30-minute limit,
+ * twice, in this same file, with no message and a stranded `node` as the only
+ * trace. Spawning asynchronously restores vitest's timeout as a second line of
+ * defence behind ours.
+ *
+ * `detached` gives the child its own process group so a timeout can kill
+ * grandchildren too, and the timeout path rejects immediately instead of
+ * waiting on streams that may never close.
+ *
+ * NOT verified: exactly why the CI runs hung. A probe that killed a child while
+ * a grandchild held the inherited stdout did NOT reproduce it — `execFileSync`
+ * returned on schedule — so the tempting "spawnSync waits for pipe EOF" story
+ * is unproven and is deliberately not asserted here. What this change buys is a
+ * bound that does not depend on that answer.
  */
-export function runSwiftHarness(opts: {
+export async function runSwiftHarness(opts: {
   /** Short name used for the temp dir, the binary, and failure messages. */
   label: string;
   /** Repo-relative Swift sources, compiled together. */
   sources: string[];
   compileMs?: number;
   runMs?: number;
-}): string {
+}): Promise<string> {
   const { label, sources, compileMs = 120_000, runMs = 120_000 } = opts;
   const bin = join(mkdtempSync(join(tmpdir(), `stc-${label}-`)), `${label}-test`);
+  // Fast, no child of its own, and a hang here would be a broken toolchain
+  // rather than the thing under test.
   const sdk = execFileSync("xcrun", ["--show-sdk-path"], {
     encoding: "utf8",
     timeout: 60_000,
   }).trim();
 
-  bounded(
-    () =>
-      execFileSync(
-        "swiftc",
-        [
-          "-sdk", sdk, "-target", "arm64-apple-macos13.0", "-o", bin,
-          ...sources.map((s) => join(root, s)),
-        ],
-        { stdio: "pipe", timeout: compileMs, killSignal: "SIGKILL" },
-      ),
+  await runBounded(
+    "swiftc",
+    ["-sdk", sdk, "-target", "arm64-apple-macos13.0", "-o", bin,
+     ...sources.map((s) => join(root, s))],
     `${label}: swiftc`,
     compileMs,
   );
 
-  return bounded(
-    () => execFileSync(bin, { encoding: "utf8", timeout: runMs, killSignal: "SIGKILL" }),
-    `${label}: harness`,
-    runMs,
-  );
+  return await runBounded(bin, [], `${label}: harness`, runMs);
 }
 
 /**
- * Turns a timeout kill into a message that says what was being waited for.
+ * Runs one command with a bound on the WAIT.
  *
- * Anything else is rethrown untouched — a harness that dies by SIGSEGV or exits
- * non-zero IS the failure some of these tests are looking for, and swallowing
- * that would make the regression they exist to catch invisible.
+ * A non-zero exit or a fatal signal is reported, not swallowed: a harness dying
+ * by SIGSEGV IS the failure writer-gate exists to catch, and a harness that
+ * printed why it could not run deserves to have that printed back.
  */
-function bounded<T>(fn: () => T, what: string, ms: number): T {
-  try {
-    return fn();
-  } catch (e: unknown) {
-    const err = e as { killed?: boolean; status?: number; signal?: string;
-                       stdout?: unknown; stderr?: unknown };
-    const tail = (s: unknown) => String(s ?? "").slice(-2000);
-    // Always surface the harness's own output. execFileSync's default message
-    // is "Command failed: <path>" and nothing else — so a harness that printed
-    // exactly why it could not run had that explanation thrown away, leaving a
-    // bare exit code to interpret.
-    const detail = `\nstdout tail:\n${tail(err.stdout)}\nstderr tail:\n${tail(err.stderr)}`;
-    if (err?.killed === true) {
-      throw new Error(`${what} did not finish within ${ms} ms and was killed.${detail}`);
-    }
-    if (err?.signal) {
-      throw new Error(`${what} died by signal ${err.signal}.${detail}`);
-    }
-    throw new Error(`${what} exited ${err?.status ?? "non-zero"}.${detail}`);
-  }
+function runBounded(cmd: string, args: string[], what: string, ms: number): Promise<string> {
+  return new Promise<string>((resolve, reject) => {
+    const child = spawn(cmd, args, {
+      // Its own process group, so a timeout can take the grandchildren too.
+      detached: true,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    let out = "";
+    let err = "";
+    child.stdout.on("data", (d: Buffer) => { out += d.toString("utf8"); });
+    child.stderr.on("data", (d: Buffer) => { err += d.toString("utf8"); });
+
+    let settled = false;
+    const tail = (s: string) => s.slice(-2000);
+    const detail = () => `\nstdout tail:\n${tail(out)}\nstderr tail:\n${tail(err)}`;
+
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      // Negative pid = the whole group. Killing only the child is what left
+      // grandchildren holding the pipes last time.
+      try { process.kill(-(child.pid as number), "SIGKILL"); }
+      catch { try { child.kill("SIGKILL"); } catch { /* already gone */ } }
+      // Do not wait for "close": the streams are exactly what may never end.
+      child.stdout.destroy();
+      child.stderr.destroy();
+      child.unref();
+      reject(new Error(
+        `${what} did not finish within ${ms} ms; killed its process group.${detail()}`,
+      ));
+    }, ms);
+
+    child.on("error", (e) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reject(new Error(`${what} could not be started: ${e.message}`));
+    });
+
+    child.on("close", (code, signal) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (signal) return reject(new Error(`${what} died by signal ${signal}.${detail()}`));
+      if (code !== 0) return reject(new Error(`${what} exited ${code}.${detail()}`));
+      resolve(out);
+    });
+  });
 }
