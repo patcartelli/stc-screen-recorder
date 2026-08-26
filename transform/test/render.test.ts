@@ -202,6 +202,12 @@ describe("PiP placement and track bounds", () => {
     const stepped = render(warm.project, warm.session, t).pip;
 
     expect(stepped).toEqual(seeked);
-    expect(seeked).not.toBeNull();   // a test comparing two nulls proves nothing
+    // Concrete values, not just "not null" — `undefined` also satisfies
+    // `not.toBeNull()` and `toEqual`, which is exactly how this test passed
+    // vacuously before pipStateAt existed (FrameState.pip was undefined).
+    // Accessing .width/.height on a missing pip throws instead of silently
+    // passing, so both `undefined` and `null` fail this test.
+    expect(seeked!.width).toBe(480);   // 3840 * 0.125
+    expect(seeked!.height).toBe(270);  // 480 * 720/1280
   });
 });
