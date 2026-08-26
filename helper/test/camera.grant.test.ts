@@ -28,8 +28,11 @@ describe("camera grant — requires Camera access for STCTestHost", () => {
     if (result.helperAuth === "notDetermined" || result.helperAuth === "denied") {
       throw new Error(
         `SKIP-GRANT: STCTestHost has no Camera grant (helperAuth=${result.helperAuth}). ` +
-        `Grant Camera to STC Signing Probe in System Settings > Privacy & Security > Camera, ` +
-        `then re-run. Until then the camera path is unverified.`,
+        `The Camera pane only lists apps that have already REQUESTED access, so the ` +
+        `bundle will not appear there until it has. Working procedure: ` +
+        `(1) run 'open -W ${APP} --args --camera-request --out /tmp/cam-request.json' ` +
+        `to raise the system prompt, (2) click Allow, (3) re-run this test (or ` +
+        `'npm run test:capture').`,
       );
     }
     if (typeof result.helperAuth === "string" && result.helperAuth.startsWith("unexpected-reply:")) {

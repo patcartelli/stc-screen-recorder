@@ -26,7 +26,7 @@ func arg(_ name: String) -> String? {
 }
 
 guard let outPath = arg("--out") else {
-    FileHandle.standardError.write("usage: --out <result.json> [--probe | --camera-probe --helper <bin> | --helper <bin> --dir <sessionDir> --ms <n>]\n".data(using: .utf8)!)
+    FileHandle.standardError.write("usage: --out <result.json> [--probe | --camera-request | --camera-probe --helper <bin> | --helper <bin> --dir <sessionDir> --ms <n>]\n".data(using: .utf8)!)
     exit(2)
 }
 let outURL = URL(fileURLWithPath: outPath)
@@ -81,6 +81,24 @@ func runProbe() {
                                 "cameraAuth": camAuth, "cameraDevices": cams]
         if let err { o["error"] = String(describing: err) }
         writeResult(o)
+        exit(0)
+    }
+}
+
+// MARK: - camera-request mode
+
+/// Calls AVCaptureDevice.requestAccess(for: .video) exactly once. This is the
+/// ONLY way to make this bundle appear in System Settings > Privacy & Security
+/// > Camera: that pane lists only apps that have already requested access, and
+/// nothing else in this repo ever calls requestAccess — camera-probe and the
+/// helper deliberately only READ authorizationStatus (see runProbe above and
+/// helper's own probe), which never prompts and never registers the bundle.
+/// requestAccess raises the system prompt but does NOT open the device or
+/// light the camera LED, so running this mode does not itself constitute
+/// "using the camera" — it only asks for permission to, later, elsewhere.
+func runCameraRequest() {
+    AVCaptureDevice.requestAccess(for: .video) { granted in
+        writeResult(["verdict": granted ? "granted" : "denied", "granted": granted])
         exit(0)
     }
 }
@@ -264,6 +282,7 @@ func runCameraProbe(helper: String) {
 
 DispatchQueue.main.async {
     if args.contains("--probe") { runProbe(); return }
+    if args.contains("--camera-request") { runCameraRequest(); return }
     if args.contains("--camera-probe") {
         guard let helper = arg("--helper") else {
             writeResult(["verdict": "bad-args", "detail": "--camera-probe needs --helper <bin>"])
