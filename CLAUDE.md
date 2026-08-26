@@ -281,6 +281,15 @@ reachable via KVC (`setValue(3, forKey: "captureResolution")`, verified in phase
   landed PR #2 while its run was still in progress. Use `npm run merge -- <pr>`
   (`scripts/merge-when-green.mjs`), which polls the run matching the PR's head SHA and refuses to
   merge anything not green.
+- **`gh pr checks --watch` exits 0 when no checks exist yet** — it does not wait for one to
+  appear. Run it in the seconds between opening a PR and GitHub registering the workflow and it
+  prints `no checks reported` and exits **successfully**, which reads as "passed" to anything
+  that checks the exit code. Seen on PR #10: the watch returned exit 0 before the run existed,
+  and the run then started 20 s later and was still in progress. Same family as the `--auto`
+  trap above — a command that succeeds by finding nothing to do, in a place where success is
+  read as verification. Confirm a run exists for the PR's head SHA first
+  (`gh run list --branch <branch>`), then watch that run by id with
+  `gh run watch <id> --exit-status`.
 - **Every wait needs a bound and a reason** — the rule this codebase kept re-learning. Five hangs
   in one day traced to promises settled only by someone else's callback: mp4box, `VideoDecoder`,
   `VideoEncoder`, `AVAssetWriter` and `SCStream` all signal trouble by never calling back. Wrap
