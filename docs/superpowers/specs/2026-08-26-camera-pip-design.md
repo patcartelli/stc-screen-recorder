@@ -36,7 +36,7 @@ are cheap, and getting any of them wrong desyncs the PiP silently.
 | decision | rationale |
 |---|---|
 | Fixed-corner PiP, end to end | A vertical slice that can be watched and judged, matching how phases 1 and 2 were run. Adjustable geometry is the follow-on |
-| Camera captured at **1280x720** | A corner PiP on a 4K canvas is ~480x270, so 720p is ~2.7x oversampled — enough to enlarge or reframe later without re-recording, while adding ~10-15% to preview RAM rather than doubling it (STC-251) |
+| Camera captured at **1280x720** | At `widthPct` 0.125 a corner PiP on a 4K canvas is 480x270, so 720p is 2.67x oversampled — enough to enlarge or reframe later without re-recording, while adding ~10-15% to preview RAM rather than doubling it (STC-251) |
 | No PiP until the first camera frame | Falls straight out of the settled "greatest PTS <= t, hold, never interpolate" rule; needs no special case. Cost is a visible pop-in ~1 s into every take, accepted |
 | Camera is opt-in: toggle, default off, sticky | The camera LED is physical and the TCC prompt should appear at a moment the user caused. The device opens on start and closes on stop — never held while idle |
 | Second writer inside the existing helper | The shared mach clock is free this way. A separate process would buy isolation not yet shown to be needed, and would duplicate the writer-teardown race fixed in STC-254 |
@@ -66,6 +66,9 @@ Writer settings mirror the display writer: H.264, hardware encode,
 - `device` — human-readable device name
 - `width`, `height`
 - `firstFramePtsNs`, `lastFramePtsNs` — session-relative
+- `frameIntervalNs` — median inter-frame delta, written by the helper. The
+  transform needs a concrete number to bound the track end; deriving it from a
+  "nominal" rate would be an assumption, and the measured rate varies (~58.8 fps)
 
 **The empty-edit trap applies per track**, and is worse here: the camera's
 start gap is ~1035 ms against the display's measured 231.7 ms. `demux.ts`
@@ -81,7 +84,7 @@ means no PiP, so every existing v1 project stays readable.
 pip: {
   enabled: boolean,
   corner:  "bottom-right",        // only value in this phase
-  widthPct: number,               // fraction of canvas width; 0.25
+  widthPct: number,               // fraction of canvas width; 0.125
   marginPx: integer
 }
 ```
@@ -98,9 +101,9 @@ the frame with greatest PTS <= `t`, hold, never interpolate — applied
 at the end of one: if the camera dies 30 s into a 60 s take, holding freezes the
 PiP on the last frame for 30 s — a frozen human, which reads as a rendering bug
 and is worse than nothing. The PiP is therefore drawn only while
-`firstFramePtsNs <= t <= trackEnd`, where `trackEnd` derives from
-`lastFramePtsNs` plus one nominal frame interval. Both bounds come from the
-data, not from code.
+`firstFramePtsNs <= t <= trackEnd`, where `trackEnd = lastFramePtsNs +
+frameIntervalNs` and both values are read from `anchors.camera`. Both bounds
+come from the data, not from code.
 
 Composite order is **display -> PiP -> cursor**, so the pointer stays visible
 where it crosses the PiP.
