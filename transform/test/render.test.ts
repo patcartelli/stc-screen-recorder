@@ -27,7 +27,20 @@ function pipSession(): { project: Project; session: Session } {
     },
   };
 }
-const basicSession = () => ({ project: fixtureProject(), session: fixtureSession() });
+// Pairs the PiP-enabled project with the v1 basic session (no camera at all)
+// so the "no PiP for a v1 session with no camera" test actually reaches
+// pipStateAt's `!cam?.present` guard, instead of returning at the earlier
+// `!pip?.enabled` guard because fixtures/basic/project.json has no `pip`.
+// cameraFrames is deliberately given a non-empty array too — otherwise the
+// later `!frames?.length` guard would return null first (frames undefined,
+// since the basic fixture never sets cameraFrames), and the test would still
+// pass vacuously if `!cam?.present` were deleted.
+function basicSessionWithPipProject(): { project: Project; session: Session } {
+  return {
+    project: load("fixtures/pip/project.json") as Project,
+    session: { ...fixtureSession(), cameraFrames: [2_000_000_000] },
+  };
+}
 
 describe("render(project, session, t) → FrameState", () => {
   test("selects the source frame by greatest PTS <= t and reports its PTS", () => {
@@ -183,7 +196,13 @@ describe("PiP placement and track bounds", () => {
   });
 
   test("no PiP for a v1 session that has no camera at all", () => {
-    const { project, session } = basicSession();
+    // Deliberately NOT { project: fixtureProject(), session: fixtureSession() }: fixtures/basic/project.json has no
+    // `pip` block, so that pairing returns at the `!pip?.enabled` guard and
+    // never exercises the camera-absence check — removing `!cam?.present`
+    // from render.ts would leave this passing. Pairing the pip-enabled
+    // project with the camera-less basic session forces the test through to
+    // that guard instead.
+    const { project, session } = basicSessionWithPipProject();
     expect(render(project, session, 2_000_000_000).pip).toBeNull();
   });
 
