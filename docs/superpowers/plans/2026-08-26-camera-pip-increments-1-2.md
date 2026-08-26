@@ -350,7 +350,7 @@ If this cannot pass, increments 3-5 need redesigning, which is why it is first."
 **Files:**
 - Create: `schema/anchors-2.schema.json`
 - Create: `schema/project-2.schema.json`
-- Create: `fixtures/pip/anchors.json`, `fixtures/pip/events.json`, `fixtures/pip/project.json`
+- Create: `fixtures/pip/anchors.json`, `fixtures/pip/events.json`, `fixtures/pip/project.json`, `fixtures/pip/frames.json`, `fixtures/pip/camera-frames.json`
 - Modify: `transform/test/schema.test.ts`
 
 **Interfaces:**
@@ -469,12 +469,31 @@ Copy `anchors-1.schema.json`, change `$id` to `stc:anchors-2`, change `version` 
     "width": 1280,
     "height": 720,
     "firstFramePtsNs": 1035500000,
-    "lastFramePtsNs": 3035500000,
+    "lastFramePtsNs": 3024500000,
     "frameIntervalNs": 17000000
   }
 ```
 
-The camera starts at 1.0355 s on purpose: that is the warm-up gap phase 0 measured, so the fixture exercises the empty window rather than a convenient zero.
+`fixtures/pip/frames.json` — copy `fixtures/basic/frames.json` verbatim. This is
+the display PTS grid; `render.test.ts` loads it directly rather than demuxing.
+
+`fixtures/pip/camera-frames.json` — the camera PTS grid, 118 entries starting at
+the warm-up offset and spaced by `frameIntervalNs`. Generate it exactly:
+
+```bash
+python3 -c "
+import json
+first, iv, n = 1035500000, 17000000, 118
+json.dump([first + k*iv for k in range(n)], open('fixtures/pip/camera-frames.json','w'))
+print(first, first+(n-1)*iv)"
+```
+Expected output: `1035500000 3024500000`. That last value MUST equal
+`anchors.camera.lastFramePtsNs` — the track-end test in Task 6 depends on the
+grid and the anchor agreeing.
+
+The camera starts at 1.0355 s on purpose: that is the warm-up gap phase 0
+measured, so the fixture exercises the empty window rather than a convenient
+zero.
 
 - [ ] **Step 6: Run the tests**
 
@@ -621,12 +640,31 @@ remaining 30 s.
 
 - [ ] **Step 1: Write the failing tests**
 
-Append to `transform/test/render.test.ts` (reuse the file's existing fixture-loading helper; `pipSession()` below stands for "the `fixtures/pip` session loaded the way this file already loads `fixtures/basic`"):
+First add these two helpers to `transform/test/render.test.ts`, beside the
+existing `fixtureSession()` / `fixtureProject()` (which load `fixtures/basic`
+the same way — follow that pattern exactly, do not introduce `loadSession`):
+
+```typescript
+function pipSession(): { project: Project; session: Session } {
+  return {
+    project: load("fixtures/pip/project.json"),
+    session: {
+      anchors: load("fixtures/pip/anchors.json"),
+      events: load("fixtures/pip/events.json").events,
+      frames: load("fixtures/pip/frames.json"),
+      cameraFrames: load("fixtures/pip/camera-frames.json"),
+    },
+  };
+}
+const basicSession = () => ({ project: fixtureProject(), session: fixtureSession() });
+```
+
+Then append:
 
 ```typescript
 describe("PiP placement and track bounds", () => {
   const CAM_FIRST = 1_035_500_000;
-  const CAM_LAST = 3_035_500_000;
+  const CAM_LAST = 3_024_500_000;
   const CAM_INTERVAL = 17_000_000;
 
   test("no PiP before the camera's first frame", () => {
