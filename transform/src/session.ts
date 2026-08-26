@@ -48,6 +48,18 @@ export async function loadSession(input: SessionInput): Promise<LoadedSession> {
     throw new SessionLoadError(`events.json version ${events?.version} is not supported (expected 1)`);
   }
 
+  // loadSession has no camera input yet (no path to a camera file, no
+  // cameraFrames demux) — increment 3 adds that. A v2 session that claims a
+  // camera track would otherwise load "successfully" and render() would
+  // silently return pip: null with no diagnostic, exactly the class of silent
+  // failure the offset check above exists to make loud instead.
+  if (anchors.camera?.present === true) {
+    throw new SessionLoadError(
+      "anchors.camera.present is true, but loadSession does not load camera tracks yet " +
+      "(increment 3 adds camera demux). Refusing to silently drop the PiP.",
+    );
+  }
+
   const video = await demuxDisplayMp4(input.displayMp4);
   if (video.framesNs.length === 0) {
     throw new SessionLoadError("display.mp4 contains no frames");

@@ -118,4 +118,30 @@ describe("loader accepts v1 and v2 anchors", () => {
       displayMp4: mp4("fixtures/offset/display.mp4"),
     })).rejects.toThrow(/version 3 is not supported/);
   });
+
+  // "a version 2 anchors document loads" above already covers a v2 anchors
+  // document WITHOUT a camera block loading fine (offsetAnchors carries none).
+
+  test("a v2 anchors document with camera.present:true is refused rather than silently dropping the PiP", async () => {
+    // loadSession has no camera input yet (no camera file path, no cameraFrames
+    // demux — that's increment 3). Loading this "successfully" would leave
+    // render() quietly returning pip: null forever, which is exactly the class
+    // of silent failure the offset-drift check above exists to make loud.
+    await expect(loadSession({
+      anchors: offsetAnchors({
+        version: 2,
+        camera: {
+          present: true,
+          device: "Fixture Camera",
+          width: 1280,
+          height: 720,
+          firstFramePtsNs: 0,
+          lastFramePtsNs: 1_000_000_000,
+          frameIntervalNs: 17_000_000,
+        },
+      } as any),
+      events: { version: 1, events: [{ t: 0, kind: "move", x: 1, y: 2 }] },
+      displayMp4: mp4("fixtures/offset/display.mp4"),
+    })).rejects.toThrow(/camera/i);
+  });
 });
