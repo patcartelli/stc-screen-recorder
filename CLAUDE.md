@@ -323,6 +323,16 @@ reachable via KVC (`setValue(3, forKey: "captureResolution")`, verified in phase
   every signal is named explicitly; the old `default: "SIGABRT"` would have mislabelled anything
   added to the loop, and a diagnostic that lies is worse than one that admits ignorance.
   `helper/test/crash-signals.test.ts` signals the real binary and asserts the stderr line.
+- **The Camera pane only lists apps that have already REQUESTED access** — there is no
+  add button, so a bundle that merely *reads* `AVCaptureDevice.authorizationStatus` never
+  appears there and can never be granted. Reading status is not enough to become grantable;
+  something must call `requestAccess` once to raise the prompt. `requestAccess` shows the
+  dialog WITHOUT opening the device or lighting the LED, which is what makes it safe to call
+  from a probe. `tools/test-host --camera-request` exists for exactly this.
+- **Camera TCC inherits through the bundle, same as Screen Recording — verified 2026-08-26.**
+  `helper/test/camera.grant.test.ts` launches the helper from the signed test-host and the
+  helper reports `authorized`. This was STC-232 increment 1's gate, sequenced first precisely
+  because a failure would have invalidated the shared-process capture design.
 - **An empty events.json does not mean the tap is broken** — an automated capture records zero
   events simply because nothing moves the mouse, which is indistinguishable from a dead button
   path. Verifying input needs deliberate input; `fixtures/real-session/` pins the result.
