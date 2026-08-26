@@ -138,4 +138,27 @@ describe("v2 schemas carry the camera track and PiP geometry", () => {
     const validate = compile("schema/anchors-2.schema.json");
     expect(validate(load("fixtures/basic/anchors.json"))).toBe(false);
   });
+
+  test("camera: present:false alone is valid — no measurements required when absent", () => {
+    // Increment 3's "no camera requested / none available" path must not have
+    // to fabricate a device string or width/height/frameIntervalNs to satisfy
+    // the schema, or present:false is dead.
+    const validate = compile("schema/anchors-2.schema.json");
+    const doc = clone(load("fixtures/pip/anchors.json"));
+    doc.camera = { present: false };
+    expect(validate(doc), JSON.stringify(validate.errors, null, 2)).toBe(true);
+  });
+
+  test("camera: present:true missing frameIntervalNs is invalid", () => {
+    const validate = compile("schema/anchors-2.schema.json");
+    const doc = clone(load("fixtures/pip/anchors.json"));
+    delete doc.camera.frameIntervalNs;
+    expect(validate(doc)).toBe(false);
+  });
+
+  test("the pip fixture (present:true, full measurements) still validates", () => {
+    const validate = compile("schema/anchors-2.schema.json");
+    const ok = validate(load("fixtures/pip/anchors.json"));
+    expect(ok, JSON.stringify(validate.errors, null, 2)).toBe(true);
+  });
 });

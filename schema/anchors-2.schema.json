@@ -119,10 +119,10 @@
       }
     },
     "camera": {
+      "description": "Absent means no camera track was even attempted. present:false means a camera was attempted (or considered) but yielded no track — measurement fields are meaningless then and must be omitted, not fabricated. Only present:true requires them.",
       "type": "object",
       "additionalProperties": false,
-      "required": ["present", "device", "width", "height",
-                   "firstFramePtsNs", "lastFramePtsNs", "frameIntervalNs"],
+      "required": ["present"],
       "properties": {
         "present": { "type": "boolean" },
         "device": { "type": "string" },
@@ -132,6 +132,23 @@
         "lastFramePtsNs": { "type": "integer", "minimum": 0 },
         "frameIntervalNs": { "type": "integer", "minimum": 1,
                              "description": "median inter-frame delta; the transform bounds the track end with it" }
+      },
+      "if": {
+        "properties": { "present": { "const": true } },
+        "required": ["present"]
+      },
+      "then": {
+        "required": ["present", "device", "width", "height",
+                     "firstFramePtsNs", "lastFramePtsNs", "frameIntervalNs"],
+        "properties": {
+          "present": { "type": "boolean" },
+          "device": { "type": "string" },
+          "width": { "type": "integer", "minimum": 1 },
+          "height": { "type": "integer", "minimum": 1 },
+          "firstFramePtsNs": { "type": "integer", "minimum": 0 },
+          "lastFramePtsNs": { "type": "integer", "minimum": 0 },
+          "frameIntervalNs": { "type": "integer", "minimum": 1 }
+        }
       }
     },
     "files": {
