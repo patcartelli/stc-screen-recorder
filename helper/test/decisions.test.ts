@@ -3,8 +3,8 @@ import { runSwiftHarness } from "./_swift-harness.js";
 
 
 describe("capture decisions", () => {
-  test("Swift pure-function assertions all pass", () => {
-    const out = runSwiftHarness({
+  test("Swift pure-function assertions all pass", async () => {
+    const out = await runSwiftHarness({
       label: "dec",
       sources: [
         "helper/src/CaptureDecisions.swift",
