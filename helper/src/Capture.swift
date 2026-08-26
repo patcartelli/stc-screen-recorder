@@ -22,8 +22,10 @@ final class CaptureSession: NSObject, SCStreamOutput, SCStreamDelegate {
 
     private var stream: SCStream?
     private var writer: AVAssetWriter?
-    private var input: AVAssetWriterInput?
-    private var adaptor: AVAssetWriterInputPixelBufferAdaptor?
+    /// The input and adaptor live behind the gate, not here: every access to
+    /// them is either an append or a teardown, and those two must not overlap
+    /// (STC-254). Holding them as plain properties is what allowed the overlap.
+    private let gate = WriterGate()
 
     private var displayID: CGDirectDisplayID = 0
     private var pointW = 0, pointH = 0, pixelW = 0, pixelH = 0
@@ -170,7 +172,8 @@ final class CaptureSession: NSObject, SCStreamOutput, SCStreamDelegate {
         w.add(inp)
         guard w.startWriting() else { throw CaptureError.writerFailed(w.error) }
         w.startSession(atSourceTime: .zero)
-        writer = w; input = inp; adaptor = ad
+        writer = w
+        gate.install(input: inp, adaptor: ad)
     }
 
     /// Never block waiting on startCapture's completion. This runs on
@@ -237,13 +240,13 @@ final class CaptureSession: NSObject, SCStreamOutput, SCStreamDelegate {
             }
             lock.unlock()
 
-            guard let input, let adaptor, input.isReadyForMoreMediaData else {
-                lock.lock(); framesDropped += 1; lock.unlock()
-                return
-            }
-            let ok = adaptor.append(pb, withPresentationTime: CMTime(value: ptsNs, timescale: 1_000_000_000))
+            // The gate decides whether this frame may still be written, and
+            // holds its own lock across the append so a concurrent stop cannot
+            // tear the track down mid-append. A frame that arrives during
+            // teardown is dropped, not written into a closing writer.
+            let outcome = gate.append(pb, at: CMTime(value: ptsNs, timescale: 1_000_000_000))
             lock.lock()
-            if ok { framesAppended += 1 } else { framesDropped += 1 }
+            if outcome == .appended { framesAppended += 1 } else { framesDropped += 1 }
             lock.unlock()
         }
     }
@@ -376,7 +379,9 @@ final class CaptureSession: NSObject, SCStreamOutput, SCStreamDelegate {
         guard let stream else { finishUp(reason); return }
         stream.stopCapture { [weak self] _ in
             guard let self else { return }
-            self.input?.markAsFinished()
+            // Returns only once any in-flight append has finished, so the
+            // finishWriting below cannot race one (STC-254).
+            self.gate.closeAndMarkFinished()
             guard let writer = self.writer else { finishUp(reason); return }
             writer.finishWriting { finishUp(reason) }
         }
