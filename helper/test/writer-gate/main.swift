@@ -28,10 +28,42 @@ func makeBuffer() -> CVPixelBuffer {
 /// A writer configured exactly as CaptureSession.setupWriter() configures it.
 /// The settings matter: the crash is in compressor creation, which is driven by
 /// the compression properties below.
+/// Reports an environment failure and exits.
+///
+/// Deliberately NOT `precondition` or `try!`. Those trap, and a trap here
+/// arrives as EXC_BREAKPOINT/SIGTRAP — the same exception type and signal as
+/// the STC-254 use-after-free this harness exists to detect. A CI runner that
+/// simply could not spare an encoder would have produced a crash that looks
+/// exactly like the regression coming back. Measured: under contention 5 of 6
+/// concurrent harness processes fail here, while the one that gets resources
+/// completes 300 iterations cleanly.
+func environmentFailure(_ what: String) -> Never {
+    print("ENVIRONMENT: \(what)")
+    print("This is the machine declining to provide an asset writer, NOT a")
+    print("WriterGate regression. The race assertions never ran.")
+    exit(2)
+}
+
+/// A directory of this process's own.
+///
+/// The harness used fixed names directly in NSTemporaryDirectory(), which two
+/// concurrent harness processes happily fight over: the loser's startWriting()
+/// fails with -11823 "Cannot Save — The requested file name is already in use."
+/// Combined with the old `precondition`, that surfaced as EXC_BREAKPOINT —
+/// indistinguishable at a glance from the STC-254 crash this harness detects.
+let workDir: URL = {
+    let d = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent("stc-writer-gate-\(ProcessInfo.processInfo.processIdentifier)")
+    try? FileManager.default.createDirectory(at: d, withIntermediateDirectories: true)
+    return d
+}()
+
 func makeWriter(_ name: String) -> (AVAssetWriter, AVAssetWriterInput, AVAssetWriterInputPixelBufferAdaptor) {
-    let url = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(name)
+    let url = workDir.appendingPathComponent(name)
     try? FileManager.default.removeItem(at: url)
-    let w = try! AVAssetWriter(outputURL: url, fileType: .mp4)
+    let w: AVAssetWriter
+    do { w = try AVAssetWriter(outputURL: url, fileType: .mp4) }
+    catch { environmentFailure("AVAssetWriter(outputURL:) threw: \(error)") }
     w.movieTimeScale = 90_000
     let inp = AVAssetWriterInput(mediaType: .video, outputSettings: [
         AVVideoCodecKey: AVVideoCodecType.h264,
@@ -47,9 +79,12 @@ func makeWriter(_ name: String) -> (AVAssetWriter, AVAssetWriterInput, AVAssetWr
     inp.expectsMediaDataInRealTime = true
     inp.mediaTimeScale = 1_000_000_000
     let ad = AVAssetWriterInputPixelBufferAdaptor(assetWriterInput: inp, sourcePixelBufferAttributes: nil)
-    precondition(w.canAdd(inp))
+    if !w.canAdd(inp) { environmentFailure("writer refused the video input") }
     w.add(inp)
-    precondition(w.startWriting())
+    if !w.startWriting() {
+        environmentFailure("startWriting() returned false — status \(w.status.rawValue), " +
+                           "error \(String(describing: w.error))")
+    }
     w.startSession(atSourceTime: .zero)
     return (w, inp, ad)
 }
@@ -98,6 +133,8 @@ for i in 0..<iterations {
     _ = done.wait(timeout: .now() + 5)
     try? FileManager.default.removeItem(at: w.outputURL)
 }
+
+try? FileManager.default.removeItem(at: workDir)
 
 if failures.isEmpty {
     print("ALL PASS")

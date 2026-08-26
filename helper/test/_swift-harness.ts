@@ -67,14 +67,20 @@ function bounded<T>(fn: () => T, what: string, ms: number): T {
   try {
     return fn();
   } catch (e: unknown) {
-    const err = e as { killed?: boolean; stdout?: unknown; stderr?: unknown };
+    const err = e as { killed?: boolean; status?: number; signal?: string;
+                       stdout?: unknown; stderr?: unknown };
+    const tail = (s: unknown) => String(s ?? "").slice(-2000);
+    // Always surface the harness's own output. execFileSync's default message
+    // is "Command failed: <path>" and nothing else — so a harness that printed
+    // exactly why it could not run had that explanation thrown away, leaving a
+    // bare exit code to interpret.
+    const detail = `\nstdout tail:\n${tail(err.stdout)}\nstderr tail:\n${tail(err.stderr)}`;
     if (err?.killed === true) {
-      const tail = (s: unknown) => String(s ?? "").slice(-2000);
-      throw new Error(
-        `${what} did not finish within ${ms} ms and was killed.\n` +
-          `stdout tail:\n${tail(err.stdout)}\nstderr tail:\n${tail(err.stderr)}`,
-      );
+      throw new Error(`${what} did not finish within ${ms} ms and was killed.${detail}`);
     }
-    throw e;
+    if (err?.signal) {
+      throw new Error(`${what} died by signal ${err.signal}.${detail}`);
+    }
+    throw new Error(`${what} exited ${err?.status ?? "non-zero"}.${detail}`);
   }
 }
