@@ -234,8 +234,25 @@ func runCameraProbe(helper: String) {
     }
 
     send(["cmd": "camera-probe", "seq": 1])
-    guard let reply = waitFor({ $0["ev"] as? String == "camera-probe" && ($0["seq"] as? Int) == 1 }, timeout: 10) else {
+    // Match on seq alone, like runSession does — an error reply (or any other
+    // unsolicited event) still answers seq 1 and must not be discarded. Matching
+    // on ev == "camera-probe" too would make a real reply indistinguishable from
+    // no reply at all, collapsing both into "timeout": the exact diagnostic
+    // collapse STC-254 warns about ("a diagnostic that lies is worse than one
+    // that admits ignorance").
+    guard let reply = waitFor({ ($0["seq"] as? Int) == 1 }, timeout: 10) else {
         writeResult(["helperAuth": "timeout", "helperDevices": [String]()])
+        p.terminate(); exit(1)
+    }
+
+    guard reply["ev"] as? String == "camera-probe" else {
+        // The helper answered, just not with what we asked for. Name what it
+        // actually said rather than reporting "timeout" for a live reply.
+        let ev = reply["ev"] as? String ?? "missing"
+        var o: [String: Any] = ["helperAuth": "unexpected-reply:\(ev)", "helperDevices": [String]()]
+        if let code = reply["code"] { o["helperReplyCode"] = code }
+        if let detail = reply["detail"] { o["helperReplyDetail"] = detail }
+        writeResult(o)
         p.terminate(); exit(1)
     }
 

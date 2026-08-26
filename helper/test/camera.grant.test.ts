@@ -32,6 +32,16 @@ describe("camera grant — requires Camera access for STCTestHost", () => {
         `then re-run. Until then the camera path is unverified.`,
       );
     }
+    if (typeof result.helperAuth === "string" && result.helperAuth.startsWith("unexpected-reply:")) {
+      // The helper replied to seq 1, just not with a camera-probe event — an
+      // error mid-reply, most likely. Fail loudly with what it actually said
+      // rather than letting this read as an assertion mismatch against
+      // "authorized", which looks like a plain auth failure.
+      throw new Error(
+        `Helper answered seq 1 with ${result.helperAuth} instead of camera-probe ` +
+        `(code=${result.helperReplyCode ?? "?"}, detail=${result.helperReplyDetail ?? "?"}).`,
+      );
+    }
     expect(result.helperAuth).toBe("authorized");
     expect(Array.isArray(result.helperDevices)).toBe(true);
   }, 60_000);
