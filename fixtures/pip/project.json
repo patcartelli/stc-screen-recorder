@@ -1,0 +1,6 @@
+{
+  "version": 2,
+  "output": { "fps": 60, "width": 3840, "height": 2160 },
+  "cursor": { "style": "default", "scale": 1 },
+  "pip": { "enabled": true, "corner": "bottom-right", "widthPct": 0.125, "marginPx": 32 }
+}

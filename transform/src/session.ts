@@ -37,11 +37,27 @@ const OFFSET_TOLERANCE_NS = 50_000;
 export async function loadSession(input: SessionInput): Promise<LoadedSession> {
   const { anchors, events } = input;
 
-  if (anchors?.version !== 1) {
-    throw new SessionLoadError(`anchors.json version ${anchors?.version} is not supported (expected 1)`);
+  // v1 and v2 differ only by additions the transform treats as optional
+  // (camera track, pip geometry), so v1 loads as a v2 with both absent. The
+  // helper does not emit v2 until increment 3; refusing v1 here would break
+  // every grant test in the gap.
+  if (anchors?.version !== 1 && anchors?.version !== 2) {
+    throw new SessionLoadError(`anchors.json version ${anchors?.version} is not supported (expected 1 or 2)`);
   }
   if (events?.version !== 1) {
     throw new SessionLoadError(`events.json version ${events?.version} is not supported (expected 1)`);
+  }
+
+  // loadSession has no camera input yet (no path to a camera file, no
+  // cameraFrames demux) — increment 3 adds that. A v2 session that claims a
+  // camera track would otherwise load "successfully" and render() would
+  // silently return pip: null with no diagnostic, exactly the class of silent
+  // failure the offset check above exists to make loud instead.
+  if (anchors.camera?.present === true) {
+    throw new SessionLoadError(
+      "anchors.camera.present is true, but loadSession does not load camera tracks yet " +
+      "(increment 3 adds camera demux). Refusing to silently drop the PiP.",
+    );
   }
 
   const video = await demuxDisplayMp4(input.displayMp4);

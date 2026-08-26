@@ -16,6 +16,7 @@ import Foundation
 import ScreenCaptureKit
 import CoreGraphics
 import AppKit
+import AVFoundation
 import IOKit.hid
 
 let args = CommandLine.arguments
@@ -25,7 +26,7 @@ func arg(_ name: String) -> String? {
 }
 
 guard let outPath = arg("--out") else {
-    FileHandle.standardError.write("usage: --out <result.json> [--probe | --helper <bin> --dir <sessionDir> --ms <n>]\n".data(using: .utf8)!)
+    FileHandle.standardError.write("usage: --out <result.json> [--probe | --camera-request | --camera-probe --helper <bin> | --helper <bin> --dir <sessionDir> --ms <n>]\n".data(using: .utf8)!)
     exit(2)
 }
 let outURL = URL(fileURLWithPath: outPath)
@@ -60,11 +61,44 @@ func runProbe() {
         let hidAccess = IOHIDCheckAccess(kIOHIDRequestTypeListenEvent)
         let hidName = hidAccess == kIOHIDAccessTypeGranted ? "granted"
                     : hidAccess == kIOHIDAccessTypeDenied ? "denied" : "unknown"
+        // Camera is a SEPARATE grant from Screen Recording and from Input
+        // Monitoring. authorizationStatus does not prompt; it reports.
+        let camAuth: String
+        switch AVCaptureDevice.authorizationStatus(for: .video) {
+        case .authorized:    camAuth = "authorized"
+        case .denied:        camAuth = "denied"
+        case .restricted:    camAuth = "restricted"
+        case .notDetermined: camAuth = "notDetermined"
+        @unknown default:    camAuth = "unknown"
+        }
+        let cams = AVCaptureDevice.DiscoverySession(
+            deviceTypes: [.builtInWideAngleCamera, .externalUnknown],
+            mediaType: .video, position: .unspecified).devices.map { $0.localizedName }
+
         var o: [String: Any] = ["verdict": n > 0 ? "granted" : "denied", "granted": n > 0,
                                 "preflight": preflight, "displays": n,
-                                "inputMonitoring": hidName]
+                                "inputMonitoring": hidName,
+                                "cameraAuth": camAuth, "cameraDevices": cams]
         if let err { o["error"] = String(describing: err) }
         writeResult(o)
+        exit(0)
+    }
+}
+
+// MARK: - camera-request mode
+
+/// Calls AVCaptureDevice.requestAccess(for: .video) exactly once. This is the
+/// ONLY way to make this bundle appear in System Settings > Privacy & Security
+/// > Camera: that pane lists only apps that have already requested access, and
+/// nothing else in this repo ever calls requestAccess — camera-probe and the
+/// helper deliberately only READ authorizationStatus (see runProbe above and
+/// helper's own probe), which never prompts and never registers the bundle.
+/// requestAccess raises the system prompt but does NOT open the device or
+/// light the camera LED, so running this mode does not itself constitute
+/// "using the camera" — it only asks for permission to, later, elsewhere.
+func runCameraRequest() {
+    AVCaptureDevice.requestAccess(for: .video) { granted in
+        writeResult(["verdict": granted ? "granted" : "denied", "granted": granted])
         exit(0)
     }
 }
@@ -157,8 +191,106 @@ func runSession(helper: String, dir: String, recordMs: Int) {
     exit(0)
 }
 
+// MARK: - camera-probe mode
+
+/// Launches the helper as a child of THIS bundle and asks it what camera
+/// authorization it sees. The answer is the whole point: a bare CLI binary
+/// inherits the launching bundle's TCC identity, and that is what ships.
+/// Reuses runSession's pipe-reading pattern (readabilityHandler + line buffer)
+/// rather than inventing a new one.
+func runCameraProbe(helper: String) {
+    let p = Process()
+    p.executableURL = URL(fileURLWithPath: helper)
+    let inPipe = Pipe(), outPipe = Pipe()
+    p.standardInput = inPipe
+    p.standardOutput = outPipe
+    p.standardError = FileHandle.nullDevice
+
+    let lock = NSLock()
+    var lines: [[String: Any]] = []
+    var buf = Data()
+
+    outPipe.fileHandleForReading.readabilityHandler = { fh in
+        let d = fh.availableData
+        if d.isEmpty { return }
+        lock.lock()
+        buf.append(d)
+        while let nl = buf.firstIndex(of: 0x0A) {
+            let lineData = buf[buf.startIndex..<nl]
+            buf = buf[buf.index(after: nl)...]
+            if let o = try? JSONSerialization.jsonObject(with: Data(lineData)) as? [String: Any] {
+                lines.append(o)
+            }
+        }
+        lock.unlock()
+    }
+
+    func seen(_ test: ([String: Any]) -> Bool) -> [String: Any]? {
+        lock.lock(); defer { lock.unlock() }
+        return lines.first(where: test)
+    }
+    func waitFor(_ test: @escaping ([String: Any]) -> Bool, timeout: Double) -> [String: Any]? {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if let m = seen(test) { return m }
+            usleep(20_000)
+        }
+        return nil
+    }
+    func send(_ o: [String: Any]) {
+        guard let d = try? JSONSerialization.data(withJSONObject: o) else { return }
+        inPipe.fileHandleForWriting.write(d + Data("\n".utf8))
+    }
+
+    do { try p.run() } catch {
+        writeResult(["verdict": "spawn-failed", "error": "\(error)"]); exit(4)
+    }
+
+    guard waitFor({ $0["ev"] as? String == "ready" }, timeout: 10) != nil else {
+        writeResult(["helperAuth": "no-ready", "helperDevices": [String]()])
+        p.terminate(); exit(5)
+    }
+
+    send(["cmd": "camera-probe", "seq": 1])
+    // Match on seq alone, like runSession does — an error reply (or any other
+    // unsolicited event) still answers seq 1 and must not be discarded. Matching
+    // on ev == "camera-probe" too would make a real reply indistinguishable from
+    // no reply at all, collapsing both into "timeout": the exact diagnostic
+    // collapse STC-254 warns about ("a diagnostic that lies is worse than one
+    // that admits ignorance").
+    guard let reply = waitFor({ ($0["seq"] as? Int) == 1 }, timeout: 10) else {
+        writeResult(["helperAuth": "timeout", "helperDevices": [String]()])
+        p.terminate(); exit(1)
+    }
+
+    guard reply["ev"] as? String == "camera-probe" else {
+        // The helper answered, just not with what we asked for. Name what it
+        // actually said rather than reporting "timeout" for a live reply.
+        let ev = reply["ev"] as? String ?? "missing"
+        var o: [String: Any] = ["helperAuth": "unexpected-reply:\(ev)", "helperDevices": [String]()]
+        if let code = reply["code"] { o["helperReplyCode"] = code }
+        if let detail = reply["detail"] { o["helperReplyDetail"] = detail }
+        writeResult(o)
+        p.terminate(); exit(1)
+    }
+
+    writeResult(["helperAuth": reply["auth"] as? String ?? "missing",
+                 "helperDevices": reply["devices"] as? [String] ?? []])
+    p.terminate()
+    exit(0)
+}
+
 DispatchQueue.main.async {
     if args.contains("--probe") { runProbe(); return }
+    if args.contains("--camera-request") { runCameraRequest(); return }
+    if args.contains("--camera-probe") {
+        guard let helper = arg("--helper") else {
+            writeResult(["verdict": "bad-args", "detail": "--camera-probe needs --helper <bin>"])
+            exit(2)
+        }
+        DispatchQueue.global().async { runCameraProbe(helper: helper) }
+        return
+    }
     guard let helper = arg("--helper"), let dir = arg("--dir") else {
         writeResult(["verdict": "bad-args", "detail": "session mode needs --helper and --dir"])
         exit(2)

@@ -104,3 +104,61 @@ describe("fixture frame grid", () => {
     expect(Math.max(...gaps)).toBeGreaterThanOrEqual(33_333_334);
   });
 });
+
+describe("v2 schemas carry the camera track and PiP geometry", () => {
+  test("the pip fixture's anchors conform to anchors-2", () => {
+    const validate = compile("schema/anchors-2.schema.json");
+    const ok = validate(load("fixtures/pip/anchors.json"));
+    expect(ok, JSON.stringify(validate.errors, null, 2)).toBe(true);
+  });
+
+  test("the pip fixture's project conforms to project-2", () => {
+    const validate = compile("schema/project-2.schema.json");
+    const ok = validate(load("fixtures/pip/project.json"));
+    expect(ok, JSON.stringify(validate.errors, null, 2)).toBe(true);
+  });
+
+  test("project-2 rejects a corner it does not implement", () => {
+    const validate = compile("schema/project-2.schema.json");
+    const doc = clone(load("fixtures/pip/project.json"));
+    doc.pip.corner = "top-left";
+    expect(validate(doc)).toBe(false);
+  });
+
+  test("anchors-2 rejects a camera block missing frameIntervalNs", () => {
+    // The transform bounds the PiP's track end with this value. Without it the
+    // bound would have to be assumed, and the measured camera rate varies.
+    const validate = compile("schema/anchors-2.schema.json");
+    const doc = clone(load("fixtures/pip/anchors.json"));
+    delete doc.camera.frameIntervalNs;
+    expect(validate(doc)).toBe(false);
+  });
+
+  test("a v1 document is not a v2 document", () => {
+    const validate = compile("schema/anchors-2.schema.json");
+    expect(validate(load("fixtures/basic/anchors.json"))).toBe(false);
+  });
+
+  test("camera: present:false alone is valid — no measurements required when absent", () => {
+    // Increment 3's "no camera requested / none available" path must not have
+    // to fabricate a device string or width/height/frameIntervalNs to satisfy
+    // the schema, or present:false is dead.
+    const validate = compile("schema/anchors-2.schema.json");
+    const doc = clone(load("fixtures/pip/anchors.json"));
+    doc.camera = { present: false };
+    expect(validate(doc), JSON.stringify(validate.errors, null, 2)).toBe(true);
+  });
+
+  test("camera: present:true missing frameIntervalNs is invalid", () => {
+    const validate = compile("schema/anchors-2.schema.json");
+    const doc = clone(load("fixtures/pip/anchors.json"));
+    delete doc.camera.frameIntervalNs;
+    expect(validate(doc)).toBe(false);
+  });
+
+  test("the pip fixture (present:true, full measurements) still validates", () => {
+    const validate = compile("schema/anchors-2.schema.json");
+    const ok = validate(load("fixtures/pip/anchors.json"));
+    expect(ok, JSON.stringify(validate.errors, null, 2)).toBe(true);
+  });
+});

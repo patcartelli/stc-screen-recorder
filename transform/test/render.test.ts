@@ -16,6 +16,32 @@ function fixtureSession(): Session {
 }
 const fixtureProject = (): Project => load("fixtures/basic/project.json");
 
+function pipSession(): { project: Project; session: Session } {
+  return {
+    project: load("fixtures/pip/project.json"),
+    session: {
+      anchors: load("fixtures/pip/anchors.json"),
+      events: load("fixtures/pip/events.json").events,
+      frames: load("fixtures/pip/frames.json"),
+      cameraFrames: load("fixtures/pip/camera-frames.json"),
+    },
+  };
+}
+// Pairs the PiP-enabled project with the v1 basic session (no camera at all)
+// so the "no PiP for a v1 session with no camera" test actually reaches
+// pipStateAt's `!cam?.present` guard, instead of returning at the earlier
+// `!pip?.enabled` guard because fixtures/basic/project.json has no `pip`.
+// cameraFrames is deliberately given a non-empty array too — otherwise the
+// later `!frames?.length` guard would return null first (frames undefined,
+// since the basic fixture never sets cameraFrames), and the test would still
+// pass vacuously if `!cam?.present` were deleted.
+function basicSessionWithPipProject(): { project: Project; session: Session } {
+  return {
+    project: load("fixtures/pip/project.json") as Project,
+    session: { ...fixtureSession(), cameraFrames: [2_000_000_000] },
+  };
+}
+
 describe("render(project, session, t) → FrameState", () => {
   test("selects the source frame by greatest PTS <= t and reports its PTS", () => {
     const session = fixtureSession();
@@ -119,5 +145,88 @@ describe("determinism — the increment-0 gate at unit level", () => {
     const project = fixtureProject();
     const first = JSON.stringify(render(project, session, 3_141_592_653));
     expect(JSON.stringify(render(project, session, 3_141_592_653))).toBe(first);
+  });
+});
+
+describe("PiP placement and track bounds", () => {
+  const CAM_FIRST = 1_035_500_000;
+  const CAM_LAST = 3_024_500_000;
+  const CAM_INTERVAL = 17_000_000;
+
+  test("no PiP before the camera's first frame", () => {
+    const { project, session } = pipSession();
+    expect(render(project, session, CAM_FIRST - 1).pip).toBeNull();
+  });
+
+  test("PiP appears at the camera's first frame", () => {
+    const { project, session } = pipSession();
+    const pip = render(project, session, CAM_FIRST).pip;
+    expect(pip).not.toBeNull();
+    expect(pip!.framePtsNs).toBe(CAM_FIRST);
+  });
+
+  test("PiP sits in the bottom-right corner at the configured size", () => {
+    const { project, session } = pipSession();   // 3840x2160, widthPct 0.125, margin 32
+    const pip = render(project, session, CAM_FIRST).pip!;
+    expect(pip.width).toBe(480);                 // 3840 * 0.125
+    expect(pip.height).toBe(270);                // 480 * 720/1280
+    expect(pip.x).toBe(3840 - 480 - 32);
+    expect(pip.y).toBe(2160 - 270 - 32);
+  });
+
+  test("the PiP holds the last frame at or before t, never interpolating", () => {
+    const { project, session } = pipSession();
+    const justBeforeSecond = CAM_FIRST + CAM_INTERVAL - 1;
+    expect(render(project, session, justBeforeSecond).pip!.framePtsNs).toBe(CAM_FIRST);
+  });
+
+  test("the PiP disappears after the track ends rather than freezing", () => {
+    // A camera unplugged mid-take must not leave a frozen face on screen for
+    // the rest of the recording. Track end is lastFramePtsNs + frameIntervalNs.
+    const { project, session } = pipSession();
+    expect(render(project, session, CAM_LAST).pip).not.toBeNull();
+    expect(render(project, session, CAM_LAST + CAM_INTERVAL).pip).not.toBeNull();
+    expect(render(project, session, CAM_LAST + CAM_INTERVAL + 1).pip).toBeNull();
+  });
+
+  test("no PiP when the project disables it", () => {
+    const { project, session } = pipSession();
+    const off = { ...project, pip: { ...project.pip!, enabled: false } };
+    expect(render(off, session, CAM_FIRST).pip).toBeNull();
+  });
+
+  test("no PiP for a v1 session that has no camera at all", () => {
+    // Deliberately NOT { project: fixtureProject(), session: fixtureSession() }: fixtures/basic/project.json has no
+    // `pip` block, so that pairing returns at the `!pip?.enabled` guard and
+    // never exercises the camera-absence check — removing `!cam?.present`
+    // from render.ts would leave this passing. Pairing the pip-enabled
+    // project with the camera-less basic session forces the test through to
+    // that guard instead.
+    const { project, session } = basicSessionWithPipProject();
+    expect(render(project, session, 2_000_000_000).pip).toBeNull();
+  });
+
+  test("PiP placement is identical whether reached by stepping or seeking", () => {
+    // The determinism property the two sinks depend on. render() memoises the
+    // cursor sim per Session, so the comparison must be against a SEPARATELY
+    // loaded session with a cold cache — comparing two renders of the same
+    // warmed session would pass no matter what the cache did.
+    const t = CAM_FIRST + 40 * CAM_INTERVAL;
+
+    const cold = pipSession();
+    const seeked = render(cold.project, cold.session, t).pip;
+
+    const warm = pipSession();
+    for (let u = 0; u < t; u += 8_333_333) render(warm.project, warm.session, u);
+    const stepped = render(warm.project, warm.session, t).pip;
+
+    expect(stepped).toEqual(seeked);
+    // Concrete values, not just "not null" — `undefined` also satisfies
+    // `not.toBeNull()` and `toEqual`, which is exactly how this test passed
+    // vacuously before pipStateAt existed (FrameState.pip was undefined).
+    // Accessing .width/.height on a missing pip throws instead of silently
+    // passing, so both `undefined` and `null` fail this test.
+    expect(seeked!.width).toBe(480);   // 3840 * 0.125
+    expect(seeked!.height).toBe(270);  // 480 * 720/1280
   });
 });

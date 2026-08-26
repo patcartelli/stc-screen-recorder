@@ -281,6 +281,15 @@ reachable via KVC (`setValue(3, forKey: "captureResolution")`, verified in phase
   landed PR #2 while its run was still in progress. Use `npm run merge -- <pr>`
   (`scripts/merge-when-green.mjs`), which polls the run matching the PR's head SHA and refuses to
   merge anything not green.
+- **`gh pr checks --watch` exits 0 when no checks exist yet** — it does not wait for one to
+  appear. Run it in the seconds between opening a PR and GitHub registering the workflow and it
+  prints `no checks reported` and exits **successfully**, which reads as "passed" to anything
+  that checks the exit code. Seen on PR #10: the watch returned exit 0 before the run existed,
+  and the run then started 20 s later and was still in progress. Same family as the `--auto`
+  trap above — a command that succeeds by finding nothing to do, in a place where success is
+  read as verification. Confirm a run exists for the PR's head SHA first
+  (`gh run list --branch <branch>`), then watch that run by id with
+  `gh run watch <id> --exit-status`.
 - **Every wait needs a bound and a reason** — the rule this codebase kept re-learning. Five hangs
   in one day traced to promises settled only by someone else's callback: mp4box, `VideoDecoder`,
   `VideoEncoder`, `AVAssetWriter` and `SCStream` all signal trouble by never calling back. Wrap
@@ -323,6 +332,16 @@ reachable via KVC (`setValue(3, forKey: "captureResolution")`, verified in phase
   every signal is named explicitly; the old `default: "SIGABRT"` would have mislabelled anything
   added to the loop, and a diagnostic that lies is worse than one that admits ignorance.
   `helper/test/crash-signals.test.ts` signals the real binary and asserts the stderr line.
+- **The Camera pane only lists apps that have already REQUESTED access** — there is no
+  add button, so a bundle that merely *reads* `AVCaptureDevice.authorizationStatus` never
+  appears there and can never be granted. Reading status is not enough to become grantable;
+  something must call `requestAccess` once to raise the prompt. `requestAccess` shows the
+  dialog WITHOUT opening the device or lighting the LED, which is what makes it safe to call
+  from a probe. `tools/test-host --camera-request` exists for exactly this.
+- **Camera TCC inherits through the bundle, same as Screen Recording — verified 2026-08-26.**
+  `helper/test/camera.grant.test.ts` launches the helper from the signed test-host and the
+  helper reports `authorized`. This was STC-232 increment 1's gate, sequenced first precisely
+  because a failure would have invalidated the shared-process capture design.
 - **An empty events.json does not mean the tap is broken** — an automated capture records zero
   events simply because nothing moves the mouse, which is indistinguishable from a dead button
   path. Verifying input needs deliberate input; `fixtures/real-session/` pins the result.
