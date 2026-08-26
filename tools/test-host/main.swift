@@ -26,7 +26,7 @@ func arg(_ name: String) -> String? {
 }
 
 guard let outPath = arg("--out") else {
-    FileHandle.standardError.write("usage: --out <result.json> [--probe | --helper <bin> --dir <sessionDir> --ms <n>]\n".data(using: .utf8)!)
+    FileHandle.standardError.write("usage: --out <result.json> [--probe | --camera-probe --helper <bin> | --helper <bin> --dir <sessionDir> --ms <n>]\n".data(using: .utf8)!)
     exit(2)
 }
 let outURL = URL(fileURLWithPath: outPath)
@@ -173,8 +173,88 @@ func runSession(helper: String, dir: String, recordMs: Int) {
     exit(0)
 }
 
+// MARK: - camera-probe mode
+
+/// Launches the helper as a child of THIS bundle and asks it what camera
+/// authorization it sees. The answer is the whole point: a bare CLI binary
+/// inherits the launching bundle's TCC identity, and that is what ships.
+/// Reuses runSession's pipe-reading pattern (readabilityHandler + line buffer)
+/// rather than inventing a new one.
+func runCameraProbe(helper: String) {
+    let p = Process()
+    p.executableURL = URL(fileURLWithPath: helper)
+    let inPipe = Pipe(), outPipe = Pipe()
+    p.standardInput = inPipe
+    p.standardOutput = outPipe
+    p.standardError = FileHandle.nullDevice
+
+    let lock = NSLock()
+    var lines: [[String: Any]] = []
+    var buf = Data()
+
+    outPipe.fileHandleForReading.readabilityHandler = { fh in
+        let d = fh.availableData
+        if d.isEmpty { return }
+        lock.lock()
+        buf.append(d)
+        while let nl = buf.firstIndex(of: 0x0A) {
+            let lineData = buf[buf.startIndex..<nl]
+            buf = buf[buf.index(after: nl)...]
+            if let o = try? JSONSerialization.jsonObject(with: Data(lineData)) as? [String: Any] {
+                lines.append(o)
+            }
+        }
+        lock.unlock()
+    }
+
+    func seen(_ test: ([String: Any]) -> Bool) -> [String: Any]? {
+        lock.lock(); defer { lock.unlock() }
+        return lines.first(where: test)
+    }
+    func waitFor(_ test: @escaping ([String: Any]) -> Bool, timeout: Double) -> [String: Any]? {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if let m = seen(test) { return m }
+            usleep(20_000)
+        }
+        return nil
+    }
+    func send(_ o: [String: Any]) {
+        guard let d = try? JSONSerialization.data(withJSONObject: o) else { return }
+        inPipe.fileHandleForWriting.write(d + Data("\n".utf8))
+    }
+
+    do { try p.run() } catch {
+        writeResult(["verdict": "spawn-failed", "error": "\(error)"]); exit(4)
+    }
+
+    guard waitFor({ $0["ev"] as? String == "ready" }, timeout: 10) != nil else {
+        writeResult(["helperAuth": "no-ready", "helperDevices": [String]()])
+        p.terminate(); exit(5)
+    }
+
+    send(["cmd": "camera-probe", "seq": 1])
+    guard let reply = waitFor({ $0["ev"] as? String == "camera-probe" && ($0["seq"] as? Int) == 1 }, timeout: 10) else {
+        writeResult(["helperAuth": "timeout", "helperDevices": [String]()])
+        p.terminate(); exit(1)
+    }
+
+    writeResult(["helperAuth": reply["auth"] as? String ?? "missing",
+                 "helperDevices": reply["devices"] as? [String] ?? []])
+    p.terminate()
+    exit(0)
+}
+
 DispatchQueue.main.async {
     if args.contains("--probe") { runProbe(); return }
+    if args.contains("--camera-probe") {
+        guard let helper = arg("--helper") else {
+            writeResult(["verdict": "bad-args", "detail": "--camera-probe needs --helper <bin>"])
+            exit(2)
+        }
+        DispatchQueue.global().async { runCameraProbe(helper: helper) }
+        return
+    }
     guard let helper = arg("--helper"), let dir = arg("--dir") else {
         writeResult(["verdict": "bad-args", "detail": "session mode needs --helper and --dir"])
         exit(2)
