@@ -8,6 +8,17 @@
 
 **Tech Stack:** TypeScript, WebCodecs (`VideoDecoder`), OffscreenCanvas, mp4box.js, vite + Playwright + real Chrome for the gate, vitest.
 
+## Status (2026-08-27)
+
+**Tasks 1-4 are done and merged into PR #25; CI green.** Task 5 is the only one
+left, and it cannot be done without a camera-granted machine and a human's
+eyes.
+
+What Task 4 established, worth knowing before touching any of this: with the
+PiP draw forced off, the preview-vs-export comparison still reported
+`mismatches: 0` across all 200 sampled t, while the blind-hash check reported
+`80 of 80`. Identity is blind to a missing PiP; the blind-hash check is not.
+
 ## Global Constraints
 
 - **`render(project, session, t)` stays pure.** No decoder scheduling, no wall clock. Sinks may not fork it, and may not fork `composite()` either.
@@ -41,7 +52,7 @@ This is the same lesson as PHASE-2's cursor: hashes prove the sinks AGREE, only 
 - Consumes: `FrameState.pip` (`PipState | null`) from `transform/src/render.ts:29-36` — fields `frameIndex`, `framePtsNs`, `x`, `y`, `width`, `height`.
 - Produces: `composite(ctx, frame, camera, fs, width, height)` — the `camera` parameter is inserted **third**, immediately after `frame`, so the two image inputs sit together. Every call site must be updated in this task or the build breaks.
 
-- [ ] **Step 1: Change the signature and draw the PiP**
+- [x] **Step 1: Change the signature and draw the PiP**
 
 In `transform/src/compositor.ts`, replace the signature and add the PiP draw **after** the display frame and **before** the cursor — the cursor must stay on top, or a cursor over the PiP corner would vanish behind it:
 
@@ -87,7 +98,7 @@ export function composite(
 }
 ```
 
-- [ ] **Step 2: Update all SIX call sites to pass `null` for now**
+- [x] **Step 2: Update all SIX call sites to pass `null` for now**
 
 **`npx tsc --noEmit` will NOT catch a missed one.** `tsconfig.json` includes
 only `transform/**/*.ts`, so `harness/` and `app/` are not typechecked at all —
@@ -135,7 +146,7 @@ pre-decoded bitmaps and no camera:
 
 Passing `null` here is deliberate and temporary: Tasks 2 and 3 replace each one with a real camera frame. It keeps this task's deliverable independently reviewable — a signature change with no behaviour change.
 
-- [ ] **Step 3: Verify nothing regressed**
+- [x] **Step 3: Verify nothing regressed**
 
 Run: `npx tsc --noEmit && npm test`
 Expected: tsc clean, all tests pass (same count as before this task — no test asserts on the compositor directly; there is no Node-testable canvas path, which is why Task 4's browser gate is the real verification).
@@ -143,12 +154,12 @@ Expected: tsc clean, all tests pass (same count as before this task — no test 
 Do not read a clean tsc as proof the call sites are right — it does not see
 `harness/`. Step 4 is the one that actually checks.
 
-- [ ] **Step 4: Verify the existing gate still passes**
+- [x] **Step 4: Verify the existing gate still passes**
 
 Run: `npm run gate`
 Expected: `GATE: PASS` — 200 sampled t identical, 300 export frames identical twice over.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add transform/src/compositor.ts transform/src/export.ts transform/src/preview.ts harness/sink-identity.ts
@@ -174,7 +185,7 @@ so this stands alone as a signature change with no behaviour change."
 - Consumes: `LoadedSession.cameraVideo?: DemuxedVideo` (`transform/src/session.ts:27`), `composite(ctx, frame, camera, fs, w, h)` from Task 1.
 - Produces: `ExportResult.cameraDecodedFrames: number` — a new field, so the gate can assert the camera decoder actually ran rather than silently no-opping.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `transform/test/export-pip.test.ts`. This asserts the one thing about export+PiP that is testable without a canvas: a session with a camera reports camera frames decoded, and one without reports zero.
 
@@ -220,7 +231,7 @@ describe("export reports whether the camera decoder ran", () => {
 });
 ```
 
-- [ ] **Step 2: Run it and watch it fail**
+- [x] **Step 2: Run it and watch it fail**
 
 Run: `npx vitest run transform/test/export-pip.test.ts`
 Expected: FAIL — `fixtures/pip/display.mp4` does not exist yet (ENOENT). That file is created in Task 4 Step 1; if you are executing tasks in order, create it now with the command below and re-run.
@@ -233,7 +244,7 @@ cp fixtures/basic/display.mp4 fixtures/pip/display.mp4
 
 Re-run. Expected now: PASS for the second test, FAIL for the first only if the copy was skipped.
 
-- [ ] **Step 3: Add the camera source to the export sink**
+- [x] **Step 3: Add the camera source to the export sink**
 
 In `transform/src/export.ts`, after line 56 (`const source = new ForwardFrameSource(session.video);`):
 
@@ -263,7 +274,7 @@ Replace lines 101-103 with:
                 cameraFrame as unknown as ImageBitmap | null, fs, width, height);
 ```
 
-- [ ] **Step 4: Report the camera decode count and close the source**
+- [x] **Step 4: Report the camera decode count and close the source**
 
 Add to the `ExportResult` interface (after `decodedFrames: number;` at line 38):
 
@@ -284,12 +295,12 @@ In the `finally` block (after `source.close();`):
     cameraSource?.close();
 ```
 
-- [ ] **Step 5: Verify**
+- [x] **Step 5: Verify**
 
 Run: `npx tsc --noEmit && npm test`
 Expected: tsc clean, all tests pass including the two new ones.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add transform/src/export.ts transform/test/export-pip.test.ts fixtures/pip/display.mp4
@@ -315,7 +326,7 @@ cannot see."
 - Consumes: `LoadedSession.cameraVideo`, `SeekingFrameSource` (`transform/src/seeking-frame-source.ts`), `composite(...)` from Task 1.
 - Produces: no new public API. `PreviewPlayer.stats` gains `cameraRenderedFrames` for Task 5's memory measurement.
 
-- [ ] **Step 1: Add the camera source field and construct it**
+- [x] **Step 1: Add the camera source field and construct it**
 
 In `transform/src/preview.ts`, after line 15 (`private readonly source: SeekingFrameSource;`):
 
@@ -335,7 +346,7 @@ After line 34 (`this.source = new SeekingFrameSource(session.video);`):
       : null;
 ```
 
-- [ ] **Step 2: Draw the PiP**
+- [x] **Step 2: Draw the PiP**
 
 Replace the body of `draw()` (lines 103-120) with:
 
@@ -387,7 +398,7 @@ And extend the `stats` getter (line 56):
   }
 ```
 
-- [ ] **Step 3: Close the camera source**
+- [x] **Step 3: Close the camera source**
 
 In `close()` (after `this.source.close();`):
 
@@ -395,7 +406,7 @@ In `close()` (after `this.source.close();`):
     this.cameraSource?.close();
 ```
 
-- [ ] **Step 4: Verify**
+- [x] **Step 4: Verify**
 
 Run: `npx tsc --noEmit && npm test`
 Expected: tsc clean, all tests pass.
@@ -403,7 +414,7 @@ Expected: tsc clean, all tests pass.
 Run: `npm run gate:seek`
 Expected: PASS — the seeking source's own gate must be unaffected by a second instance existing.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add transform/src/preview.ts
@@ -429,7 +440,7 @@ pair a display frame from one t with a camera frame from another."
 - Consumes: everything from Tasks 1-3.
 - Produces: `runSinkIdentity(dir, sampleCount)` returning `{ samples, mismatches, peakBuffered, decoderGenerations, totalOut, cameraPresent, pipDrawnFrames, pipBlindMismatches }`.
 
-- [ ] **Step 1: Complete the fixture**
+- [x] **Step 1: Complete the fixture**
 
 ```bash
 cp fixtures/basic/display.mp4 fixtures/pip/display.mp4
@@ -446,12 +457,12 @@ In `fixtures/pip/anchors.json`, change the `files` block to:
 
 `schema/anchors-2.schema.json` already allows `files.camera` (optional string). The harness uses its presence to decide whether to fetch a camera track, so a take that has one says so in its own anchors rather than the gate guessing.
 
-- [ ] **Step 2: Verify the fixture still validates and still loads**
+- [x] **Step 2: Verify the fixture still validates and still loads**
 
 Run: `npx vitest run transform/test/session.test.ts helper/test/anchors.test.ts`
 Expected: PASS. If `anchors.test.ts` fails on `additionalProperties`, the schema does not allow `files.camera` — re-read `schema/anchors-2.schema.json` before changing anything else.
 
-- [ ] **Step 3: Rewrite `runSinkIdentity` to read the take's own project and drive both tracks**
+- [x] **Step 3: Rewrite `runSinkIdentity` to read the take's own project and drive both tracks**
 
 Replace the body of `(window as any).runSinkIdentity` in `harness/sink-identity.ts` with:
 
@@ -567,7 +578,7 @@ Replace the body of `(window as any).runSinkIdentity` in `harness/sink-identity.
 };
 ```
 
-- [ ] **Step 4: Widen the gate server's file whitelist**
+- [x] **Step 4: Widen the gate server's file whitelist**
 
 `scripts/identity-gate.mjs`'s `/session` middleware serves an explicit
 whitelist and calls `next()` for anything else — so `camera.mp4` and
@@ -596,7 +607,7 @@ A camera-less take genuinely has no `camera.mp4`, and the page only fetches it
 when `anchors.files.camera` is set — so a 404 here means the anchors and the
 directory disagree, which is worth failing on.
 
-- [ ] **Step 5: Teach the gate script to run the PiP fixture**
+- [x] **Step 5: Teach the gate script to run the PiP fixture**
 
 In `scripts/identity-gate.mjs`, allow a fixture directory to be passed instead of a recorded take, and assert the new fields. Replace the `page.evaluate` call and the assertions after it with:
 
@@ -630,7 +641,7 @@ After the existing mismatch assertions, add:
   }
 ```
 
-- [ ] **Step 6: Run the gate against the PiP fixture**
+- [x] **Step 6: Run the gate against the PiP fixture**
 
 Run:
 
@@ -642,12 +653,12 @@ Expected: `cameraPresent: true`, `PiP drawn on 200 of 200`, `0 mismatches`, `0` 
 
 **If `pipBlindMismatches` equals the sample count, do not "fix" the assertion** — it means the PiP is genuinely not being drawn, which is the defect this check exists to find. Work backwards: is `session.cameraVideo` defined, is `fs.pip` non-null, did `frameAt` return a frame?
 
-- [ ] **Step 7: Run every other gate, to prove nothing regressed**
+- [x] **Step 7: Run every other gate, to prove nothing regressed**
 
 Run: `npm run gate && npm run gate:seek && npm run gate:identity`
 Expected: all PASS. The camera-less path must be completely unaffected — `cameraPresent: false` and the PiP block skipped.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add fixtures/pip/display.mp4 fixtures/pip/anchors.json harness/sink-identity.ts scripts/identity-gate.mjs
