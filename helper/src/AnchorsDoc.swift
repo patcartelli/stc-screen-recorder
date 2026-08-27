@@ -63,11 +63,11 @@ func anchorsDocument(timebase: (numer: Int, denom: Int),
                     "pixelWidth": display.pixelWidth, "pixelHeight": display.pixelHeight,
                     "backingScale": display.pointWidth > 0
                         ? Double(display.pixelWidth) / Double(display.pointWidth) : 1.0,
-                    "originX": display.originX, "originY": display.originY],
+                    "originX": display.originX, "originY": display.originY] as [String: Any],
         "capture": ["width": capture.width, "height": capture.height, "codec": "h264",
-                    "firstFrameNs": max(0, capture.firstFrameNs)],
+                    "firstFrameNs": max(0, capture.firstFrameNs)] as [String: Any],
         "files": files,
         "camera": cameraBlock,
-        "stop": ["t": stopTNs, "reason": stopReason],
+        "stop": ["t": stopTNs, "reason": stopReason] as [String: Any],
     ]
 }
