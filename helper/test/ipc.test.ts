@@ -189,9 +189,38 @@ describe("camera opt-in", () => {
     await waitFor(() => h.fd3.find((l) => l.ev === "ready"));
     h.send({ cmd: "start", dir: tmpSession(), camera: true, seq: 1 });
     const r = await waitFor(() => h.fd3.find((l) => l.seq === 1), 30_000, "start reply");
-    // On a machine with a camera AND a grant this succeeds with a device name;
-    // without either it warns. Both are correct. A start that FAILS because of
-    // the camera is not.
+    // On a machine with a camera AND a grant this still succeeds — but never
+    // with a device name here. The camera now opens on a background queue
+    // (Capture.swift's startCameraAsync) so it never delays this reply, and
+    // its outcome is reported later as its own "camera-started"/"warning"
+    // event instead of being folded into "started". Without a camera or grant
+    // this warns. Both are correct. A start that FAILS because of the camera
+    // is not.
     expect(String(r.code ?? "")).not.toMatch(/^camera-/);
+    expect(r.camera).toBeUndefined();
   }, 60_000);
+
+  test("the camera flag does not change how start fails without a grant", async () => {
+    // The two tests above pass vacuously on any machine without a Screen
+    // Recording grant (every CI run): start fails with "no-displays" before
+    // the camera path is ever reached, so a camera-flag bug that perturbed
+    // that path would never be exercised. This assertion needs no grant and
+    // would catch exactly that: run start twice, once per flag value, and if
+    // both fail, they must fail IDENTICALLY — proving the flag took no part
+    // in how start failed.
+    const h1 = spawnHelper();
+    await waitFor(() => h1.fd3.find((l) => l.ev === "ready"));
+    h1.send({ cmd: "start", dir: tmpSession(), camera: false, seq: 1 });
+    const r1 = await waitFor(() => h1.fd3.find((l) => l.seq === 1), 30_000, "start reply (camera:false)");
+
+    const h2 = spawnHelper();
+    await waitFor(() => h2.fd3.find((l) => l.ev === "ready"));
+    h2.send({ cmd: "start", dir: tmpSession(), camera: true, seq: 1 });
+    const r2 = await waitFor(() => h2.fd3.find((l) => l.seq === 1), 30_000, "start reply (camera:true)");
+
+    if (r1.ev === "error" && r2.ev === "error") {
+      expect(r2.code).toBe(r1.code);
+      expect(r2.detail).toBe(r1.detail);
+    }
+  }, 90_000);
 });

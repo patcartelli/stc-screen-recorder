@@ -25,9 +25,21 @@ final class CaptureSession: NSObject, SCStreamOutput, SCStreamDelegate {
     /// Optional subsystem: nil unless `start` was asked for a camera AND it
     /// actually opened. A missing/denied/busy camera leaves this nil and the
     /// take display-only — see the warning path in `start`.
+    ///
+    /// Guarded by `lock`, same as `events` and the frame counters below —
+    /// NOT a bare `var`. The camera opens on a background queue (see
+    /// `startCameraAsync`) while `stop()` can arrive on a different queue at
+    /// any time, including before the camera has finished opening. Without a
+    /// lock, `stop()` can observe `camera == nil`, skip teardown entirely, and
+    /// then have the background open assign into `camera` afterward — nothing
+    /// ever stops that instance, so the AVCaptureSession (and its LED) runs
+    /// for the rest of the process's life. `stoppingBegan` closes the other
+    /// half of the race: it tells a camera that finishes opening AFTER stop()
+    /// has already run that it must stop itself immediately rather than be
+    /// stored.
     private var camera: CameraCapture?
     private var cameraTrack: CameraTrack?
-    private var cameraDeviceName: String?
+    private var stoppingBegan = false
     /// The input and adaptor live behind the gate, not here: every access to
     /// them is either an append or a teardown, and those two must not overlap
     /// (STC-254). Holding them as plain properties is what allowed the overlap.
@@ -154,22 +166,17 @@ final class CaptureSession: NSObject, SCStreamOutput, SCStreamDelegate {
                 } else {
                     self.startEventTap()
                     // Optional subsystem: it must not sit on the critical path. PHASE-0
-                    // recorded camera/mic setup blocking startup once already. Opened
-                    // here, AFTER the display stream is confirmed up and never before
-                    // it — a missing, denied or busy camera only ever produces a
-                    // warning, never a failed start.
+                    // recorded camera/mic setup blocking startup once already, and
+                    // `AVCaptureSession.startRunning()` is documented as blocking — a
+                    // slow or USB camera would otherwise delay every `started` reply
+                    // by however long the device takes to open. So the open itself now
+                    // runs on a background queue (`startCameraAsync`) and `finishStart`
+                    // below does NOT wait for it. Consequence: the device name cannot
+                    // be part of THIS reply, because the reply may go out first — it is
+                    // reported later as its own event (`camera-started` / `warning`),
+                    // success and failure both, whenever the open actually resolves.
                     if wantCamera {
-                        let cam = CameraCapture(dir: self.dir, t0Ns: self.t0Ns)
-                        switch cam.start() {
-                        case .success(let name):
-                            self.camera = cam
-                            self.cameraDeviceName = name
-                            IO.stat("camera-started", ["device": name])
-                        case .failure(let e):
-                            let ce = e as? CameraError
-                            IO.send("warning", ["code": ce?.code ?? "camera-failed",
-                                                "detail": ce.map { $0.description } ?? "\(e)"])
-                        }
+                        self.startCameraAsync()
                     }
                     self.finishStart(.success(self.describe()))
                 }
@@ -187,6 +194,51 @@ final class CaptureSession: NSObject, SCStreamOutput, SCStreamDelegate {
         startCompletion = nil
         startLock.unlock()
         c?(result)
+    }
+
+    /// Opens the camera off the critical path (MEDIUM 3): `start` already
+    /// answered by the time this runs, so a slow or USB device never delays
+    /// `started`. Success and failure are both reported as their own event
+    /// once the open actually resolves — never folded into `started`.
+    ///
+    /// Races `stop()` (HIGH 1): if a stop has already begun by the time this
+    /// finishes, the camera must not be stored — nothing would ever stop it.
+    /// `stoppingBegan` and the decision of whether to store or immediately
+    /// close are made under `lock` so the two paths cannot both believe they
+    /// own the camera.
+    private func startCameraAsync() {
+        let dir = self.dir
+        let t0Ns = self.t0Ns
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self else { return }
+            let cam = CameraCapture(dir: dir, t0Ns: t0Ns)
+            let result = cam.start()
+
+            self.lock.lock()
+            let arrivedAfterStop = self.stoppingBegan
+            if case .success = result, !arrivedAfterStop {
+                self.camera = cam
+            }
+            self.lock.unlock()
+
+            switch result {
+            case .success(let name):
+                if arrivedAfterStop {
+                    // stop() already ran and found no camera to close, because
+                    // this one had not opened yet. Close it now — this take's
+                    // sidecars are likely already written, so the track is
+                    // discarded, but the AVCaptureSession must not be left
+                    // running for the rest of the process's life.
+                    cam.stop { _ in }
+                } else {
+                    IO.stat("camera-started", ["device": name])
+                }
+            case .failure(let e):
+                let ce = e as? CameraError
+                IO.send("warning", ["code": ce?.code ?? "camera-failed",
+                                    "detail": ce.map { $0.description } ?? "\(e)"])
+            }
+        }
     }
 
     private func setupWriter() throws {
@@ -386,11 +438,13 @@ final class CaptureSession: NSObject, SCStreamOutput, SCStreamDelegate {
                 "tapReenables": tapReenables]
     }
 
+    /// No camera field here on purpose: the camera opens asynchronously (see
+    /// `startCameraAsync`), so at the moment this is called for the `started`
+    /// reply, whether it has resolved yet is not something the caller should
+    /// be able to depend on. Its outcome is reported separately, once known.
     func describe() -> [String: Any] {
-        var d: [String: Any] = ["display": displayID, "capture": ["width": captureW, "height": captureH],
-                                "source": ["pixelWidth": pixelW, "pixelHeight": pixelH]]
-        if let cameraDeviceName { d["camera"] = cameraDeviceName }
-        return d
+        ["display": displayID, "capture": ["width": captureW, "height": captureH],
+         "source": ["pixelWidth": pixelW, "pixelHeight": pixelH]]
     }
 
     /// Tears down capture and writes events.json and anchors.json.
@@ -410,21 +464,22 @@ final class CaptureSession: NSObject, SCStreamOutput, SCStreamDelegate {
         if let tap { CGEvent.tapEnable(tap: tap, enable: false) }
         if let tapRunLoop { CFRunLoopStop(tapRunLoop) }
 
-        if let cam = self.camera {
-            let sem = DispatchSemaphore(value: 0)
-            cam.stop { track in self.cameraTrack = track; sem.signal() }
-            // Bounded: CameraCapture.stop already answers within 10 s, so a
-            // wait longer than that means it broke its own contract.
-            _ = sem.wait(timeout: .now() + 12)
-        }
+        // Set BEFORE reading `camera`: this is the other half of the HIGH 1
+        // race. A camera that finishes opening after this point checks the
+        // flag (in `startCameraAsync`) and closes itself instead of being
+        // stored, so it is not simply skipped and left running.
+        lock.lock()
+        stoppingBegan = true
+        let cam = camera
+        lock.unlock()
 
-        let lock = NSLock()
+        let answerLock = NSLock()
         var answered = false
         let finishUp: (String) -> Void = { [weak self] actualReason in
-            lock.lock()
-            if answered { lock.unlock(); return }
+            answerLock.lock()
+            if answered { answerLock.unlock(); return }
             answered = true
-            lock.unlock()
+            answerLock.unlock()
             guard let self else { return }
             var s = self.stats()
             if actualReason != reason { s["stopWarning"] = "writer did not finalise in time" }
@@ -432,24 +487,57 @@ final class CaptureSession: NSObject, SCStreamOutput, SCStreamDelegate {
             completion(s)
         }
 
+        // HIGH 2 — bound arithmetic. The client (app/src/helper-client.ts)
+        // gives every request, `stop` included, a flat 30 s timeout. This
+        // backstop bounds the display-teardown path at 20 s (unchanged from
+        // before the camera existed). CameraCapture.stop() carries its own
+        // 10 s backstop and answers exactly once. Running the two teardowns
+        // SERIALLY — camera first, then arm this 20 s timer — summed to a
+        // 32 s worst case and tripped the client's 30 s timeout, because the
+        // camera's wait happened entirely before this backstop was even
+        // armed. Instead the two run CONCURRENTLY via the DispatchGroup below
+        // and this backstop is armed immediately, so the worst case stays
+        // max(20 s, 10 s) = 20 s, comfortably under the client's 30 s.
         DispatchQueue.global().asyncAfter(deadline: .now() + 20) {
             finishUp("\(reason)-timeout")
         }
 
-        guard let stream else { finishUp(reason); return }
-        stream.stopCapture { [weak self] _ in
-            guard let self else { return }
-            // Returns only once any in-flight append has finished, so the
-            // finishWriting below cannot race one (STC-254).
-            self.gate.closeAndMarkFinished()
-            guard let writer = self.writer else { finishUp(reason); return }
-            writer.finishWriting { finishUp(reason) }
+        let group = DispatchGroup()
+
+        if let cam {
+            group.enter()
+            cam.stop { [weak self] track in
+                self?.lock.lock()
+                self?.cameraTrack = track
+                self?.camera = nil
+                self?.lock.unlock()
+                group.leave()
+            }
+        }
+
+        group.enter()
+        if let stream {
+            stream.stopCapture { [weak self] _ in
+                guard let self else { group.leave(); return }
+                // Returns only once any in-flight append has finished, so the
+                // finishWriting below cannot race one (STC-254).
+                self.gate.closeAndMarkFinished()
+                guard let writer = self.writer else { group.leave(); return }
+                writer.finishWriting { group.leave() }
+            }
+        } else {
+            group.leave()
+        }
+
+        group.notify(queue: .global()) {
+            finishUp(reason)
         }
     }
 
     private func writeSidecars(reason: String) {
         lock.lock()
         let evs = events
+        let camTrack = cameraTrack
         lock.unlock()
 
         write(["version": 1, "events": evs], to: "events.json")
@@ -464,7 +552,7 @@ final class CaptureSession: NSObject, SCStreamOutput, SCStreamDelegate {
                                      originX: originX, originY: originY),
             capture: CaptureGeometryDoc(width: captureW, height: captureH,
                                         firstFrameNs: Int(firstFramePtsNs)),
-            camera: cameraTrack,
+            camera: camTrack,
             stopReason: reason,
             stopTNs: Int(Clock.nowNs() - t0Ns))
         write(doc, to: "anchors.json")
