@@ -49,6 +49,47 @@ func reportEncoders() {
     }
 }
 
+/// Asks whether an encoder can actually be OBTAINED, not merely whether one is
+/// listed.
+///
+/// The inventory answers "does an H.264 encoder exist on this machine". The
+/// stall is about "can this process have one right now", and those are
+/// different questions. CI reports its hardware encoder as
+/// `paravirtualized:Apple Video Encoder` — a passthrough to a host shared with
+/// other tenants, which can be listed and still be unavailable in the moment.
+///
+/// Timed, because a slow acquisition is the interesting middle case: if this
+/// takes seconds rather than milliseconds, contention is real even when it
+/// eventually succeeds.
+func probeEncoderAcquisition() {
+    let t0 = DispatchTime.now().uptimeNanoseconds
+    var session: VTCompressionSession?
+    let status = VTCompressionSessionCreate(
+        allocator: kCFAllocatorDefault,
+        width: Int32(W), height: Int32(H),
+        codecType: kCMVideoCodecType_H264,
+        encoderSpecification: nil,
+        imageBufferAttributes: nil,
+        compressedDataAllocator: nil,
+        outputCallback: nil,
+        refcon: nil,
+        compressionSessionOut: &session)
+    let ms = Double(DispatchTime.now().uptimeNanoseconds - t0) / 1e6
+
+    guard status == noErr, let s = session else {
+        diag(String(format: "COULD NOT ACQUIRE an H.264 encoder session: status %d after %.1f ms", status, ms))
+        diag("an AVAssetWriter append will block rather than fail in this state")
+        return
+    }
+    var hwCF: CFTypeRef?
+    VTSessionCopyProperty(s,
+        key: kVTCompressionPropertyKey_UsingHardwareAcceleratedVideoEncoder,
+        allocator: kCFAllocatorDefault, valueOut: &hwCF)
+    let hw = (hwCF as? Bool) ?? false
+    diag(String(format: "acquired an H.264 encoder session in %.1f ms (hardware=%@)", ms, hw ? "true" : "false"))
+    VTCompressionSessionInvalidate(s)
+}
+
 let W = 1280, H = 720
 var failures: [String] = []
 
@@ -130,6 +171,7 @@ func makeWriter(_ name: String) -> (AVAssetWriter, AVAssetWriterInput, AVAssetWr
 }
 
 reportEncoders()
+probeEncoderAcquisition()
 diag("phase 1: closed-gate assertions")
 
 // 1. A closed gate drops, and says so, rather than appending into a finished input.
