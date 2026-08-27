@@ -35,9 +35,14 @@ jobs:
       # that is worth stating rather than aligning everything on one number.
       - uses: actions/checkout@v5
 
+      # The runtime the SUITE runs on — distinct from the actions' own node24
+      # runtimes above, which is what the deprecation warning was about. 24 is
+      # the active LTS; this machine develops on 26, so 22 was the one version
+      # nobody actually used. Verified before landing: 195 tests, typecheck and
+      # all four gates green on a stock v24.20.0.
       - uses: actions/setup-node@v5
         with:
-          node-version: "22"
+          node-version: "24"
           cache: npm
 
       - name: Install dependencies
@@ -54,8 +59,12 @@ jobs:
       - name: Build helper
         run: ./helper/build.sh
 
+      # Three passes, not one: a coverage pass over every .ts file, then two
+      # narrowed passes that ban DOM globals in the Electron main process and
+      # node globals in the renderer/transform. `npx tsc --noEmit` alone runs
+      # only the first.
       - name: Typecheck
-        run: npx tsc --noEmit
+        run: npm run typecheck
 
       # Everything that runs anywhere. Excludes *.grant.test.ts (needs a Screen
       # Recording grant, which no CI runner can give) and *.slow.test.ts.
