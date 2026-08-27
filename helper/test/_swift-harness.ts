@@ -52,13 +52,23 @@ export async function runSwiftHarness(opts: {
    * fire is indistinguishable from one that cannot.
    */
   env?: Record<string, string>;
+  /**
+   * Retry the RUN — never the compile — while `when` says the failure was the
+   * machine rather than the code.
+   *
+   * STC-259: a contended CI host can refuse this process an H.264 encoder, and
+   * that verdict is per-process, so another attempt may simply get one. `when`
+   * must be keyed strictly on the harness saying so: retrying a harness that
+   * died by signal would retry away the exact regression it exists to catch.
+   */
+  retryRun?: { attempts: number; when: (message: string) => boolean };
 }): Promise<string> {
   // Deliberately BELOW the callers' vitest testTimeout (120 s). They were equal,
   // so vitest always fired first and our message — the one that names WHICH
   // step hung and prints the output tail — never got the chance. Two bounds set
   // too close together, which is exactly STC-258 repeated: the outer bound must
   // stay clear of the inner one or the inner one is decorative.
-  const { label, sources, compileMs = 45_000, runMs = HARNESS_RUN_MS, env } = opts;
+  const { label, sources, compileMs = 45_000, runMs = HARNESS_RUN_MS, env, retryRun } = opts;
   const bin = join(mkdtempSync(join(tmpdir(), `stc-${label}-`)), `${label}-test`);
   // Fast, no child of its own, and a hang here would be a broken toolchain
   // rather than the thing under test.
@@ -75,7 +85,22 @@ export async function runSwiftHarness(opts: {
     compileMs,
   );
 
-  return await runBounded(bin, [], `${label}: harness`, runMs, env);
+  // Compiled once, above; only the run is retried.
+  const attempts = retryRun?.attempts ?? 1;
+  let last: Error | undefined;
+  for (let i = 1; i <= attempts; i++) {
+    try {
+      return await runBounded(bin, [], `${label}: harness`, runMs, env);
+    } catch (e) {
+      last = e as Error;
+      const retryable = retryRun !== undefined && retryRun.when(last.message);
+      if (!retryable || i === attempts) throw last;
+      process.stderr.write(
+        `[${label}] attempt ${i}/${attempts} failed for an environment reason; retrying\n`,
+      );
+    }
+  }
+  throw last as Error;
 }
 
 /**

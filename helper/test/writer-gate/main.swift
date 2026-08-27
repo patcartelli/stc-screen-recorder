@@ -40,6 +40,23 @@ func bounded(_ what: String, ms: Int, _ body: @escaping () -> Void) {
 /// contended CI host, which cannot be summoned on demand.
 let injectedFault = ProcessInfo.processInfo.environment["STC_WG_FAULT"]
 
+/// Appends one line per process start, when the test asks for it.
+///
+/// The runner retries this harness when the machine declines an encoder, and a
+/// retry nobody can count is a retry nobody has verified. Reading the count off
+/// the machine beats trusting the loop that produced it.
+func recordAttempt() {
+    guard let path = ProcessInfo.processInfo.environment["STC_WG_ATTEMPT_LOG"] else { return }
+    let line = "start \(ProcessInfo.processInfo.processIdentifier)\n"
+    if let fh = FileHandle(forWritingAtPath: path) {
+        fh.seekToEndOfFile()
+        fh.write(line.data(using: .utf8)!)
+        try? fh.close()
+    } else {
+        try? line.write(toFile: path, atomically: true, encoding: .utf8)
+    }
+}
+
 /// How long any single encoder query gets before it is called wedged.
 ///
 /// A healthy query answers in milliseconds — 68 ms measured on this machine —
@@ -230,6 +247,7 @@ func makeWriter(_ name: String) -> (AVAssetWriter, AVAssetWriterInput, AVAssetWr
 // trouble would then be the thing hanging on encoder trouble. This line tells
 // the two apart at a glance.
 diag("harness started (pid \(ProcessInfo.processInfo.processIdentifier))")
+recordAttempt()
 // On stdout, because the test reads it back and checks it against the runner's
 // own bound. A constant nobody compares is a constant that drifts.
 print("encoder query bound \(encoderQueryBoundMs) ms")
