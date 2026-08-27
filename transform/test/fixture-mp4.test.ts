@@ -68,10 +68,10 @@ describe("demux honours the edit list", () => {
     const framesNs: number[] = JSON.parse(
       readFileSync(join(root, "fixtures", "offset", "frames.json"), "utf8"),
     );
-    const { demuxDisplayMp4 } = await import("../src/demux.js");
+    const { demuxTrack } = await import("../src/demux.js");
     const buf = readFileSync(join(root, "fixtures", "offset", "display.mp4"));
     const ab = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) as ArrayBuffer;
-    const video = await demuxDisplayMp4(ab);
+    const video = await demuxTrack(ab, "display.mp4");
     expect(video.framesNs[0]).toBe(250_000_000);
     expect(video.framesNs).toEqual(framesNs);
   });
@@ -82,9 +82,9 @@ describe("demux refuses unreadable input instead of hanging", () => {
   // error, no stack, no timeout — just a button that does nothing forever.
   // mp4box calls neither onReady nor onError for a file with no valid boxes.
   const settles = async (buf: ArrayBuffer) => {
-    const { demuxDisplayMp4 } = await import("../src/demux.js");
+    const { demuxTrack } = await import("../src/demux.js");
     return Promise.race([
-      demuxDisplayMp4(buf).then(() => "resolved", (e) => `rejected: ${e.message}`),
+      demuxTrack(buf, "display.mp4").then(() => "resolved", (e) => `rejected: ${e.message}`),
       new Promise<string>((r) => setTimeout(() => r("HUNG"), 4000)),
     ]);
   };
@@ -108,4 +108,34 @@ describe("demux refuses unreadable input instead of hanging", () => {
     const out = await settles(ab);
     expect(out).not.toBe("HUNG");
   }, 15_000);
+});
+
+describe("the camera fixture carries its warm-up as an empty edit", () => {
+  // The camera's gap is ~1035 ms, against the display's measured 231.7 ms. A
+  // demuxer that reads only the sample table would put every camera frame a
+  // full second early — seconds of PiP desync rather than the milliseconds the
+  // display track risks.
+  test("demuxed camera PTS match camera-frames.json exactly", async () => {
+    const { demuxTrack } = await import("../src/demux.js");
+    const buf = readFileSync(join(root, "fixtures", "pip", "camera.mp4"));
+    const video = await demuxTrack(
+      buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) as ArrayBuffer,
+      "camera.mp4",
+    );
+    const expected = JSON.parse(
+      readFileSync(join(root, "fixtures", "pip", "camera-frames.json"), "utf8"));
+    expect(video.framesNs).toEqual(expected);
+  });
+
+  test("the fixture's first frame is the warm-up gap, not zero", async () => {
+    const { demuxTrack } = await import("../src/demux.js");
+    const buf = readFileSync(join(root, "fixtures", "pip", "camera.mp4"));
+    const video = await demuxTrack(
+      buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) as ArrayBuffer,
+      "camera.mp4",
+    );
+    // If this comes back 0 the empty edit was ignored and every PiP would sit
+    // a second ahead of where it belongs.
+    expect(video.framesNs[0]).toBe(1_035_500_000);
+  });
 });

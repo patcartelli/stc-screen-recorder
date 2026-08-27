@@ -10,7 +10,7 @@ import CoreGraphics
 
 let args = CommandLine.arguments
 guard args.count >= 3 else {
-    FileHandle.standardError.write("usage: gen-display <frames.json> <out.mp4> [--offset-ns N]\n".data(using: .utf8)!)
+    FileHandle.standardError.write("usage: gen-display <frames.json> <out.mp4> [--offset-ns N] [--size WxH]\n".data(using: .utf8)!)
     exit(2)
 }
 // A non-zero offset makes AVAssetWriter emit an EMPTY EDIT rather than shifting
@@ -19,13 +19,34 @@ guard args.count >= 3 else {
 let offsetNs = args.firstIndex(of: "--offset-ns").flatMap { i -> Int? in
     i + 1 < args.count ? Int(args[i + 1]) : nil
 } ?? 0
+// Defaults to 640x360 so the existing display fixtures regenerate byte-identically.
+let size = args.firstIndex(of: "--size").flatMap { i -> (Int, Int)? in
+    guard i + 1 < args.count else { return nil }
+    let parts = args[i + 1].split(separator: "x")
+    guard parts.count == 2, let w = Int(parts[0]), let h = Int(parts[1]) else { return nil }
+    return (w, h)
+} ?? (640, 360)
 let framesNs = try JSONSerialization.jsonObject(
     with: Data(contentsOf: URL(fileURLWithPath: args[1]))) as! [Int]
 let outURL = URL(fileURLWithPath: args[2])
 try? FileManager.default.removeItem(at: outURL)
 
-let W = 640, H = 360
+let (W, H) = size
 let writer = try AVAssetWriter(outputURL: outURL, fileType: .mp4)
+// Match the real capture writers (Capture.swift, CameraCapture.swift): the
+// default movie timescale is 600 Hz, too coarse to hold an arbitrary
+// --offset-ns exactly in the edit list (e.g. 1.0355s needs a non-integer
+// number of 600ths). 90 kHz gives the edit list enough resolution to round-trip.
+// 90 kHz, matching the real writers in helper/src/Capture.swift and
+// CameraCapture.swift. An empty edit's duration is expressed in the MOVIE
+// timescale, so the default 600 Hz can only represent multiples of 1.67 ms —
+// and the camera fixture's 1035.5 ms offset truncated to 1035.0 ms, half a
+// millisecond of silent error in the one value the fixture exists to pin.
+//
+// Worth knowing: fixtures/offset still passes session.ts's 50 us drift check
+// at 600 Hz only because its 250 ms offset is exactly 150 ticks there. That is
+// luck, not design. Any new fixture with a non-round offset needs this.
+writer.movieTimeScale = 90_000
 let input = AVAssetWriterInput(mediaType: .video, outputSettings: [
     AVVideoCodecKey: AVVideoCodecType.h264,
     AVVideoWidthKey: W, AVVideoHeightKey: H,

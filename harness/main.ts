@@ -1,6 +1,6 @@
 import { render } from "@transform/render";
 import { tickTimeNs } from "@transform/time";
-import { demuxDisplayMp4, type DemuxedVideo } from "@transform/demux";
+import { demuxTrack, type DemuxedVideo } from "@transform/demux";
 import { decodeAll } from "@transform/decode";
 import { composite } from "@transform/compositor";
 import type { Project, Session } from "@transform/types";
@@ -89,7 +89,7 @@ async function main() {
     fetch("/basic/display.mp4").then((r) => r.arrayBuffer()),
   ]);
   const project: Project = await fetch("/basic/project.json").then((r) => r.json());
-  const video = await demuxDisplayMp4(mp4);
+  const video = await demuxTrack(mp4, "display.mp4");
 
   const framesMatch =
     video.framesNs.length === framesJson.length &&

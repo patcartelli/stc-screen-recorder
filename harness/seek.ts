@@ -1,4 +1,4 @@
-import { demuxDisplayMp4 } from "@transform/demux";
+import { demuxTrack } from "@transform/demux";
 import { SeekingFrameSource } from "@transform/seeking-frame-source";
 
 /**
@@ -30,7 +30,7 @@ function readFrameIndex(ctx: OffscreenCanvasRenderingContext2D): number {
 
 const gateBody = async (mp4Url: string) => {
   const buf = await fetch(mp4Url).then((r) => r.arrayBuffer());
-  const video = await demuxDisplayMp4(buf);
+  const video = await demuxTrack(buf, mp4Url);
   const source = new SeekingFrameSource(video);
   const n = video.chunks.length;
   const ctx = new OffscreenCanvas(video.codedWidth, video.codedHeight)
