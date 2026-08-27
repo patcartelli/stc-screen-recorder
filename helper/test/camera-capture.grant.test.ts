@@ -34,15 +34,26 @@ describe("camera capture — requires Screen Recording AND Camera", () => {
 
     const anchorsPath = join(dir, "anchors.json");
     if (!existsSync(anchorsPath)) {
-      throw new Error("SKIP-GRANT: no anchors.json — the recording never ran. " +
-                      "Grant Screen Recording and Camera to STC Signing Probe.");
+      throw new Error(
+        "SKIP-GRANT: no anchors.json — the recording never ran, most likely " +
+        "missing Screen Recording and/or Camera for STC Signing Probe. The " +
+        "Camera pane only lists apps that have already REQUESTED access, so " +
+        "the bundle will not appear there until it has. Working procedure: " +
+        `(1) run 'open -W ${APP} --args --camera-request --out /tmp/cam-request.json' ` +
+        "to raise the system prompt, (2) click Allow, (3) grant Screen " +
+        "Recording to STC Signing Probe in System Settings if not already " +
+        "granted, (4) re-run this test (or 'npm run test:capture').");
     }
     const anchors = JSON.parse(readFileSync(anchorsPath, "utf8"));
 
     if (anchors.camera?.present !== true) {
       throw new Error(
         `SKIP-GRANT: the take has no camera track (present=${anchors.camera?.present}). ` +
-        `Grant Camera to STC Signing Probe, then re-run.`);
+        "The Camera pane only lists apps that have already REQUESTED access, " +
+        "so the bundle will not appear there until it has. Working procedure: " +
+        `(1) run 'open -W ${APP} --args --camera-request --out /tmp/cam-request.json' ` +
+        "to raise the system prompt, (2) click Allow, (3) re-run this test " +
+        "(or 'npm run test:capture').");
     }
 
     const ajv = new Ajv({ allErrors: true, strict: true });
@@ -58,10 +69,27 @@ describe("camera capture — requires Screen Recording AND Camera", () => {
     expect(cam.width).toBe(1280);
     expect(cam.height).toBe(720);
     expect(cam.lastFramePtsNs).toBeGreaterThan(cam.firstFramePtsNs);
-    // Phase 0 measured the camera's first frame landing ~1035 ms after the
-    // screen's, from warm-up. Anything at or near zero means the PTS was
-    // rebased somewhere it should not have been.
-    expect(cam.firstFramePtsNs).toBeGreaterThan(50_000_000);
+    // Camera PTS must be used as-is: already mach host time, already
+    // latency-compensated, session-relative like everything else in
+    // anchors.json. Phase 0 measured the camera's first frame landing
+    // ~1035 ms AFTER the display track's first frame (camera warm-up is much
+    // slower than SCK's). Two assertions, not one magic number, because a
+    // single loose floor only catches a hard rebase to literal zero and lets
+    // a PARTIAL rebase (e.g. to stream-start instead of session t0Ns) pass
+    // silently in the tens-to-low-hundreds-of-ms range.
+    //
+    // 1. Relative and self-calibrating: the camera's first frame must land
+    //    well after the display's own first frame (anchors.capture.firstFrameNs),
+    //    which is measured on this same clock by this same helper run. This
+    //    does not depend on absolute wall-clock timing, so it will not go
+    //    stale on faster or slower hardware than phase 0's.
+    expect(cam.firstFramePtsNs).toBeGreaterThan(
+      anchors.capture.firstFrameNs + 300_000_000);
+    // 2. Absolute floor: raised well above anything a stream-relative rebase
+    //    could plausibly produce (tens to low hundreds of ms), but comfortably
+    //    below the ~1035 ms phase-0 measurement so a camera that warms up
+    //    faster than that specific run does not make this flaky.
+    expect(cam.firstFramePtsNs).toBeGreaterThan(500_000_000);
     // ~58.8 fps measured; anything outside this is not a camera frame interval.
     expect(cam.frameIntervalNs).toBeGreaterThan(8_000_000);
     expect(cam.frameIntervalNs).toBeLessThan(50_000_000);
