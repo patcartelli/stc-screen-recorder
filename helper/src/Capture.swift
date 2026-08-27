@@ -418,24 +418,21 @@ final class CaptureSession: NSObject, SCStreamOutput, SCStreamDelegate {
         lock.unlock()
 
         write(["version": 1, "events": evs], to: "events.json")
-        write([
-            "version": 1,
-            "timebase": ["numer": Int(Clock.timebase.numer), "denom": Int(Clock.timebase.denom)],
-            // String on purpose: boot-relative ns crosses 2^53 at ~104 days of
-            // uptime, and a JSON number would round.
-            "t0Ns": String(t0Ns),
-            "display": ["id": Int(displayID), "pointWidth": pointW, "pointHeight": pointH,
-                        "pixelWidth": pixelW, "pixelHeight": pixelH,
-                        "backingScale": pointW > 0 ? Double(pixelW) / Double(pointW) : 1.0,
-                        "originX": originX, "originY": originY],
-            // Exact, from the helper's own clock. The same offset survives in the
-            // file only as a timescale-quantised empty edit, so this is what a
-            // reader checks its recovered value against.
-            "capture": ["width": captureW, "height": captureH, "codec": "h264",
-                        "firstFrameNs": max(0, Int(firstFramePtsNs))],
-            "files": ["display": "display.mp4"],
-            "stop": ["t": Int(Clock.nowNs() - t0Ns), "reason": reason],
-        ], to: "anchors.json")
+        // Exact, from the helper's own clock. The same offset survives in the
+        // file only as a timescale-quantised empty edit, so this is what a
+        // reader checks its recovered value against.
+        let doc = anchorsDocument(
+            timebase: (Int(Clock.timebase.numer), Int(Clock.timebase.denom)),
+            t0Ns: t0Ns,
+            display: DisplayGeometry(id: Int(displayID), pointWidth: pointW, pointHeight: pointH,
+                                     pixelWidth: pixelW, pixelHeight: pixelH,
+                                     originX: originX, originY: originY),
+            capture: CaptureGeometryDoc(width: captureW, height: captureH,
+                                        firstFrameNs: Int(firstFramePtsNs)),
+            camera: nil,
+            stopReason: reason,
+            stopTNs: Int(Clock.nowNs() - t0Ns))
+        write(doc, to: "anchors.json")
     }
 
     private func write(_ o: Any, to name: String) {
