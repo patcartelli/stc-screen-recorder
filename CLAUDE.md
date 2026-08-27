@@ -64,6 +64,7 @@ belonging to a different commit).
 
 | ticket | what | needs |
 |---|---|---|
+| STC-259 | **cause confirmed and contained** — both encoder queries bounded at 15 s, run retried 3x, then a loud SKIP. Measured on CI both ways on one commit | steps 2 and 3: the harness's first `AVAssetWriter` append is still unbounded, and whether `CameraCapture.swift`/`Capture.swift` need the same is still open |
 | STC-249 | lossy ring under REAL capture load — the semantics are tested, the live scenario is not | a recording with a stalled stats consumer |
 | STC-254 | **done** — append/teardown race fixed (part 2), SIGTRAP crash handler closed (part 3). Master CI green again | nothing; watch that master stays green |
 | STC-232 | phase 3: camera PiP — recommended first, it avoids §2a's CoreAudio wedge entirely | a scope decision |
@@ -345,3 +346,33 @@ reachable via KVC (`setValue(3, forKey: "captureResolution")`, verified in phase
 - **An empty events.json does not mean the tap is broken** — an automated capture records zero
   events simply because nothing moves the mouse, which is indistinguishable from a dead button
   path. Verifying input needs deliberate input; `fixtures/real-session/` pins the result.
+- **CI's H.264 encoder can block forever on first touch — MEASURED, not inferred (STC-259).**
+  Run 33102859258, same commit, two attempts: the first had `VTCopyVideoEncoderList` block past
+  15 s; the re-run listed 21 encoders and acquired a hardware session in 144.9 ms. CI reports
+  `paravirtualized:Apple Video Encoder`, a passthrough to a host shared with other tenants, so
+  the verdict is per-host and per-moment. Any FIRST touch is exposed — the inventory, the
+  acquisition, and `AVAssetWriter`'s lazy compressor creation, which is where both original
+  STC-254 crash reports pointed. This is what made unrelated PRs go red for days. `writer-gate`
+  bounds both encoder queries at 15 s, retries the run three times, then reports a loud SKIP.
+- **A new bound must be checked against every bound already covering the same code**, not just
+  against the thing it bounds. Three bounds added to `writer-gate` in one day each failed to
+  fire: a synchronous call blocked the event loop its timer lived on; collected stderr was
+  discarded because the promise never settled; and an inner bound was set exactly equal to the
+  outer one, so the informative message always lost the race. Each was individually sound. The
+  harness now prints its own bound and the test asserts it against the runner's exported
+  `HARNESS_RUN_MS`, so the clearance is checked rather than kept in step by hand.
+- **A bound nobody has watched fire is indistinguishable from one that cannot fire.** Same for a
+  retry nobody has counted. `STC_WG_FAULT` hangs the encoder query on demand and
+  `STC_WG_ATTEMPT_LOG` records one line per process start, so both are asserted against observed
+  behaviour. The load-bearing assertion is that the failure is OURS and not the runner's
+  (`not.toContain("did not finish within")`) — an inner bound that loses that race is decorative.
+- **Vitest DISCARDS `console.*` output from a test that ends up skipped** — it attributes console
+  output to the producing test, and a skipped one prints nothing. A skip notice written with
+  `console.warn` therefore vanishes exactly when it is needed, leaving a silent green tick where
+  a gate did not run: CLAUDE.md's "success by finding nothing to do" trap, self-inflicted. Write
+  skip notices with `process.stderr.write`, which survives, and verify by actually skipping.
+- **Retry logic must key on the failure being the MACHINE's, never on "it failed"** — a retry
+  that absorbs a real regression is worse than no retry. `writer-gate` keys strictly on the
+  harness's `ENVIRONMENT:` marker and excludes death-by-signal, failed assertions, and the
+  runner's own timeout by name, each covered by a test. STC-254 arrived as SIGTRAP on CI and
+  SIGSEGV locally; retrying either three times and calling it a skip would have buried it.
