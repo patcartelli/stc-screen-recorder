@@ -31,7 +31,8 @@
     "frameIntervalNs": 17000000
   },
   "files": {
-    "display": "display.mp4"
+    "display": "display.mp4",
+    "camera": "camera.mp4"
   },
   "stop": {
     "t": 5000000016,

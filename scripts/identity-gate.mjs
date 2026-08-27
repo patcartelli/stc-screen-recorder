@@ -17,6 +17,9 @@ function newestSession() {
     .filter((p) => existsSync(join(p, "display.mp4"))).sort().pop();
 }
 const sessionDir = process.argv[2] || newestSession();
+// The design spec states the PiP determinism claim at 200 sampled t; the
+// default stays 60 for the slower real-take runs.
+const SAMPLES = Number(process.env.STC_IDENTITY_SAMPLES ?? 60);
 if (!sessionDir) { console.error("no session found; record one or pass a directory"); process.exit(2); }
 console.log(`session: ${sessionDir}`);
 
@@ -28,9 +31,18 @@ const server = await createServer({
   plugins: [{ name: "session", configureServer(s) {
     s.middlewares.use("/session", (req, res, next) => {
       const n = (req.url || "").split("?")[0].replace(/^\//, "");
-      if (!["anchors.json", "events.json", "display.mp4"].includes(n)) return next();
+      // camera.mp4 and project.json are on this list deliberately. Left off,
+      // they fall through to vite, the page's fetch resolves with vite's HTML,
+      // r.json() throws, and the take loads camera-less — a clean PASS that
+      // tested nothing.
+      if (!["anchors.json", "events.json", "project.json", "display.mp4", "camera.mp4"].includes(n)) return next();
+      const f = join(sessionDir, n);
+      // A camera-less take genuinely has no camera.mp4, and the page only asks
+      // for it when anchors.files.camera is set — so a miss here means the
+      // anchors and the directory disagree, which is worth failing loudly on.
+      if (!existsSync(f)) { res.statusCode = 404; res.end(`no ${n} in this take`); return; }
       res.setHeader("content-type", n.endsWith(".json") ? "application/json" : "video/mp4");
-      res.end(readFileSync(join(sessionDir, n)));
+      res.end(readFileSync(f));
     });
   }}],
 });
@@ -49,7 +61,7 @@ try {
 
   let r;
   for (let attempt = 1; attempt <= 3; attempt++) {
-    try { r = await page.evaluate(() => window.runSinkIdentity("/session", 60)); break; }
+    try { r = await page.evaluate((n) => window.runSinkIdentity("/session", n), SAMPLES); break; }
     catch (e) {
       if (attempt === 3 || !String(e).includes("garbage collected")) throw e;
       await page.waitForFunction(() => window.__identityReady === true, { timeout: 60_000 });
@@ -63,6 +75,28 @@ try {
   for (const m of r.mismatches.slice(0, 8)) console.error("   ", m);
   if (r.mismatches.length) fail(`${r.mismatches.length} frames differ between preview and export`);
   console.log(`seeking source: peak buffered ${r.peakBuffered}, decoder generations ${r.decoderGenerations}`);
+
+  console.log(`camera track present: ${r.cameraPresent}`);
+  if (r.cameraPresent) {
+    console.log(`PiP: ${r.pipFrames} of ${r.samples} sampled frames have one, drawn on ${r.pipDrawnFrames}`);
+    if (r.pipFrames === 0) {
+      fail("a camera track loaded but render() gave no PiP on any sampled frame — " +
+           "check project.pip.enabled and the anchors.camera bounds");
+    } else if (r.pipDrawnFrames === 0) {
+      fail("the PiP has geometry on every sampled frame but no camera frame was ever " +
+           "decoded — the sinks are not driving the camera decoder");
+    }
+    // THE check the hashes cannot make. Preview-vs-export identity holds
+    // perfectly when BOTH sinks ignore the camera, so the only way to prove a
+    // PiP was drawn at all is to composite the same frame with it suppressed
+    // and require the two to differ.
+    if (r.pipBlindMismatches > 0) {
+      fail(`${r.pipBlindMismatches} of ${r.pipFrames} PiP frames are byte-identical with the ` +
+           `PiP suppressed — the camera is being decoded and then discarded`);
+    } else {
+      console.log(`PiP actually changes the pixels on all ${r.pipFrames} frames that have one`);
+    }
+  }
 } catch (e) {
   fail(String(e?.stack ?? e));
 } finally {

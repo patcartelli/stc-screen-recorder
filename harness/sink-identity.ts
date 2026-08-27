@@ -25,17 +25,31 @@ async function hashCanvas(ctx: OffscreenCanvasRenderingContext2D, w: number, h: 
 
 (window as any).runSinkIdentity = async (dir: string, sampleCount = 60) => {
   try {
-    const [anchors, events, mp4] = await Promise.all([
-      fetch(`${dir}/anchors.json`).then((r) => r.json()),
-      fetch(`${dir}/events.json`).then((r) => r.json()),
-      fetch(`${dir}/display.mp4`).then((r) => r.arrayBuffer()),
-    ]);
-    const session = await loadSession({ anchors, events, displayMp4: mp4 });
-    const project: Project = {
+    const anchors = await fetch(`${dir}/anchors.json`).then((r) => r.json());
+    const events = await fetch(`${dir}/events.json`).then((r) => r.json());
+    const mp4 = await fetch(`${dir}/${anchors.files.display}`).then((r) => r.arrayBuffer());
+    // Only when the take's own anchors say it has one. Guessing by probing for
+    // the file would turn "the anchors and the directory disagree" into a
+    // silent camera-less pass, and loadSession refuses that mismatch anyway.
+    const cameraMp4 = anchors.files.camera
+      ? await fetch(`${dir}/${anchors.files.camera}`).then((r) => r.arrayBuffer())
+      : undefined;
+
+    const session = await loadSession({ anchors, events, displayMp4: mp4, cameraMp4 });
+
+    // The take's OWN project.json, never a synthesised one. A CLI gate that
+    // hardcoded a project instead of reading the take's is what made test:slow
+    // report a hash mismatch between two correct implementations once trim
+    // existed. The fallback covers only a take that has no project at all.
+    const fetched = await fetch(`${dir}/project.json`)
+      .then((r) => (r.ok ? r.json() : null))
+      .catch(() => null);
+    const project: Project = fetched ?? {
       version: 1,
       output: { fps: 60, width: anchors.capture.width, height: anchors.capture.height },
       cursor: { style: "default", scale: 1 },
     };
+
     const { width, height } = project.output;
     const mkCtx = () => new OffscreenCanvas(width, height)
       .getContext("2d", { alpha: false, willReadFrequently: true }) as OffscreenCanvasRenderingContext2D;
@@ -58,34 +72,74 @@ async function hashCanvas(ctx: OffscreenCanvasRenderingContext2D, w: number, h: 
 
     const fwdCtx = mkCtx();
     const fwd = new ForwardFrameSource(session.video);
+    const fwdCam = session.cameraVideo ? new ForwardFrameSource(session.cameraVideo) : null;
     const exportHash = new Map<number, string>();
+
+    // The same frame composited a second time with the PiP SUPPRESSED.
+    //
+    // Comparing against this is the only check here that can fail when the
+    // camera is decoded and then discarded. Two sinks that both ignore the
+    // camera produce byte-identical output and pass every hash comparison in
+    // this file — so identity alone cannot tell "both drew the PiP correctly"
+    // from "neither drew it at all", and the latter is the likelier bug.
+    const blindCtx = mkCtx();
+    const blindHash = new Map<number, string>();
+    let pipFrames = 0;
+    let pipDrawnFrames = 0;
+
     for (const k of ks) {
       const t = tickTimeNs(2 * k);
       const fs = render(project, session, t);
       const idx = frameIndexAt(session.frames, t);
       const frame = idx === null ? null : await fwd.frameAt(idx);
-      composite(fwdCtx, frame as unknown as ImageBitmap | null, null, fs, width, height);
+      const cam = fs.pip && fwdCam ? await fwdCam.frameAt(fs.pip.frameIndex) : null;
+      composite(fwdCtx, frame as unknown as ImageBitmap | null,
+                cam as unknown as ImageBitmap | null, fs, width, height);
       exportHash.set(k, await hashCanvas(fwdCtx, width, height));
+
+      composite(blindCtx, frame as unknown as ImageBitmap | null, null, fs, width, height);
+      blindHash.set(k, await hashCanvas(blindCtx, width, height));
+      if (fs.pip) pipFrames++;
+      if (fs.pip && cam) pipDrawnFrames++;
     }
     fwd.close();
+    fwdCam?.close();
 
     const prevCtx = mkCtx();
     const seek = new SeekingFrameSource(session.video);
+    const seekCam = session.cameraVideo ? new SeekingFrameSource(session.cameraVideo) : null;
     const mismatches: string[] = [];
     for (const k of shuffled) {
       const t = tickTimeNs(2 * k);
       const fs = render(project, session, t);
       const idx = frameIndexAt(session.frames, t);
-      const frame = idx === null ? null : await seek.frameAt(idx);
-      composite(prevCtx, frame as unknown as ImageBitmap | null, null, fs, width, height);
+      const [frame, cam] = await Promise.all([
+        idx === null ? null : seek.frameAt(idx),
+        fs.pip && seekCam ? seekCam.frameAt(fs.pip.frameIndex) : null,
+      ]);
+      composite(prevCtx, frame as unknown as ImageBitmap | null,
+                cam as unknown as ImageBitmap | null, fs, width, height);
       const h = await hashCanvas(prevCtx, width, height);
       if (h !== exportHash.get(k)) mismatches.push(`frame ${k} (t=${(t / 1e6).toFixed(1)}ms)`);
     }
     const stats = seek.stats;
     seek.close();
+    seekCam?.close();
 
-    return { samples: ks.length, mismatches, peakBuffered: stats.peakBuffered,
-             decoderGenerations: stats.decoderGenerations, totalOut };
+    // Frames that HAVE a PiP but look the same with it suppressed.
+    let pipBlindMismatches = 0;
+    for (const k of ks) {
+      const t = tickTimeNs(2 * k);
+      if (!render(project, session, t).pip) continue;
+      if (exportHash.get(k) === blindHash.get(k)) pipBlindMismatches++;
+    }
+
+    return {
+      samples: ks.length, mismatches, peakBuffered: stats.peakBuffered,
+      decoderGenerations: stats.decoderGenerations, totalOut,
+      cameraPresent: !!session.cameraVideo,
+      pipFrames, pipDrawnFrames, pipBlindMismatches,
+    };
   } catch (e: any) {
     return { fatal: String(e?.stack ?? e) };
   }
