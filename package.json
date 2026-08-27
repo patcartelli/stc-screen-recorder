@@ -4,6 +4,7 @@
   "type": "module",
   "scripts": {
     "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.browser.json --noEmit && tsc -p tsconfig.node.json --noEmit",
     "gate": "node scripts/gate.mjs",
     "app:build": "node app/build.mjs",
     "app:start": "npm run app:build && electron .",

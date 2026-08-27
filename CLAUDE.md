@@ -85,6 +85,7 @@ gate that would catch a semantic one, and it does not run in CI.
 ```
 helper/build.sh                                    # -> helper/build/stc-helper (see Signing)
 echo '{"cmd":"status"}' | helper/build/stc-helper  # expect ready -> status -> bye JSON lines
+npm run typecheck                                  # ALL THREE tsc passes — bare `tsc` runs one
 npm test                                           # everything that runs anywhere (must be green)
 npm run test:capture                               # the one test needing a Screen Recording grant
 npm run test:slow                                  # cross-implementation export identity (minutes)
@@ -395,9 +396,25 @@ reachable via KVC (`setValue(3, forKey: "captureResolution")`, verified in phase
   `composite()` broke `harness/main.ts:40` and `:71` while `npx tsc --noEmit` stayed green and all
   195 tests passed, and only `npm run gate` — a real browser run — caught it, as a runtime
   `TypeError`. Same family as the `--auto` and `--watch` traps: a command that succeeds by finding
-  nothing to do, in a place where success is read as verification. All three trees are in `include`
-  now, and `paths` maps `@transform/*` because tsc cannot read vite's or esbuild's aliases.
+  nothing to do, in a place where success is read as verification. `transform/`, `harness/`, `app/`,
+  `helper/` and the root `vitest.*.ts` are all in `include` now (`helper/test/` was a third
+  unchecked tree, found while fixing the first two), and `paths` maps `@transform/*` because tsc
+  cannot read vite's or esbuild's aliases.
   Verified by re-adding the `composite()` parameter and watching tsc fail on those exact lines.
-  Residual gap, deliberately accepted: one config means DOM and node libs are both visible
-  everywhere, so `document` in the Electron main process still typechecks. Signature drift — the
-  thing that actually bit — is caught.
+
+- **Typechecking is THREE passes — `npx tsc --noEmit` runs only the first.** Use
+  `npm run typecheck`, which is what CI runs. `tsconfig.json` is the coverage pass (every .ts file,
+  DOM and node both visible) and is deliberately what a bare `tsc` runs, so the default can never
+  be a partial check that reads as a full one. `tsconfig.browser.json` (`types: []`) and
+  `tsconfig.node.json` (`lib` without DOM) then add RUNTIME constraints on top: `document` in the
+  Electron main process and `process`/`require` in the renderer or the transform are both runtime
+  crashes, and both are now type errors at the use site. The browser pass also guards the
+  non-negotiable structurally — a node import in `transform/src/` would quietly make the pure
+  transform node-only. Scope is by directory with `app/src/renderer.ts` carved out, not an explicit
+  file list, so a new file under `app/src/` gets the constraint automatically and must opt out.
+  `skipLibCheck` is on in the two narrowed passes ONLY, and only because `electron.d.ts` declares
+  the main, renderer and `<webview>` APIs in one file and cannot parse without `lib.dom` (11x
+  TS2304); the coverage pass has it off, so declaration files are still checked exactly once.
+  All four constraints were verified by watching them fail — `document` in main, `process` in the
+  renderer, `require` in the transform, and the `composite()` arity drift — each confirmed to make
+  `npm run typecheck` exit non-zero, then reverted.

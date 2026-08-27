@@ -1,0 +1,29 @@
+{
+  // ── The NODE pass: these files may not see the DOM ───────────────────────
+  // The Electron MAIN process, the preload bridge, and their node-only deps.
+  // `document` here is a runtime crash, not a type error, so make it a type
+  // error: dropping lib.dom means any DOM global is TS2584 at the use site.
+  //
+  // Scope is by directory with renderer.ts carved out, NOT an explicit file
+  // list — a new file under app/src/ lands in this pass automatically and has
+  // to opt OUT. The fail-safe direction: forgetting to list a file cannot
+  // silently lose the constraint.
+  //
+  // skipLibCheck is on ONLY here, and only because electron.d.ts declares the
+  // main, renderer and <webview> APIs in one file and cannot parse without
+  // lib.dom (11 x TS2304 on HTMLElement/VideoFrame). The constraint being
+  // enforced is about OUR source, and the coverage pass still lib-checks.
+  //
+  // Not included: app/test/ and helper/test/ (Playwright `evaluate` bodies are
+  // typechecked here but run in the page — preview.e2e.test.ts genuinely needs
+  // `document`) and transform/ (browser; see tsconfig.browser.json). Both are
+  // still covered by the coverage pass.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "lib": ["ES2022"],
+    "types": ["node"],
+    "skipLibCheck": true
+  },
+  "include": ["app/src/**/*.ts", "harness/vite.config.ts", "vitest.*.ts"],
+  "exclude": ["app/src/renderer.ts"]
+}

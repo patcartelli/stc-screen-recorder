@@ -54,8 +54,12 @@ jobs:
       - name: Build helper
         run: ./helper/build.sh
 
+      # Three passes, not one: a coverage pass over every .ts file, then two
+      # narrowed passes that ban DOM globals in the Electron main process and
+      # node globals in the renderer/transform. `npx tsc --noEmit` alone runs
+      # only the first.
       - name: Typecheck
-        run: npx tsc --noEmit
+        run: npm run typecheck
 
       # Everything that runs anywhere. Excludes *.grant.test.ts (needs a Screen
       # Recording grant, which no CI runner can give) and *.slow.test.ts.

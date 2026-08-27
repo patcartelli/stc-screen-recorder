@@ -1,0 +1,21 @@
+{
+  // ── The BROWSER pass: these files may not see node ───────────────────────
+  // The mirror of tsconfig.node.json, and the reason the split is a split
+  // rather than a one-sided bolt-on. The renderer is contextIsolated and the
+  // transform is the pure, sink-agnostic core: `process`, `require` and
+  // `Buffer` are all runtime crashes there. Empty `types` drops @types/node so
+  // each is TS2591 at the use site.
+  //
+  // This is also a structural guard on the non-negotiable — the transform must
+  // stay callable from both sinks, and a node import in transform/src/ would
+  // quietly make it node-only.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": [],
+    "skipLibCheck": true
+  },
+  "include": ["transform/src/**/*.ts", "harness/**/*.ts", "app/src/renderer.ts"],
+  // vite's own config is node — it belongs to the node pass.
+  "exclude": ["harness/vite.config.ts"]
+}
