@@ -1,4 +1,4 @@
-import { demuxDisplayMp4, type DemuxedVideo } from "./demux.js";
+import { demuxTrack, type DemuxedVideo } from "./demux.js";
 import type { Anchors, Session, SessionEvent } from "./types.js";
 
 /**
@@ -60,7 +60,7 @@ export async function loadSession(input: SessionInput): Promise<LoadedSession> {
     );
   }
 
-  const video = await demuxDisplayMp4(input.displayMp4);
+  const video = await demuxTrack(input.displayMp4, "display.mp4");
   if (video.framesNs.length === 0) {
     throw new SessionLoadError("display.mp4 contains no frames");
   }

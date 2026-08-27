@@ -68,10 +68,10 @@ describe("demux honours the edit list", () => {
     const framesNs: number[] = JSON.parse(
       readFileSync(join(root, "fixtures", "offset", "frames.json"), "utf8"),
     );
-    const { demuxDisplayMp4 } = await import("../src/demux.js");
+    const { demuxTrack } = await import("../src/demux.js");
     const buf = readFileSync(join(root, "fixtures", "offset", "display.mp4"));
     const ab = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) as ArrayBuffer;
-    const video = await demuxDisplayMp4(ab);
+    const video = await demuxTrack(ab, "display.mp4");
     expect(video.framesNs[0]).toBe(250_000_000);
     expect(video.framesNs).toEqual(framesNs);
   });
@@ -82,9 +82,9 @@ describe("demux refuses unreadable input instead of hanging", () => {
   // error, no stack, no timeout — just a button that does nothing forever.
   // mp4box calls neither onReady nor onError for a file with no valid boxes.
   const settles = async (buf: ArrayBuffer) => {
-    const { demuxDisplayMp4 } = await import("../src/demux.js");
+    const { demuxTrack } = await import("../src/demux.js");
     return Promise.race([
-      demuxDisplayMp4(buf).then(() => "resolved", (e) => `rejected: ${e.message}`),
+      demuxTrack(buf, "display.mp4").then(() => "resolved", (e) => `rejected: ${e.message}`),
       new Promise<string>((r) => setTimeout(() => r("HUNG"), 4000)),
     ]);
   };

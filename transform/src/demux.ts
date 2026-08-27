@@ -19,7 +19,7 @@ export interface DemuxedVideo {
   chunks: { type: "key" | "delta"; timestampUs: number; data: Uint8Array }[];
 }
 
-export function demuxDisplayMp4(buf: ArrayBuffer): Promise<DemuxedVideo> {
+export function demuxTrack(buf: ArrayBuffer, what: string): Promise<DemuxedVideo> {
   return new Promise((resolve, reject) => {
     const file = MP4Box.createFile();
     let sawReady = false;
@@ -32,7 +32,7 @@ export function demuxDisplayMp4(buf: ArrayBuffer): Promise<DemuxedVideo> {
     // the caller waits forever with no error, no stack and nothing to debug.
     // Same shape as PHASE-0 §4b.5, reached from a different direction.
     const watchdog = setTimeout(
-      () => fail("timed out reading display.mp4 — the file may be truncated or not an MP4"),
+      () => fail(`timed out reading ${what} — the file may be truncated or not an MP4`),
       15_000,
     );
 
@@ -40,14 +40,14 @@ export function demuxDisplayMp4(buf: ArrayBuffer): Promise<DemuxedVideo> {
     file.onReady = (info: any) => {
       sawReady = true;
       const track = info.videoTracks[0];
-      if (!track) { clearTimeout(watchdog); fail("no video track in display.mp4"); return; }
+      if (!track) { clearTimeout(watchdog); fail(`no video track in ${what}`); return; }
 
       // avcC description: serialize the box, strip the 8-byte box header.
       // NB PHASE-0 §4b.5: DataStream must come off the module export in use.
       const trak = file.getTrackById(track.id);
       const entries = trak.mdia.minf.stbl.stsd.entries;
       const avcC = entries.map((e: any) => e.avcC).find(Boolean);
-      if (!avcC) { reject(new Error("no avcC box")); return; }
+      if (!avcC) { clearTimeout(watchdog); fail(`no avcC box in ${what}`); return; }
       const ds = new MP4Box.DataStream(undefined, 0, MP4Box.DataStream.BIG_ENDIAN);
       avcC.write(ds);
       const description = new Uint8Array(ds.buffer, 8, ds.position - 8);
@@ -107,7 +107,7 @@ export function demuxDisplayMp4(buf: ArrayBuffer): Promise<DemuxedVideo> {
       file.flush();
     } catch (e) {
       clearTimeout(watchdog);
-      fail(`could not parse display.mp4: ${String(e)}`);
+      fail(`could not parse ${what}: ${String(e)}`);
       return;
     }
 
@@ -115,7 +115,7 @@ export function demuxDisplayMp4(buf: ArrayBuffer): Promise<DemuxedVideo> {
     // If it has not, there is no usable moov and no callback is coming.
     if (!sawReady) {
       clearTimeout(watchdog);
-      fail("display.mp4 is not a readable MP4 — no track information found");
+      fail(`${what} is not a readable MP4 — no track information found`);
     }
   });
 }
