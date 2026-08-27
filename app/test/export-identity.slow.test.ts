@@ -30,7 +30,8 @@ async function launchWithTake() {
   const dir = mkdtempSync(join(tmpdir(), "stc-export-e2e-"));
   const takeDir = join(dir, "2026-08-24_10-00-00");
   cpSync(src, takeDir, { recursive: true });
-  execFileSync("node", [join(root, "app", "build.mjs")], { cwd: root, stdio: "pipe" });
+  // The bundle is built once in vitest.global-setup.ts. Building it here
+  // raced every other suite doing the same on app/dist/ — see that file.
   app = await electron.launch({
     args: [root], cwd: root, env: { ...process.env, STC_RECORDINGS_DIR: dir },
   });
