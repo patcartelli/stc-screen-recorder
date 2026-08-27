@@ -28,9 +28,14 @@ jobs:
     # duplication ever outweighs the record.
 
     steps:
-      - uses: actions/checkout@v4
+      # Node 24 runtimes (`runs.using: node24`). Node 20 is deprecated on the
+      # runners and was already being force-run on 24, which is a warning today
+      # and a hard failure whenever the runners drop the shim. These are the
+      # LOWEST majors that actually run node24 — see the artifact step for why
+      # that is worth stating rather than aligning everything on one number.
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: "22"
           cache: npm
@@ -95,7 +100,11 @@ jobs:
 
       - name: Upload failure artifacts
         if: failure()
-        uses: actions/upload-artifact@v4
+        # v6, not v5: upload-artifact@v5 announced node24 support but still
+        # declares `using: node20`, so aligning this on v5 with the two above
+        # would look tidy and quietly keep the deprecated runtime. v6 is the
+        # first major that actually runs on node24.
+        uses: actions/upload-artifact@v6
         with:
           name: failure-logs
           path: |
