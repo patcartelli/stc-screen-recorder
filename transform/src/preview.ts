@@ -13,6 +13,7 @@ import type { Project } from "./types.js";
 export class PreviewPlayer {
   private readonly ctx: CanvasRenderingContext2D;
   private readonly source: SeekingFrameSource;
+  private readonly cameraSource: SeekingFrameSource | null;
   private raf = 0;
   private playing = false;
   private tNs = 0;
@@ -22,6 +23,7 @@ export class PreviewPlayer {
   private closed = false;
   private lateFrames = 0;
   private renderedFrames = 0;
+  private cameraRenderedFrames = 0;
 
   onTime: ((tNs: number, playing: boolean) => void) | undefined;
 
@@ -32,6 +34,11 @@ export class PreviewPlayer {
     canvas.height = project.output.height;
     this.ctx = canvas.getContext("2d", { alpha: false })!;
     this.source = new SeekingFrameSource(session.video);
+    // A second SeekingFrameSource, not a shared one. Each serialises its own
+    // requests (ticket/chain), so the one-in-flight-per-decoder rule holds by
+    // construction — sharing one decoder across two tracks is exactly the
+    // accident PHASE-0 §4b warns about.
+    this.cameraSource = session.cameraVideo ? new SeekingFrameSource(session.cameraVideo) : null;
   }
 
   get durationNs(): number {
@@ -53,7 +60,13 @@ export class PreviewPlayer {
   get currentNs(): number { return this.tNs; }
   get isPlaying(): boolean { return this.playing; }
   /** Frames the clock ran past before they could be drawn. */
-  get stats() { return { lateFrames: this.lateFrames, renderedFrames: this.renderedFrames }; }
+  get stats() {
+    return {
+      lateFrames: this.lateFrames,
+      renderedFrames: this.renderedFrames,
+      cameraRenderedFrames: this.cameraRenderedFrames,
+    };
+  }
 
   async seek(tNs: number): Promise<void> {
     this.tNs = Math.max(0, Math.min(tNs, this.durationNs));
@@ -108,12 +121,21 @@ export class PreviewPlayer {
       const t = tickTimeNs(tick);
       const fs = render(this.project, this.session, t);
       const idx = frameIndexAt(this.session.frames, t);
-      const frame = idx === null ? null : await this.source.frameAt(idx);
+      // Both decoders are driven concurrently. They are independent decoders
+      // with independent in-flight guards, and `this.rendering` already
+      // serialises whole draws — so a superseded seek can never pair a display
+      // frame from one t with a camera frame from another.
+      const [frame, cameraFrame] = await Promise.all([
+        idx === null ? null : this.source.frameAt(idx),
+        fs.pip && this.cameraSource ? this.cameraSource.frameAt(fs.pip.frameIndex) : null,
+      ]);
       if (this.closed) return;
       composite(this.ctx as unknown as OffscreenCanvasRenderingContext2D,
-                frame as unknown as ImageBitmap | null, null, fs,
+                frame as unknown as ImageBitmap | null,
+                cameraFrame as unknown as ImageBitmap | null, fs,
                 this.project.output.width, this.project.output.height);
       this.renderedFrames++;
+      if (cameraFrame) this.cameraRenderedFrames++;
     } finally {
       this.rendering = false;
     }
@@ -123,5 +145,6 @@ export class PreviewPlayer {
     this.closed = true;
     this.pause();
     this.source.close();
+    this.cameraSource?.close();
   }
 }
