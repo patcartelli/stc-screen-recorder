@@ -15,6 +15,8 @@ import { readFileSync, existsSync, mkdtempSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import AjvImport from "ajv";
+import { demuxTrack } from "../../transform/src/demux.js";
+import { classifyCameraTrack } from "./_camera-health.js";
 
 const Ajv = (AjvImport as any).default ?? AjvImport;
 const root = join(__dirname, "..", "..");
@@ -32,8 +34,14 @@ const HELPER = join(root, "helper/build/stc-helper");
  */
 const RECORD_MS = 15_000;
 
+/** A file as an ArrayBuffer, which is what demuxTrack takes. */
+function bufferOf(path: string): ArrayBuffer {
+  const b = readFileSync(path);
+  return b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength) as ArrayBuffer;
+}
+
 describe("camera capture — requires Screen Recording AND Camera", () => {
-  test("a real recording produces camera.mp4 and a schema-valid anchors.camera", () => {
+  test("a real recording produces camera.mp4 and a schema-valid anchors.camera", async () => {
     if (!existsSync(APP)) {
       throw new Error(`${APP} is missing — run tools/test-host/build.sh first`);
     }
@@ -114,6 +122,31 @@ describe("camera capture — requires Screen Recording AND Camera", () => {
     //    measures warm-up luck, not correctness, and would fail spuriously on
     //    a built-in camera. The upper bound below is the real discriminator.
     expect(cam.firstFramePtsNs).toBeGreaterThan(100_000_000);
+    // A STARVED CAMERA AND A MISTIMED ONE TRIP THE SAME BOUND, and they mean
+    // opposite things. Seen 2026-08-27: another agent's Electron suite drove
+    // load average to 86, the Elgato took 4.06 s to open instead of 0.6 s, and
+    // delivered 12 frames in 11 s. That reported as
+    // "expected 999990000 to be less than 50000000" against anchors.camera —
+    // which reads as a clock bug in CameraCapture.swift, and is not one. Same
+    // shape as STC-259: an environment failure wearing a code failure's
+    // clothes, and this repo has already paid for that confusion once.
+    //
+    // The rate is derived from frames actually in the FILE, never from
+    // frameIntervalNs — that is the number under suspicion. classifyCameraTrack
+    // judges the timestamps first, so a boot-relative rebase can never hide
+    // behind a busy machine; camera-health.test.ts covers that in CI.
+    const cameraFrames = (await demuxTrack(bufferOf(join(dir, "camera.mp4")), "camera.mp4")).framesNs.length;
+    const verdict = classifyCameraTrack({
+      frames: cameraFrames,
+      device: String(cam.device ?? "unknown"),
+      firstFramePtsNs: cam.firstFramePtsNs,
+      lastFramePtsNs: cam.lastFramePtsNs,
+      stopTNs: anchors.stop.t,
+    });
+    if (verdict.kind === "starved") throw new Error(verdict.message);
+    // "mistimed" deliberately falls through: the assertions below are what name
+    // WHICH timestamp is wrong, and their messages are better than a verdict.
+
     // ~58.8 fps measured; anything outside this is not a camera frame interval.
     expect(cam.frameIntervalNs).toBeGreaterThan(8_000_000);
     expect(cam.frameIntervalNs).toBeLessThan(50_000_000);
