@@ -40,6 +40,15 @@ jobs:
           node-version: "22"
           cache: npm
 
+      # TEMP — reverted before merge. upload-artifact only runs `if: failure()`,
+      # so a green run never proves the v6 bump works. Fail early and cheaply,
+      # with a file for it to actually upload.
+      - name: TEMP force the failure path
+        run: |
+          mkdir -p crash-reports
+          echo "probe: upload-artifact@v6 on node24" > crash-reports/TEMP-probe.txt
+          exit 1
+
       - name: Install dependencies
         run: npm ci
 
