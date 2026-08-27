@@ -19,7 +19,7 @@ import type { Project } from "@transform/types";
  */
 
 async function hashCanvas(ctx: OffscreenCanvasRenderingContext2D, w: number, h: number): Promise<string> {
-  const d = await crypto.subtle.digest("SHA-256", ctx.getImageData(0, 0, w, h).data as unknown as BufferSource);
+  const d = await crypto.subtle.digest("SHA-256", ctx.getImageData(0, 0, w, h).data);
   return [...new Uint8Array(d)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 

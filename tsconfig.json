@@ -7,7 +7,18 @@
     "noUncheckedIndexedAccess": true,
     "resolveJsonModule": true,
     "noEmit": true,
-    "types": ["node"]
+    "types": ["node"],
+    // harness/ and app/ import the transform through the same "@transform"
+    // alias that vite (harness/vite.config.ts, scripts/*-gate.mjs) and esbuild
+    // (app/build.mjs) resolve. tsc knows nothing about those bundler configs,
+    // so without this mapping every such import is an unresolved-module error
+    // and neither tree can be included at all.
+    "paths": { "@transform/*": ["./transform/src/*"] }
   },
-  "include": ["transform/**/*.ts"]
+  // ALL three trees, not just the transform. Nothing else typechecks this
+  // code: vitest transpiles without checking and esbuild does not check
+  // either, so anything left out of `include` has no static checking at all.
+  // That is how a `composite()` signature change reached the browser gate as a
+  // runtime TypeError with `tsc --noEmit` green (2026-08-27).
+  "include": ["transform/**/*.ts", "harness/**/*.ts", "app/**/*.ts"]
 }

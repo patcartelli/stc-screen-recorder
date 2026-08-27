@@ -387,3 +387,17 @@ reachable via KVC (`setValue(3, forKey: "captureResolution")`, verified in phase
   harness's `ENVIRONMENT:` marker and excludes death-by-signal, failed assertions, and the
   runner's own timeout by name, each covered by a test. STC-254 arrived as SIGTRAP on CI and
   SIGSEGV locally; retrying either three times and calling it a skip would have buried it.
+
+- **`tsconfig.json`'s `include` is the whole scope of static checking in this repo** — vitest
+  transpiles without typechecking and esbuild does not check either, so a directory left out of
+  `include` has NO static checking at all, not merely weaker checking. `include` was
+  `["transform/**/*.ts"]`, so `harness/` and `app/` were never checked: adding a parameter to
+  `composite()` broke `harness/main.ts:40` and `:71` while `npx tsc --noEmit` stayed green and all
+  195 tests passed, and only `npm run gate` — a real browser run — caught it, as a runtime
+  `TypeError`. Same family as the `--auto` and `--watch` traps: a command that succeeds by finding
+  nothing to do, in a place where success is read as verification. All three trees are in `include`
+  now, and `paths` maps `@transform/*` because tsc cannot read vite's or esbuild's aliases.
+  Verified by re-adding the `composite()` parameter and watching tsc fail on those exact lines.
+  Residual gap, deliberately accepted: one config means DOM and node libs are both visible
+  everywhere, so `document` in the Electron main process still typechecks. Signature drift — the
+  thing that actually bit — is caught.

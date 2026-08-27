@@ -14,8 +14,8 @@ const EXPORT_FRAMES = 300; // 5 s at 60 fps
 /** export frame k samples every other 120 Hz sim tick */
 const exportTimeNs = (k: number) => tickTimeNs(2 * k);
 
-async function sha256(data: Uint8Array): Promise<string> {
-  const d = await crypto.subtle.digest("SHA-256", data as BufferSource);
+async function sha256(data: BufferSource): Promise<string> {
+  const d = await crypto.subtle.digest("SHA-256", data);
   return [...new Uint8Array(d)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
