@@ -72,6 +72,21 @@ async function dirSize(dir: string, names: string[]): Promise<number> {
 }
 
 /**
+ * Anchors document versions this build can read.
+ *
+ * MUST stay in step with `transform/src/session.ts`. They drifted once: STC-232
+ * widened the transform to accept v2 and left this scanner at v1, so once the
+ * helper emits v2 (increment 3) every new recording would have been listed as
+ * unsupported while the transform loaded it happily — the take library wrong,
+ * the transform right, and the two disagreeing about what a recording is.
+ *
+ * The two cannot share a constant: this runs in the Electron main process and
+ * imports only node builtins, while the transform is bundled for the renderer.
+ * `app/test/take-list.test.ts` pins them together instead.
+ */
+const SUPPORTED_ANCHORS_VERSIONS: readonly number[] = [1, 2];
+
+/**
  * Lists recordings, newest first.
  *
  * A broken take is REPORTED, never thrown and never silently skipped. One
@@ -107,7 +122,7 @@ export async function listTakes(env: NodeJS.ProcessEnv): Promise<TakeList> {
                                 : `anchors.json is unreadable: ${e?.message ?? e}`);
       continue;
     }
-    if (anchors?.version !== 1) {
+    if (!SUPPORTED_ANCHORS_VERSIONS.includes(anchors?.version)) {
       fail(`anchors.json version ${anchors?.version} is not supported`);
       continue;
     }
