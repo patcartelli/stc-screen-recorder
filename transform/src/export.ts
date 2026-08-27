@@ -36,6 +36,12 @@ export interface ExportResult {
   encoded?: Uint8Array;
   peakBufferedFrames: number;
   decodedFrames: number;
+  /**
+   * Camera frames decoded. Zero for a camera-less take — and zero for a take
+   * that HAS one means the PiP never drew, which no hash comparison can see:
+   * two sinks that both ignore the camera agree perfectly.
+   */
+  cameraDecodedFrames: number;
   durationMs: number;
   cancelled: boolean;
 }
@@ -54,6 +60,14 @@ export async function exportSession(
 ): Promise<ExportResult> {
   const t0 = performance.now();
   const source = new ForwardFrameSource(session.video);
+  // A SECOND decoder, never a shared one. PHASE-0 §4b's one-in-flight rule is
+  // per decoder, and ForwardFrameSource serialises internally, so two instances
+  // are correct by construction.
+  //
+  // Forward-only is safe for the camera too: pip.frameIndex is monotonic in t
+  // exactly as the display index is, because pipStateAt() returns null outside
+  // the track's bounds rather than clamping backwards into it.
+  const cameraSource = session.cameraVideo ? new ForwardFrameSource(session.cameraVideo) : null;
   const { width, height, fps } = project.output;
   const wantHash = opts.hash ?? false;
 
@@ -99,8 +113,10 @@ export async function exportSession(
       const fs = render(project, session, tNs);
       const idx = frameIndexAt(session.frames, tNs);
       const frame = idx === null ? null : await source.frameAt(idx);
-      peakBuffered = Math.max(peakBuffered, source.bufferedCount);
-      composite(ctx, frame as unknown as ImageBitmap | null, null, fs, width, height);
+      const cameraFrame = fs.pip && cameraSource ? await cameraSource.frameAt(fs.pip.frameIndex) : null;
+      peakBuffered = Math.max(peakBuffered, source.bufferedCount + (cameraSource?.bufferedCount ?? 0));
+      composite(ctx, frame as unknown as ImageBitmap | null,
+                cameraFrame as unknown as ImageBitmap | null, fs, width, height);
 
       if (wantHash) {
         const rgba = ctx.getImageData(0, 0, width, height).data;
@@ -158,11 +174,13 @@ export async function exportSession(
       encodedBytes, encoded,
       peakBufferedFrames: peakBuffered,
       decodedFrames: source.decodedCount,
+      cameraDecodedFrames: cameraSource?.decodedCount ?? 0,
       durationMs: Math.round(performance.now() - t0),
       cancelled,
     };
   } finally {
     source.close();
+    cameraSource?.close();
     if (encoder && encoder.state !== "closed") encoder.close();
   }
 }
