@@ -88,5 +88,21 @@ check("an unhandled event type is ignored",
       decideCursorEvent(type: .keyDown, timestampNs: t0, t0Ns: t0),
       CursorEventDecision.ignore)
 
+// ── camera open store-vs-close race (STC-232) ───────────────────────────────
+// Previously only exercisable by timing a live recording against a real
+// camera; as a pure function of two booleans it needs no camera at all.
+check("a normal open, no stop in flight, is stored",
+      decideCameraOpen(opened: true, stoppingBegan: false),
+      CameraOpenDecision.store)
+check("an open that resolves AFTER stop() began must be closed immediately, not stored",
+      decideCameraOpen(opened: true, stoppingBegan: true),
+      CameraOpenDecision.closeImmediately)
+check("a failed open with no stop in flight is just a failure to report",
+      decideCameraOpen(opened: false, stoppingBegan: false),
+      CameraOpenDecision.reportFailure)
+check("a failed open is still just a failure even if a stop arrived — there is nothing to close",
+      decideCameraOpen(opened: false, stoppingBegan: true),
+      CameraOpenDecision.reportFailure)
+
 print(failures == 0 ? "ALL PASS" : "\(failures) FAILURES")
 exit(failures == 0 ? 0 : 1)

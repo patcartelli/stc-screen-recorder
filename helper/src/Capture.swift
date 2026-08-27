@@ -211,32 +211,54 @@ final class CaptureSession: NSObject, SCStreamOutput, SCStreamDelegate {
         let t0Ns = self.t0Ns
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self else { return }
+
+            // Re-check immediately before opening the device (MINOR, cheap):
+            // a stop that arrived during the dispatch latency above must not
+            // be followed by opening the camera and lighting its LED after
+            // the take has already ended. This narrows the race; it does not
+            // close it — stop() can still arrive during cam.start() itself,
+            // which is why the post-open check below exists too.
+            self.lock.lock()
+            let stoppingAlready = self.stoppingBegan
+            self.lock.unlock()
+            if stoppingAlready { return }
+
             let cam = CameraCapture(dir: dir, t0Ns: t0Ns)
             let result = cam.start()
+            let opened: Bool
+            if case .success = result { opened = true } else { opened = false }
 
+            // The store-vs-close race (HIGH 1) is decided by a pure function
+            // (CaptureDecisions.swift) so it is testable without a live
+            // camera — see helper/test/decisions/main.swift.
             self.lock.lock()
-            let arrivedAfterStop = self.stoppingBegan
-            if case .success = result, !arrivedAfterStop {
-                self.camera = cam
-            }
+            let decision = decideCameraOpen(opened: opened, stoppingBegan: self.stoppingBegan)
+            if decision == .store { self.camera = cam }
             self.lock.unlock()
 
-            switch result {
-            case .success(let name):
-                if arrivedAfterStop {
-                    // stop() already ran and found no camera to close, because
-                    // this one had not opened yet. Close it now — this take's
-                    // sidecars are likely already written, so the track is
-                    // discarded, but the AVCaptureSession must not be left
-                    // running for the rest of the process's life.
-                    cam.stop { _ in }
-                } else {
-                    IO.stat("camera-started", ["device": name])
+            switch decision {
+            case .store:
+                if case .success(let name) = result {
+                    // Reliable, not lossy (MEDIUM 4): describe() deliberately
+                    // omits the camera, so this event is the ONLY signal that
+                    // the camera is live. IO.stat is the drop-oldest ring and
+                    // discards precisely under the load this most needs to
+                    // survive; IO.send never drops.
+                    IO.send("camera-started", ["device": name])
                 }
-            case .failure(let e):
-                let ce = e as? CameraError
-                IO.send("warning", ["code": ce?.code ?? "camera-failed",
-                                    "detail": ce.map { $0.description } ?? "\(e)"])
+            case .closeImmediately:
+                // stop() already ran and found no camera to close, because
+                // this one had not opened yet. Close it now — this take's
+                // sidecars are likely already written, so the track is
+                // discarded, but the AVCaptureSession must not be left
+                // running for the rest of the process's life.
+                cam.stop { _ in }
+            case .reportFailure:
+                if case .failure(let e) = result {
+                    let ce = e as? CameraError
+                    IO.send("warning", ["code": ce?.code ?? "camera-failed",
+                                        "detail": ce.map { $0.description } ?? "\(e)"])
+                }
             }
         }
     }
@@ -487,17 +509,32 @@ final class CaptureSession: NSObject, SCStreamOutput, SCStreamDelegate {
             completion(s)
         }
 
-        // HIGH 2 — bound arithmetic. The client (app/src/helper-client.ts)
-        // gives every request, `stop` included, a flat 30 s timeout. This
-        // backstop bounds the display-teardown path at 20 s (unchanged from
-        // before the camera existed). CameraCapture.stop() carries its own
-        // 10 s backstop and answers exactly once. Running the two teardowns
-        // SERIALLY — camera first, then arm this 20 s timer — summed to a
-        // 32 s worst case and tripped the client's 30 s timeout, because the
-        // camera's wait happened entirely before this backstop was even
-        // armed. Instead the two run CONCURRENTLY via the DispatchGroup below
-        // and this backstop is armed immediately, so the worst case stays
-        // max(20 s, 10 s) = 20 s, comfortably under the client's 30 s.
+        // HIGH 2 — bound arithmetic. The client (app/src/helper-client.ts,
+        // HelperClient's defaultTimeoutMs) gives every request, `stop`
+        // included, a flat 30 s timeout. This backstop bounds the
+        // display-teardown path at 20 s (unchanged from before the camera
+        // existed): stream.stopCapture -> gate.closeAndMarkFinished ->
+        // writer.finishWriting. CameraCapture.stop() carries its own 10 s
+        // backstop around session.stopRunning() -> gate.closeAndMarkFinished
+        // -> writer.finishWriting and answers exactly once.
+        //
+        // Both teardowns are entered into the DispatchGroup below before
+        // either is awaited, and `cam.stop` is dispatched onto a background
+        // queue rather than called inline — AVCaptureSession.stopRunning()
+        // is a DOCUMENTED BLOCKING call, so calling it inline here would
+        // execute synchronously on whatever queue reaches this line, which
+        // for every real caller is the main queue (App.stop runs commands
+        // dispatched by IO.readCommands's DispatchQueue.main.async, and
+        // calls session.stop inline). A blocking call on the main queue
+        // would (a) delay stream.stopCapture from even starting until the
+        // camera had fully released, defeating the concurrency this
+        // DispatchGroup exists to provide, and (b) stall `status`, `quit`,
+        // and the display-reconfiguration watcher for however long the
+        // camera takes to close. Dispatching it means the two teardowns
+        // genuinely overlap and neither can block command dispatch, so the
+        // worst case stays max(20 s, 10 s) = 20 s, comfortably under the
+        // client's 30 s bound — and unlike the two backstops racing on
+        // shared main-queue time, they now race on entirely separate queues.
         DispatchQueue.global().asyncAfter(deadline: .now() + 20) {
             finishUp("\(reason)-timeout")
         }
@@ -506,12 +543,14 @@ final class CaptureSession: NSObject, SCStreamOutput, SCStreamDelegate {
 
         if let cam {
             group.enter()
-            cam.stop { [weak self] track in
-                self?.lock.lock()
-                self?.cameraTrack = track
-                self?.camera = nil
-                self?.lock.unlock()
-                group.leave()
+            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                cam.stop { track in
+                    self?.lock.lock()
+                    self?.cameraTrack = track
+                    self?.camera = nil
+                    self?.lock.unlock()
+                    group.leave()
+                }
             }
         }
 

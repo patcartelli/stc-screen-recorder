@@ -55,6 +55,29 @@ enum CursorEventDecision: Equatable {
     case event(t: Int, kind: String, button: Int?)
 }
 
+enum CameraOpenDecision: Equatable {
+    /// Store the opened camera so `stop()` can close it as part of the take.
+    case store
+    /// `stop()` had already begun by the time the open resolved: nothing else
+    /// will ever call stop() on this instance, so it must be closed
+    /// immediately rather than stored and forgotten (HIGH 1 — a camera left
+    /// running for the rest of the process's life, LED included).
+    case closeImmediately
+    /// The open itself failed — there is no camera to store or close, only
+    /// a failure to report.
+    case reportFailure
+}
+
+/// The decision `startCameraAsync` makes once the camera's async open
+/// resolves (Capture.swift). Extracted because the race it resolves — stop()
+/// arriving before, during, or after the open — was previously only
+/// exercisable by timing a live recording against a real device; as a pure
+/// function it is testable with two booleans (helper/test/decisions/main.swift).
+func decideCameraOpen(opened: Bool, stoppingBegan: Bool) -> CameraOpenDecision {
+    guard opened else { return .reportFailure }
+    return stoppingBegan ? .closeImmediately : .store
+}
+
 func decideCursorEvent(type: CGEventType, timestampNs: UInt64, t0Ns: UInt64) -> CursorEventDecision {
     if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput { return .reenableTap }
 
