@@ -170,7 +170,19 @@ func makeWriter(_ name: String) -> (AVAssetWriter, AVAssetWriterInput, AVAssetWr
     return (w, inp, ad)
 }
 
+// FIRST line out, before any VideoToolbox call. On CI run 33096447275 this
+// harness stalled and produced ZERO output — not even the encoder inventory,
+// which used to be the first thing printed. That leaves two candidates that
+// look identical from outside: the swiftc compile hung, or the binary started
+// and VTCopyVideoEncoderList blocked before anything could be written.
+//
+// The second is not far-fetched: CI's H.264 encoder is `paravirtualized`, a
+// passthrough to a shared host, and the diagnostic added to detect encoder
+// trouble would then be the thing hanging on encoder trouble. This line tells
+// the two apart at a glance.
+diag("harness started (pid \(ProcessInfo.processInfo.processIdentifier))")
 reportEncoders()
+diag("encoder inventory done")
 probeEncoderAcquisition()
 diag("phase 1: closed-gate assertions")
 
