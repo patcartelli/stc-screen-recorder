@@ -78,14 +78,23 @@ describe("gate bounds — clearance against the CI job timeout", () => {
   });
 
   test("no gate still calls page.evaluate unbounded", () => {
+    // The exemption is NAMED, and matched against the statement rather than the
+    // file. Testing `Promise.race` against the whole source made any file that
+    // contained one anywhere exempt for every page.evaluate in it, including an
+    // unbounded one added later — a guard passing by finding something
+    // unrelated, which is the shape this whole PR exists to remove. Caught in
+    // review by the session on PR #31.
+    const SELF_BOUNDED = new Set(["seek-gate.mjs"]);   // its own race, same statement, better message
     for (const f of ["gate.mjs", "export-gate.mjs", "identity-gate.mjs", "seek-gate.mjs"]) {
-      const src = readFileSync(join(root, "scripts", f), "utf8");
-      for (const line of src.split("\n")) {
-        if (!line.includes("page.evaluate")) continue;
-        // Either wrapped by our helper, or inside seek-gate's own Promise.race.
-        const guarded = /bounded\(\s*page\.evaluate/.test(line) || /Promise\.race/.test(src);
-        expect(guarded, `${f}: unbounded page.evaluate -> ${line.trim()}`).toBe(true);
-      }
+      const lines = readFileSync(join(root, "scripts", f), "utf8").split("\n");
+      lines.forEach((line, i) => {
+        if (!line.includes("page.evaluate")) return;
+        // The call and its wrapper can straddle a line break; nothing wider.
+        const stmt = lines.slice(Math.max(0, i - 3), i + 1).join("\n");
+        const guarded = /bounded\(\s*page\.evaluate/.test(stmt)
+          || (SELF_BOUNDED.has(f) && /Promise\.race\(\[/.test(stmt));
+        expect(guarded, `${f}:${i + 1} unbounded page.evaluate -> ${line.trim()}`).toBe(true);
+      });
     }
   });
 });
