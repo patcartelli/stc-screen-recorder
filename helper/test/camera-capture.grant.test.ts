@@ -21,6 +21,17 @@ const root = join(__dirname, "..", "..");
 const APP = join(root, "tools/test-host/STCTestHost.app");
 const HELPER = join(root, "helper/build/stc-helper");
 
+/**
+ * Long enough for a slow camera to open AND warm up AND deliver frames.
+ *
+ * Measured on this hardware 2026-08-27: an Elgato Facecam 4K on USB2 took
+ * **2.246 s** merely to open, and phase 0 measured a further ~1.035 s of
+ * warm-up before the first frame. A 4 s recording left roughly 0.7 s for
+ * frames and produced a zero-byte camera.mp4 with `present: false` — the test
+ * failing for a reason that had nothing to do with the code under test.
+ */
+const RECORD_MS = 15_000;
+
 describe("camera capture — requires Screen Recording AND Camera", () => {
   test("a real recording produces camera.mp4 and a schema-valid anchors.camera", () => {
     if (!existsSync(APP)) {
@@ -28,22 +39,33 @@ describe("camera capture — requires Screen Recording AND Camera", () => {
     }
     const dir = mkdtempSync(join(tmpdir(), "stc-camcap-"));
     execFileSync("open", ["-W", APP, "--args", "--helper", HELPER,
-                          "--dir", dir, "--ms", "4000", "--camera",
+                          "--dir", dir, "--ms", String(RECORD_MS), "--camera",
                           "--out", join(dir, "result.json")],
                  { timeout: 120_000 });
 
     const anchorsPath = join(dir, "anchors.json");
     if (!existsSync(anchorsPath)) {
+      // Distinguish the two causes rather than blaming grants for both. If the
+      // test-host wrote its transcript, it RAN — so a missing anchors.json is a
+      // recording failure, not a permission one, and saying "grant something"
+      // would send the reader after a problem they do not have.
+      const resultPath = join(dir, "result.json");
+      if (existsSync(resultPath)) {
+        throw new Error(
+          "the test-host ran but the recording produced no anchors.json — this is NOT " +
+          "a grant problem. Its transcript:\n" + readFileSync(resultPath, "utf8").slice(0, 2000));
+      }
       throw new Error(
-        "SKIP-GRANT: no anchors.json — the recording never ran, most likely " +
-        "missing Screen Recording and/or Camera for STC Signing Probe. The " +
-        "Camera pane only lists apps that have already REQUESTED access, so " +
-        "the bundle will not appear there until it has. Working procedure: " +
-        `(1) run 'open -W ${APP} --args --camera-request --out /tmp/cam-request.json' ` +
-        "to raise the system prompt, (2) click Allow, (3) grant Screen " +
-        "Recording to STC Signing Probe in System Settings if not already " +
-        "granted, (4) re-run this test (or 'npm run test:capture').");
+        "SKIP-GRANT: the test-host produced nothing at all, most likely missing " +
+        "Screen Recording and/or Camera for STC Signing Probe. The Camera pane only " +
+        "lists apps that have already REQUESTED access, so the bundle will not appear " +
+        "there until it has. Working procedure: (1) run 'open -W " +
+        join(root, "tools/test-host/STCTestHost.app") +
+        " --args --camera-request --out /tmp/cam-request.json' to raise the system " +
+        "prompt, (2) click Allow, (3) grant Screen Recording to STC Signing Probe in " +
+        "System Settings if not already granted, (4) re-run 'npm run test:capture'.");
     }
+
     const anchors = JSON.parse(readFileSync(anchorsPath, "utf8"));
 
     if (anchors.camera?.present !== true) {
