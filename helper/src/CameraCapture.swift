@@ -4,6 +4,7 @@ import AVFoundation
 enum CameraError: Error, CustomStringConvertible {
     case noDevice
     case notAuthorized(AVAuthorizationStatus)
+    case deviceInputFailed(Error)
     case sessionRefusedInput
     case writerFailed(Error?)
 
@@ -11,6 +12,7 @@ enum CameraError: Error, CustomStringConvertible {
         switch self {
         case .noDevice: return "no camera device is available"
         case .notAuthorized(let s): return "camera access is \(s.rawValue), not authorized"
+        case .deviceInputFailed(let e): return "failed to create a capture input for the camera device: \(e)"
         case .sessionRefusedInput: return "the capture session refused the camera input"
         case .writerFailed(let e): return "camera writer failed: \(String(describing: e))"
         }
@@ -20,6 +22,7 @@ enum CameraError: Error, CustomStringConvertible {
         switch self {
         case .noDevice: return "camera-no-device"
         case .notAuthorized: return "camera-not-authorized"
+        case .deviceInputFailed: return "camera-device-input-failed"
         case .sessionRefusedInput: return "camera-input-refused"
         case .writerFailed: return "camera-writer-failed"
         }
@@ -31,8 +34,12 @@ enum CameraError: Error, CustomStringConvertible {
 /// PTS is used AS-IS. CMSampleBufferGetPresentationTimeStamp is already mach
 /// host time and already latency-compensated (phase 0 measured 91.5 ms and
 /// 115.8 ms on two runs of the same hardware). Session-relative time is
-/// `pts_ns - t0Ns`, with no timebase conversion — the same rule as
-/// CGEvent.timestamp. Converting here would desync the PiP silently.
+/// `pts_ns - t0Ns`, with no *timebase* conversion — the same rule as
+/// CGEvent.timestamp. Converting the display-track's mach-tick timebase here
+/// would desync the PiP silently. The PTS's own `CMTime` still needs its
+/// scale normalized to nanoseconds before `.value` means nanoseconds; that is
+/// done with `CMTimeConvertScale`, which is exact integer rescaling, not a
+/// unit conversion — no `Double` involved (see `ptsNs(_:)` below).
 final class CameraCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
     private let dir: URL
     private let t0Ns: UInt64
@@ -70,7 +77,14 @@ final class CameraCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
         let s = AVCaptureSession()
         s.beginConfiguration()
         s.sessionPreset = .hd1280x720
-        guard let input = try? AVCaptureDeviceInput(device: device), s.canAddInput(input) else {
+        let input: AVCaptureDeviceInput
+        do {
+            input = try AVCaptureDeviceInput(device: device)
+        } catch {
+            s.commitConfiguration()
+            return .failure(CameraError.deviceInputFailed(error))
+        }
+        guard s.canAddInput(input) else {
             s.commitConfiguration()
             return .failure(CameraError.sessionRefusedInput)
         }
@@ -126,12 +140,24 @@ final class CameraCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
         gate.install(input: inp, adaptor: ad)
     }
 
+    /// Exact PTS in nanoseconds, as pure integer arithmetic — no `Double`.
+    /// `CMTimeConvertScale` rescales the `CMTime`'s existing timescale to
+    /// 1_000_000_000 (often a no-op: capture buffers commonly already carry
+    /// a nanosecond timescale), and the result's `.value` IS the nanosecond
+    /// count. `.roundHalfAwayFromZero` only matters on the rare timescale
+    /// that doesn't divide evenly into 1e9.
+    static func ptsNs(_ pts: CMTime) -> Int64 {
+        CMTimeConvertScale(pts, timescale: 1_000_000_000, method: .roundHalfAwayFromZero).value
+    }
+
     func captureOutput(_ output: AVCaptureOutput, didOutput sb: CMSampleBuffer,
                        from connection: AVCaptureConnection) {
         autoreleasepool {
             guard let pb = CMSampleBufferGetImageBuffer(sb) else { return }
-            // Already mach host time, already latency-compensated. Do not convert.
-            let ptsNs = Int64(CMSampleBufferGetPresentationTimeStamp(sb).seconds * 1_000_000_000)
+            // Already mach host time, already latency-compensated. Do not convert
+            // the timebase — only rescale the CMTime to a nanosecond timescale,
+            // exactly, in integer arithmetic (see Self.ptsNs).
+            let ptsNs = Self.ptsNs(CMSampleBufferGetPresentationTimeStamp(sb))
             let rel = ptsNs - Int64(t0Ns)
             guard rel >= 0 else { return }          // arrived before the session began
 
