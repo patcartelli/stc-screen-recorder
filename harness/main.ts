@@ -37,7 +37,7 @@ async function runPreview(
   const hashes: string[] = [];
   for (const t of tsNs) {
     const fs = render(project, session, t);
-    composite(ctx, fs.frameIndex === null ? null : bitmaps[fs.frameIndex]!, fs, width, height);
+    composite(ctx, fs.frameIndex === null ? null : bitmaps[fs.frameIndex]!, null, fs, width, height);
     hashes.push(await sha256(ctx.getImageData(0, 0, width, height).data));
   }
   bitmaps.forEach((b) => b.close());
@@ -68,7 +68,7 @@ async function runExport(
   for (let k = 0; k < EXPORT_FRAMES; k++) {
     const t = exportTimeNs(k);
     const fs = render(project, session, t);
-    composite(ctx, fs.frameIndex === null ? null : bitmaps[fs.frameIndex]!, fs, width, height);
+    composite(ctx, fs.frameIndex === null ? null : bitmaps[fs.frameIndex]!, null, fs, width, height);
     hashes.push(await sha256(ctx.getImageData(0, 0, width, height).data));
     const vf = new VideoFrame(ctx.canvas, { timestamp: Math.round(t / 1000) });
     encoder.encode(vf, { keyFrame: k % 60 === 0 });

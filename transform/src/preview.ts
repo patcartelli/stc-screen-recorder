@@ -111,7 +111,7 @@ export class PreviewPlayer {
       const frame = idx === null ? null : await this.source.frameAt(idx);
       if (this.closed) return;
       composite(this.ctx as unknown as OffscreenCanvasRenderingContext2D,
-                frame as unknown as ImageBitmap | null, fs,
+                frame as unknown as ImageBitmap | null, null, fs,
                 this.project.output.width, this.project.output.height);
       this.renderedFrames++;
     } finally {

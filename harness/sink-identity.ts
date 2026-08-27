@@ -64,7 +64,7 @@ async function hashCanvas(ctx: OffscreenCanvasRenderingContext2D, w: number, h: 
       const fs = render(project, session, t);
       const idx = frameIndexAt(session.frames, t);
       const frame = idx === null ? null : await fwd.frameAt(idx);
-      composite(fwdCtx, frame as unknown as ImageBitmap | null, fs, width, height);
+      composite(fwdCtx, frame as unknown as ImageBitmap | null, null, fs, width, height);
       exportHash.set(k, await hashCanvas(fwdCtx, width, height));
     }
     fwd.close();
@@ -77,7 +77,7 @@ async function hashCanvas(ctx: OffscreenCanvasRenderingContext2D, w: number, h: 
       const fs = render(project, session, t);
       const idx = frameIndexAt(session.frames, t);
       const frame = idx === null ? null : await seek.frameAt(idx);
-      composite(prevCtx, frame as unknown as ImageBitmap | null, fs, width, height);
+      composite(prevCtx, frame as unknown as ImageBitmap | null, null, fs, width, height);
       const h = await hashCanvas(prevCtx, width, height);
       if (h !== exportHash.get(k)) mismatches.push(`frame ${k} (t=${(t / 1e6).toFixed(1)}ms)`);
     }

@@ -100,7 +100,7 @@ export async function exportSession(
       const idx = frameIndexAt(session.frames, tNs);
       const frame = idx === null ? null : await source.frameAt(idx);
       peakBuffered = Math.max(peakBuffered, source.bufferedCount);
-      composite(ctx, frame as unknown as ImageBitmap | null, fs, width, height);
+      composite(ctx, frame as unknown as ImageBitmap | null, null, fs, width, height);
 
       if (wantHash) {
         const rgba = ctx.getImageData(0, 0, width, height).data;

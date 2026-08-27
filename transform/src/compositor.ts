@@ -10,6 +10,7 @@ import type { FrameState } from "./render.js";
 export function composite(
   ctx: OffscreenCanvasRenderingContext2D,
   frame: ImageBitmap | null,
+  camera: ImageBitmap | null,
   fs: FrameState,
   width: number,
   height: number,
@@ -17,6 +18,15 @@ export function composite(
   ctx.fillStyle = "#000000";
   ctx.fillRect(0, 0, width, height);
   if (frame) ctx.drawImage(frame, 0, 0, width, height);
+
+  // The PiP sits UNDER the cursor deliberately: a cursor over the bottom-right
+  // corner must stay visible. render() has already decided the rectangle; this
+  // only draws it. Drawn only when both the geometry and a decoded frame exist
+  // — no frame yet is a black gap, not a stretched stale one.
+  if (fs.pip && camera) {
+    ctx.drawImage(camera, fs.pip.x, fs.pip.y, fs.pip.width, fs.pip.height);
+  }
+
   if (!fs.cursor.visible) return;
 
   const { x, y, scale, pressed } = fs.cursor;
