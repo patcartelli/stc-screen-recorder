@@ -100,18 +100,20 @@ describe("camera capture — requires Screen Recording AND Camera", () => {
     // a PARTIAL rebase (e.g. to stream-start instead of session t0Ns) pass
     // silently in the tens-to-low-hundreds-of-ms range.
     //
-    // 1. Relative and self-calibrating: the camera's first frame must land
-    //    well after the display's own first frame (anchors.capture.firstFrameNs),
-    //    which is measured on this same clock by this same helper run. This
-    //    does not depend on absolute wall-clock timing, so it will not go
-    //    stale on faster or slower hardware than phase 0's.
-    expect(cam.firstFramePtsNs).toBeGreaterThan(
-      anchors.capture.firstFrameNs + 300_000_000);
-    // 2. Absolute floor: raised well above anything a stream-relative rebase
-    //    could plausibly produce (tens to low hundreds of ms), but comfortably
-    //    below the ~1035 ms phase-0 measurement so a camera that warms up
-    //    faster than that specific run does not make this flaky.
-    expect(cam.firstFramePtsNs).toBeGreaterThan(500_000_000);
+    // 1. A modest floor, which is all a lower bound can honestly be. A rebase
+    //    to the camera stream's own start puts the first frame at ~0, or at
+    //    most one frame interval (~17 ms); 100 ms clears that by 6x.
+    //
+    //    MEASURED 2026-08-27, and this is why the bound is not tighter. An
+    //    earlier version required first > capture.firstFrameNs + 300 ms and a
+    //    500 ms absolute floor, reasoning from phase 0's ~1035 ms warm-up. On
+    //    an Elgato Facecam 4K [USB2] a COLD device took 2.246 s merely to
+    //    open — but a WARM one delivered its first frame at 604 ms against the
+    //    display's 220 ms, clearing those bounds by 83 ms and 104 ms. The
+    //    display-to-camera gap is not a stable quantity; a bound built on it
+    //    measures warm-up luck, not correctness, and would fail spuriously on
+    //    a built-in camera. The upper bound below is the real discriminator.
+    expect(cam.firstFramePtsNs).toBeGreaterThan(100_000_000);
     // ~58.8 fps measured; anything outside this is not a camera frame interval.
     expect(cam.frameIntervalNs).toBeGreaterThan(8_000_000);
     expect(cam.frameIntervalNs).toBeLessThan(50_000_000);
