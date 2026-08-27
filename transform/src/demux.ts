@@ -36,7 +36,7 @@ export function demuxTrack(buf: ArrayBuffer, what: string): Promise<DemuxedVideo
       15_000,
     );
 
-    file.onError = (e: unknown) => { clearTimeout(watchdog); fail(`mp4box: ${String(e)}`); };
+    file.onError = (e: unknown) => { clearTimeout(watchdog); fail(`mp4box reading ${what}: ${String(e)}`); };
     file.onReady = (info: any) => {
       sawReady = true;
       const track = info.videoTracks[0];
