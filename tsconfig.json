@@ -1,4 +1,21 @@
 {
+  // ── The COVERAGE pass ────────────────────────────────────────────────────
+  // Every .ts file in the repo, checked with both DOM and node visible.
+  //
+  // Nothing else in this repo does static checking: vitest transpiles without
+  // typechecking and esbuild does not check either, so a file left out here has
+  // NO static checking at all. That is how a `composite()` signature change
+  // broke harness/main.ts while `tsc --noEmit` stayed green and 195 tests
+  // passed, and only a real browser run caught it (2026-08-27).
+  //
+  // Deliberately the widest pass, and deliberately the one a bare
+  // `npx tsc --noEmit` runs: a default that checked only part of the tree would
+  // be a fresh "succeeds by finding nothing to do" trap. The two narrowed
+  // passes below add runtime constraints ON TOP; they never substitute for this
+  // one. This is also the only pass with lib checking on (no skipLibCheck), so
+  // declaration files are still checked exactly once.
+  //
+  // Run all three with `npm run typecheck`.
   "compilerOptions": {
     "target": "ES2022",
     "module": "ESNext",
@@ -7,7 +24,20 @@
     "noUncheckedIndexedAccess": true,
     "resolveJsonModule": true,
     "noEmit": true,
-    "types": ["node"]
+    "types": ["node"],
+    // harness/ and app/ import the transform through the same "@transform"
+    // alias that vite (harness/vite.config.ts, scripts/*-gate.mjs) and esbuild
+    // (app/build.mjs) resolve. tsc knows nothing about those bundler configs,
+    // so without this mapping every such import is an unresolved-module error
+    // and neither tree can be included at all. NB `baseUrl` is removed in TS 7
+    // and the target must be "./"-relative.
+    "paths": { "@transform/*": ["./transform/src/*"] }
   },
-  "include": ["transform/**/*.ts"]
+  "include": [
+    "transform/**/*.ts",
+    "harness/**/*.ts",
+    "app/**/*.ts",
+    "helper/**/*.ts",
+    "vitest.*.ts"
+  ]
 }
