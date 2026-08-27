@@ -3,15 +3,18 @@ import { join } from "node:path";
 import { mkdtempSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { HelperSupervisor } from "../src/supervisor.js";
+import { withTimeout } from "../../transform/src/timeout.js";
 
 const root = join(__dirname, "..", "..");
 const BIN = join(root, "helper", "build", "stc-helper");
+// Speaks the control plane and can actually be recording; captures nothing.
+const FAKE_BIN = join(root, "app", "test", "_fake-helper.mjs");
 
 const live: HelperSupervisor[] = [];
 afterEach(async () => { for (const s of live.splice(0)) await s.shutdown(); });
 
-function sup(opts: Parameters<typeof HelperSupervisor.start>[1] = {}) {
-  const s = HelperSupervisor.start(BIN, { statsIntervalMs: 25, ...opts });
+function sup(opts: Parameters<typeof HelperSupervisor.start>[1] = {}, bin = BIN) {
+  const s = HelperSupervisor.start(bin, { statsIntervalMs: 25, ...opts });
   live.push(s);
   return s;
 }
@@ -39,16 +42,35 @@ describe("HelperSupervisor — keeping a helper alive", () => {
   }, 20_000);
 
   test("a crash mid-recording surfaces as a lost recording, not a silent reset", async () => {
-    const s = sup();
+    // Against the REAL helper this has to fake the recording, and the fake is
+    // one the helper contradicts: it is idle, its heartbeat says so, and the
+    // supervisor rightly heals the desync by ending the recording — which
+    // clears recordingDir, so the crash has nothing left to report as lost.
+    // That made the test a race against the supervisor's own self-healing:
+    // green here, red whenever a loaded CI VM let a buffered stats line land
+    // between the kill and the exit (run 33104414974). The stand-in can
+    // actually be recording, so the recording is started for real and the
+    // heartbeat agrees with it.
+    const s = sup({}, FAKE_BIN);
     await s.ready();
-    // Force the supervisor to believe a recording is in flight, then kill.
-    s.markRecordingForTest(session());
-    const lost: unknown[] = [];
+    const dir = session();
+    await s.startRecording(dir);
+    // Not cosmetic: waiting for the helper's own heartbeat to agree is exactly
+    // what the old fake could not survive. Nothing can now heal the state out
+    // from under the assertion.
+    await withTimeout(new Promise<void>((res) => {
+      const off = s.on("stats", (l) => { if (l.state === "recording") { off(); res(); } });
+    }), 2_000, "the stand-in's heartbeat agreeing that it is recording");
+    expect(s.state).toBe("recording");
+
+    const lost: any[] = [];
     s.on("recording-lost", (e) => lost.push(e));
     const respawned = new Promise<void>((res) => s.on("respawned", () => res()));
     s.killForTest();
     await respawned;
     expect(lost.length).toBe(1);
+    expect(lost[0].dir).toBe(dir);
+    expect(lost[0].signal).toBe("SIGKILL");
   }, 20_000);
 
   test("stops respawning after repeated rapid failures instead of looping forever", async () => {
