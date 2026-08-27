@@ -78,7 +78,15 @@ function runBounded(cmd: string, args: string[], what: string, ms: number): Prom
     let out = "";
     let err = "";
     child.stdout.on("data", (d: Buffer) => { out += d.toString("utf8"); });
-    child.stderr.on("data", (d: Buffer) => { err += d.toString("utf8"); });
+    child.stderr.on("data", (d: Buffer) => {
+      const s = d.toString("utf8");
+      err += s;
+      // Streamed, not merely collected. When VITEST's timeout fires rather than
+      // ours, this promise never settles and everything buffered here is
+      // discarded — losing the diagnostics at the exact moment they matter.
+      // Seen on CI: writer-gate timed out at 120 s twice and left no clue why.
+      process.stderr.write(s);
+    });
 
     let settled = false;
     const tail = (s: string) => s.slice(-2000);

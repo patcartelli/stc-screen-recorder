@@ -1,6 +1,7 @@
 import Foundation
 import AVFoundation
 import CoreVideo
+import VideoToolbox
 
 // STC-254 regression harness.
 //
@@ -8,6 +9,45 @@ import CoreVideo
 // print a failed assertion — it dies by signal. That is the point: the test
 // asserts the process survives a first append racing teardown. `swift` cannot
 // catch it and neither could a `try`, which is why this runs out of process.
+
+/// Written to stderr and streamed live by the test runner, so it survives a
+/// timeout that kills this process. Anything only printed at the end is lost
+/// exactly when a stall makes it valuable.
+func diag(_ m: String) {
+    FileHandle.standardError.write(("[writer-gate] " + m + "\n").data(using: .utf8)!)
+}
+
+/// Reports what VideoToolbox will actually give us before we ask AVFoundation
+/// for a writer.
+///
+/// STC-259: this harness stalls on some CI runners, and on one such run the
+/// Electron export failed on the same machine with "no usable H.264 encoder".
+/// An AVAssetWriter's first append creates the compressor lazily, and if no
+/// encoder can be had it does not fail — it blocks. So the inventory is taken
+/// FIRST, and printed whether or not anything goes wrong: a stalling run that
+/// reports a healthy encoder kills that hypothesis just as usefully as one that
+/// reports none confirms it.
+func reportEncoders() {
+    var listCF: CFArray?
+    let status = VTCopyVideoEncoderList(nil, &listCF)
+    guard status == noErr, let list = listCF as? [[CFString: Any]] else {
+        diag("VTCopyVideoEncoderList failed with status \(status) — NO encoder inventory")
+        return
+    }
+    var h264 = 0
+    for enc in list {
+        let codec = enc[kVTVideoEncoderList_CodecType] as? Int ?? 0
+        guard codec == Int(kCMVideoCodecType_H264) else { continue }
+        h264 += 1
+        let name = enc[kVTVideoEncoderList_EncoderName] as? String ?? "?"
+        let hw = enc[kVTVideoEncoderList_IsHardwareAccelerated] as? Bool ?? false
+        diag("h264 encoder: \(name) hardware=\(hw)")
+    }
+    diag("encoders total=\(list.count) h264=\(h264)")
+    if h264 == 0 {
+        diag("NO H.264 ENCODER — an AVAssetWriter append will block rather than fail here")
+    }
+}
 
 let W = 1280, H = 720
 var failures: [String] = []
@@ -89,6 +129,9 @@ func makeWriter(_ name: String) -> (AVAssetWriter, AVAssetWriterInput, AVAssetWr
     return (w, inp, ad)
 }
 
+reportEncoders()
+diag("phase 1: closed-gate assertions")
+
 // 1. A closed gate drops, and says so, rather than appending into a finished input.
 do {
     let (w, inp, ad) = makeWriter("gate-closed.mp4")
@@ -99,6 +142,8 @@ do {
     check(gate.append(makeBuffer(), at: .zero) == .dropped, "append after close must drop")
     w.cancelWriting()
 }
+
+diag("phase 2: live-gate append")
 
 // 2. A live gate appends.
 do {
@@ -113,8 +158,10 @@ do {
 // 3. The regression: the first append racing teardown must not kill the process.
 // The delay sweep walks the teardown across the compressor-creation window;
 // unguarded, this dies within the first few iterations.
+diag("phase 3: race loop, 120 iterations")
 let iterations = 120
 for i in 0..<iterations {
+    if i % 20 == 0 { diag("race iteration \(i)") }
     let (w, inp, ad) = makeWriter("gate-race-\(i).mp4")
     let gate = WriterGate()
     gate.install(input: inp, adaptor: ad)
