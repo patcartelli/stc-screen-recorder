@@ -2,7 +2,7 @@ import { describe, test, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
-  bounded, EVAL_MS, EVAL_SLOTS, SEEK_MS, PRE_GATE_BUDGET_MS,
+  bounded, EVAL_MS, ENCODER_MS, EVAL_SLOTS, SEEK_MS, PRE_GATE_BUDGET_MS,
 } from "../../scripts/gate-bounds.mjs";
 import * as bounds from "../../scripts/gate-bounds.mjs";
 
@@ -64,6 +64,24 @@ describe("gate bounds — clearance against the CI job timeout", () => {
     // Not a token margin: the gates must be able to time out and still leave
     // room to print why and upload the artifacts.
     expect(marginMs).toBeGreaterThanOrEqual(5 * 60_000);
+  });
+
+  test("the in-page encoder bound stays under the per-evaluate bound", () => {
+    // The harness bounds its own encoder waits with ENCODER_MS, handed in by
+    // gate.mjs. If it ever reached EVAL_MS the outer bound would fire first and
+    // the specific message — the frame the encoder stopped draining on — would
+    // always lose the race. That is the writer-gate mistake, one layer in.
+    expect(ENCODER_MS).toBeLessThan(EVAL_MS);
+  });
+
+  test("gate.mjs hands the page its bound and checks what came back", () => {
+    // The page could quietly use a bound of its own; then both sides believe
+    // they agree and the clearance above is asserting about nothing.
+    const src = readFileSync(join(root, "scripts", "gate.mjs"), "utf8");
+    expect(src, "gate.mjs must pass ENCODER_MS into runGate")
+      .toMatch(/runGate\(\s*\{\s*encoderMs:/);
+    expect(src, "gate.mjs must assert the bound the page reports back")
+      .toMatch(/encoderBoundMs\s*!==\s*ENCODER_MS/);
   });
 
   test("every bounded evaluate in the CI gates is accounted for", () => {

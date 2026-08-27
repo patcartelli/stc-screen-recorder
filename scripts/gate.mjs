@@ -9,7 +9,7 @@
 // are not contractually deterministic; the gate lives before the encoder.
 import { createServer } from "vite";
 import { chromium } from "playwright";
-import { bounded, closeQuietly, EVAL_MS } from "./gate-bounds.mjs";
+import { bounded, closeQuietly, EVAL_MS, ENCODER_MS } from "./gate-bounds.mjs";
 
 const server = await createServer({ configFile: "harness/vite.config.ts" });
 await server.listen(5199);
@@ -26,8 +26,15 @@ const fail = (msg) => { failed = true; console.error("FAIL:", msg); };
 try {
   await page.goto("http://localhost:5199/");
   await page.waitForFunction(() => window.__ready === true, { timeout: 60_000 });
-  const r = await bounded(page.evaluate(() => window.runGate()), EVAL_MS,
-                          "the in-page gate run (decode, render, encode)");
+  const r = await bounded(
+    page.evaluate((ms) => window.runGate({ encoderMs: ms }), ENCODER_MS),
+    EVAL_MS, "the in-page gate run (decode, render, encode)");
+
+  // The page must have used the bound it was handed, not one of its own. Two
+  // sides believing they agree is how the bounds drift apart unnoticed.
+  if (r.encoderBoundMs !== ENCODER_MS) {
+    fail(`page used encoder bound ${r.encoderBoundMs}ms, runner sent ${ENCODER_MS}ms`);
+  }
 
   console.log(`demuxed frame grid matches frames.json: ${r.framesMatch}`);
   if (!r.framesMatch) fail("demuxed PTS grid != fixtures/basic/frames.json");

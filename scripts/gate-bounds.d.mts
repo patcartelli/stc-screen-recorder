@@ -8,6 +8,7 @@
  * declared here actually exists in the module.
  */
 export declare const EVAL_MS: number;
+export declare const ENCODER_MS: number;
 export declare const TEARDOWN_MS: number;
 export declare const EVAL_SLOTS: number;
 export declare const SEEK_MS: number;

@@ -46,7 +46,7 @@ async function runPreview(
 
 /** Export sink: walks the 60 fps output grid, hashes pre-encode, then encodes. Fresh decode. */
 async function runExport(
-  project: Project, session: Session, video: DemuxedVideo,
+  project: Project, session: Session, video: DemuxedVideo, encoderMs: number,
 ): Promise<{ hashes: string[]; encodedBytes: number }> {
   const bitmaps = await decodeAll(video);
   const { width, height } = project.output;
@@ -73,8 +73,22 @@ async function runExport(
     const vf = new VideoFrame(ctx.canvas, { timestamp: Math.round(t / 1000) });
     encoder.encode(vf, { keyFrame: k % 60 === 0 });
     vf.close();
+
+    // Bounded, the same way transform/src/export.ts bounds its own loop. This
+    // harness previously pushed all 300 frames in and only bounded the flush,
+    // so an encoder that never drained showed up as a hang minutes later with
+    // the frame count lost. Fail at the frame it stopped on instead.
+    const drainBy = performance.now() + encoderMs;
+    while (encoder.encodeQueueSize > 30) {
+      if (performance.now() > drainBy) {
+        throw new Error(
+          `encoder stopped draining at frame ${k} of ${EXPORT_FRAMES} ` +
+          `(queue stuck at ${encoder.encodeQueueSize}) after ${encoderMs}ms`);
+      }
+      await new Promise((r) => setTimeout(r, 1));
+    }
   }
-  await withTimeout(encoder.flush(), 120_000, "encoder flush (harness)");
+  await withTimeout(encoder.flush(), encoderMs, "encoder flush (harness)");
   muxer.finalize();
   encoder.close();
   bitmaps.forEach((b) => b.close());
@@ -99,7 +113,14 @@ async function main() {
   const session: Session = { anchors, events: eventsDoc.events, frames: video.framesNs };
   say(`demuxed ${video.framesNs.length} frames; matches frames.json: ${framesMatch}`);
 
-  (window as any).runGate = async () => {
+  (window as any).runGate = async (opts: { encoderMs?: number } = {}) => {
+    // Handed in by scripts/_bounds.mjs so the in-page bound and the driver's
+    // outer bound cannot drift apart. No default: a guessed one here would
+    // silently restore exactly the drift the assertion exists to catch.
+    const encoderMs = opts.encoderMs;
+    if (typeof encoderMs !== "number") {
+      throw new Error("runGate({ encoderMs }) requires an encoder bound from the runner");
+    }
     // 200 of the 300 export times: every k not divisible by 3
     const sampledK: number[] = [];
     for (let k = 0; k < EXPORT_FRAMES; k++) if (k % 3 !== 0) sampledK.push(k);
@@ -112,13 +133,16 @@ async function main() {
     }
 
     say("export run A…");
-    const a = await runExport(project, session, video);
+    const a = await runExport(project, session, video, encoderMs);
     say("export run B…");
-    const b = await runExport(project, session, video);
+    const b = await runExport(project, session, video, encoderMs);
     say("preview run (shuffled order)…");
     const previewHash = await runPreview(project, session, video, sampledK.map(exportTimeNs));
     say("done");
     return {
+      // Echoed so the driver asserts the page used the bound it was given,
+      // rather than both sides merely believing they agree.
+      encoderBoundMs: encoderMs,
       framesMatch,
       sampledK,
       previewHash,

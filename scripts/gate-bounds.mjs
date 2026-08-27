@@ -25,6 +25,23 @@
 
 /** Per-evaluate bound. Override for experiments; CI uses the default. */
 export const EVAL_MS = Number(process.env.STC_GATE_EVAL_MS ?? 180_000);
+
+/**
+ * Handed INTO the page, where the harness bounds its own encoder waits — the
+ * back-pressure drain and the flush. It must stay under EVAL_MS or the outer
+ * bound fires first and the specific message ("stopped draining at frame 35 of
+ * 300") is lost to the generic one. gate-bounds.test.ts asserts that ordering
+ * rather than leaving it true by luck.
+ *
+ * The in-page bound does NOT replace the outer one. Every bound inside the page
+ * is a JS timer, and a timer cannot fire while the renderer's main thread is
+ * blocked — `VideoEncoder.configure()` is synchronous, and CI's encoder is a
+ * paravirtualized passthrough STC-259 measured blocking past 15 s on first
+ * touch. When that happens only another PROCESS can notice. This bound is for
+ * the commoner case where the page is alive and the encoder simply is not
+ * draining, which the outer bound can only report as "something was stuck".
+ */
+export const ENCODER_MS = Number(process.env.STC_GATE_ENCODER_MS ?? 120_000);
 export const TEARDOWN_MS = 30_000;
 
 /**

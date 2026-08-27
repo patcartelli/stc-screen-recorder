@@ -383,6 +383,23 @@ reachable via KVC (`setValue(3, forKey: "captureResolution")`, verified in phase
   test drive the real `startRecording`. Waiting for the helper's own heartbeat to AGREE is the
   load-bearing step; it is precisely what the old fake could not survive.
 
+- **The gates' encoder is bounded on BOTH sides of the process line, and the outer one is the
+  load-bearing half.** #30 bounded every `page.evaluate` (Playwright has no default timeout on it);
+  #31 added the in-page half — `harness/main.ts` now has the bounded back-pressure drain that
+  `transform/src/export.ts` already had, so a stalled encoder fails at the frame it stopped on
+  ("encoder stopped draining at frame 35 of 300, queue stuck at 31") instead of surfacing minutes
+  later with the count lost. **The inner bound cannot replace the outer one**: every in-page bound
+  is a JS timer, and a timer cannot fire while the renderer's main thread is blocked.
+  `VideoEncoder.configure()` is synchronous and CI's encoder is a paravirtualized passthrough that
+  STC-259 measured blocking past 15 s on first touch — when that happens only another PROCESS can
+  notice, which is why the gate ran 24 min with nothing to say. The page is HANDED its bound by the
+  runner and echoes it back for the driver to assert, and `runGate` refuses to run without one: a
+  bound the page defaults on its own is a bound nobody checks. `ENCODER_MS < EVAL_MS` is asserted in
+  `gate-bounds.test.ts`, not left true by luck.
+  NB pacing the encode loop changed gate C's encoded size (537167 -> 314306 bytes) — rate control
+  responds to submission timing. Pre-encode determinism is untouched, which is what the gate proves;
+  gate C only asserts the encoder produced bytes at all.
+
 - **Retry logic must key on the failure being the MACHINE's, never on "it failed"** — a retry
   that absorbs a real regression is worse than no retry. `writer-gate` keys strictly on the
   harness's `ENVIRONMENT:` marker and excludes death-by-signal, failed assertions, and the
