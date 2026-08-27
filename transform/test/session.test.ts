@@ -142,7 +142,7 @@ describe("loader accepts v1 and v2 anchors", () => {
       } as any),
       events: { version: 1, events: [{ t: 0, kind: "move", x: 1, y: 2 }] },
       displayMp4: mp4("fixtures/offset/display.mp4"),
-    })).rejects.toThrow(/camera/i);
+    })).rejects.toThrow(/no camera\.mp4 was supplied/i);
   });
 });
 
@@ -176,7 +176,19 @@ describe("loading a camera track", () => {
       anchors: camAnchors(),
       events: { version: 1, events: [] },
       displayMp4: mp4("fixtures/offset/display.mp4"),
-    })).rejects.toThrow(/camera/i);
+    })).rejects.toThrow(/no camera\.mp4 was supplied/i);
+  });
+
+  // The other direction, which had no test at all. A camera file with no
+  // anchors block means the two sources disagree about what was recorded, and
+  // guessing which is right is worse than refusing.
+  test("a camera.mp4 supplied for a take that claims no camera is refused", async () => {
+    await expect(loadSession({
+      anchors: offsetAnchors({ version: 2, camera: { present: false } } as any),
+      events: { version: 1, events: [] },
+      displayMp4: mp4("fixtures/offset/display.mp4"),
+      cameraMp4: mp4("fixtures/pip/camera.mp4"),
+    })).rejects.toThrow(/a camera\.mp4 was supplied/i);
   });
 
   test("a camera whose demuxed start disagrees with the anchors is refused", async () => {
