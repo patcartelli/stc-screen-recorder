@@ -19,10 +19,12 @@ export interface SessionInput {
   anchors: Anchors;
   events: { version: number; events: SessionEvent[] };
   displayMp4: ArrayBuffer;
+  cameraMp4?: ArrayBuffer;
 }
 
 export interface LoadedSession extends Session {
   video: DemuxedVideo;
+  cameraVideo?: DemuxedVideo;
 }
 
 /**
@@ -33,6 +35,26 @@ export interface LoadedSession extends Session {
  * writer disagree about time itself.
  */
 const OFFSET_TOLERANCE_NS = 50_000;
+
+/**
+ * The helper wrote down what it measured; the file only preserves a
+ * timescale-quantised version of it (an empty edit, 90 kHz). Comparing the
+ * two turns a whole class of silent clock bugs into a loud one — on the
+ * display track a few frames of desync looks like a rendering fault; on the
+ * camera track (~1 s empty edit) an unchecked gap is seconds of PiP desync,
+ * invisible in a still frame. Shared by both tracks so the two checks cannot
+ * drift apart.
+ */
+function checkFrameOffset(what: string, measuredNs: number | undefined, demuxedFirstNs: number): void {
+  if (typeof measuredNs !== "number") return;
+  const drift = Math.abs(demuxedFirstNs - measuredNs);
+  if (drift > OFFSET_TOLERANCE_NS) {
+    throw new SessionLoadError(
+      `${what} frame-time offset disagreement: helper measured ${measuredNs} ns, file yields ` +
+      `${demuxedFirstNs} ns (${(drift / 1e6).toFixed(1)} ms apart). Render would desync by that amount.`,
+    );
+  }
+}
 
 export async function loadSession(input: SessionInput): Promise<LoadedSession> {
   const { anchors, events } = input;
@@ -48,15 +70,22 @@ export async function loadSession(input: SessionInput): Promise<LoadedSession> {
     throw new SessionLoadError(`events.json version ${events?.version} is not supported (expected 1)`);
   }
 
-  // loadSession has no camera input yet (no path to a camera file, no
-  // cameraFrames demux) — increment 3 adds that. A v2 session that claims a
-  // camera track would otherwise load "successfully" and render() would
-  // silently return pip: null with no diagnostic, exactly the class of silent
-  // failure the offset check above exists to make loud instead.
-  if (anchors.camera?.present === true) {
+  // A claimed camera with no file supplied, and a file supplied with no
+  // claim, are both cases where the two sources disagree about what was
+  // recorded — guessing which one is right is worse than refusing. Silently
+  // loading either mismatch as camera-less would leave render() reporting
+  // pip: null for a take that has one, or vice versa.
+  const claimsCamera = anchors.camera?.present === true;
+  if (claimsCamera && !input.cameraMp4) {
     throw new SessionLoadError(
-      "anchors.camera.present is true, but loadSession does not load camera tracks yet " +
-      "(increment 3 adds camera demux). Refusing to silently drop the PiP.",
+      "anchors.camera.present is true but no camera.mp4 was supplied for this take. " +
+      "Refusing to silently drop the PiP.",
+    );
+  }
+  if (input.cameraMp4 && !claimsCamera) {
+    throw new SessionLoadError(
+      "a camera.mp4 was supplied but anchors.camera.present is not true — the anchors and " +
+      "the file disagree about whether this take has a camera track.",
     );
   }
 
@@ -64,26 +93,23 @@ export async function loadSession(input: SessionInput): Promise<LoadedSession> {
   if (video.framesNs.length === 0) {
     throw new SessionLoadError("display.mp4 contains no frames");
   }
+  checkFrameOffset("display.mp4", (anchors.capture as { firstFrameNs?: number }).firstFrameNs, video.framesNs[0]!);
 
-  // The helper wrote down what it measured; the file only preserves a quantised
-  // version of it. Comparing the two turns a whole class of silent clock bugs
-  // into a loud one — a desync of a few frames looks like a rendering fault.
-  const measured = (anchors.capture as { firstFrameNs?: number }).firstFrameNs;
-  if (typeof measured === "number") {
-    const drift = Math.abs(video.framesNs[0]! - measured);
-    if (drift > OFFSET_TOLERANCE_NS) {
-      throw new SessionLoadError(
-        `frame-time offset disagreement: helper measured ${measured} ns, file yields ` +
-        `${video.framesNs[0]} ns (${(drift / 1e6).toFixed(1)} ms apart). The cursor would ` +
-        `render out of sync with the video by that amount.`,
-      );
+  let cameraVideo: DemuxedVideo | undefined;
+  if (claimsCamera && input.cameraMp4) {
+    cameraVideo = await demuxTrack(input.cameraMp4, "camera.mp4");
+    if (cameraVideo.framesNs.length === 0) {
+      throw new SessionLoadError("camera.mp4 contains no frames");
     }
+    checkFrameOffset("camera.mp4", anchors.camera!.firstFramePtsNs, cameraVideo.framesNs[0]!);
   }
 
   return {
     anchors,
     events: [...events.events].sort((a, b) => a.t - b.t),
     frames: video.framesNs,
+    cameraFrames: cameraVideo?.framesNs,
     video,
+    cameraVideo,
   };
 }

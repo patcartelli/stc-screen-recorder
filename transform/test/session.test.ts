@@ -145,3 +145,58 @@ describe("loader accepts v1 and v2 anchors", () => {
     })).rejects.toThrow(/camera/i);
   });
 });
+
+describe("loading a camera track", () => {
+  const camAnchors = (over: any = {}) => offsetAnchors({
+    version: 2,
+    camera: {
+      present: true, device: "Fixture Camera", width: 320, height: 180,
+      firstFramePtsNs: 1_035_500_000, lastFramePtsNs: 3_024_500_000,
+      frameIntervalNs: 17_000_000,
+    },
+    files: { display: "display.mp4", camera: "camera.mp4" },
+    ...over,
+  });
+
+  test("a camera track becomes session.cameraFrames", async () => {
+    const s = await loadSession({
+      anchors: camAnchors(),
+      events: { version: 1, events: [] },
+      displayMp4: mp4("fixtures/offset/display.mp4"),
+      cameraMp4: mp4("fixtures/pip/camera.mp4"),
+    });
+    expect(s.cameraFrames?.length).toBe(118);
+    expect(s.cameraFrames?.[0]).toBe(1_035_500_000);
+  });
+
+  test("a session claiming a camera but given no camera.mp4 is refused", async () => {
+    // Silently loading it as camera-less would leave render() returning
+    // pip: null for a take that has one, which looks like a rendering bug.
+    await expect(loadSession({
+      anchors: camAnchors(),
+      events: { version: 1, events: [] },
+      displayMp4: mp4("fixtures/offset/display.mp4"),
+    })).rejects.toThrow(/camera/i);
+  });
+
+  test("a camera whose demuxed start disagrees with the anchors is refused", async () => {
+    // Same reasoning as the display track's existing offset check: the helper
+    // wrote down what it measured, the file preserves a quantised version, and
+    // comparing them turns a silent seconds-long desync into a loud failure.
+    await expect(loadSession({
+      anchors: camAnchors({ camera: { ...camAnchors().camera, firstFramePtsNs: 5_000_000_000 } }),
+      events: { version: 1, events: [] },
+      displayMp4: mp4("fixtures/offset/display.mp4"),
+      cameraMp4: mp4("fixtures/pip/camera.mp4"),
+    })).rejects.toThrow(/camera.*offset|offset.*camera/i);
+  });
+
+  test("a v2 session with no camera still loads", async () => {
+    const s = await loadSession({
+      anchors: offsetAnchors({ version: 2, camera: { present: false } } as any),
+      events: { version: 1, events: [] },
+      displayMp4: mp4("fixtures/offset/display.mp4"),
+    });
+    expect(s.cameraFrames).toBeUndefined();
+  });
+});
