@@ -51,6 +51,16 @@ final class CameraCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
     private var deviceName = ""
 
     private let lock = NSLock()
+    /// Last pts that passed the monotonic-ordering check, appended or not.
+    /// Kept separate from `lastPtsNs` below: the writer must never be handed
+    /// a non-increasing timestamp regardless of what the gate ends up doing
+    /// with it, so this guards the ordering of everything offered to
+    /// `gate.append`, not just what anchors.camera ends up describing.
+    private var monotonicGuardPtsNs: Int64 = -1
+    /// first/last/deltas describe only frames the gate actually APPENDED
+    /// (see `captureOutput` below) — anchors.camera must not claim a track
+    /// wider than camera.mp4 actually contains, which it would if the gate
+    /// dropped the first or last received frame (e.g. during teardown).
     private var firstPtsNs: Int64 = -1
     private var lastPtsNs: Int64 = -1
     private var deltas: [Int64] = []
@@ -72,7 +82,11 @@ final class CameraCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
             deviceTypes: [.builtInWideAngleCamera, .externalUnknown],
             mediaType: .video, position: .unspecified)
         guard let device = discovery.devices.first else { return .failure(CameraError.noDevice) }
-        deviceName = device.localizedName
+        // Guarded by `lock`, same as the frame counters below: this runs on
+        // the open queue (CaptureSession.startCameraAsync's background
+        // queue) while `track()` reads it from the stop path, which can run
+        // concurrently on a different queue.
+        lock.lock(); deviceName = device.localizedName; lock.unlock()
 
         let s = AVCaptureSession()
         s.beginConfiguration()
@@ -162,17 +176,24 @@ final class CameraCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
             guard rel >= 0 else { return }          // arrived before the session began
 
             lock.lock()
-            if lastPtsNs >= 0 {
-                if rel <= lastPtsNs { lock.unlock(); return }   // non-monotonic: drop
-                deltas.append(rel - lastPtsNs)
+            if monotonicGuardPtsNs >= 0, rel <= monotonicGuardPtsNs {
+                lock.unlock(); return               // non-monotonic: drop, never offered to the gate
             }
-            if firstPtsNs < 0 { firstPtsNs = rel }
-            lastPtsNs = rel
+            monotonicGuardPtsNs = rel
             lock.unlock()
 
-            if gate.append(pb, at: CMTime(value: rel, timescale: 1_000_000_000)) == .appended {
-                lock.lock(); appended += 1; lock.unlock()
-            }
+            let outcome = gate.append(pb, at: CMTime(value: rel, timescale: 1_000_000_000))
+            guard outcome == .appended else { return }
+
+            // Only record what actually landed in camera.mp4 — a frame the
+            // gate dropped (teardown racing the last append) must not widen
+            // anchors.camera past the real track.
+            lock.lock()
+            if lastPtsNs >= 0 { deltas.append(rel - lastPtsNs) }
+            if firstPtsNs < 0 { firstPtsNs = rel }
+            lastPtsNs = rel
+            appended += 1
+            lock.unlock()
         }
     }
 
