@@ -6,6 +6,7 @@
  */
 import { createServer } from "vite";
 import { chromium } from "playwright";
+import { bounded, closeQuietly, EVAL_MS } from "./gate-bounds.mjs";
 import { readFileSync, existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
@@ -61,7 +62,11 @@ try {
 
   let r;
   for (let attempt = 1; attempt <= 3; attempt++) {
-    try { r = await page.evaluate((n) => window.runSinkIdentity("/session", n), SAMPLES); break; }
+    try {
+      r = await bounded(page.evaluate((n) => window.runSinkIdentity("/session", n), SAMPLES),
+                        EVAL_MS, "the in-page sink-identity run");
+      break;
+    }
     catch (e) {
       if (attempt === 3 || !String(e).includes("garbage collected")) throw e;
       await page.waitForFunction(() => window.__identityReady === true, { timeout: 60_000 });
@@ -101,7 +106,7 @@ try {
   fail(String(e?.stack ?? e));
 } finally {
   if (errors.length) { console.error("--- page errors ---"); errors.slice(0, 5).forEach((e) => console.error(" ", e)); }
-  await browser.close(); await server.close();
+  await closeQuietly(browser, server);
 }
 console.log(failed ? "\nIDENTITY GATE: FAIL" : "\nIDENTITY GATE: PASS");
 process.exit(failed ? 1 : 0);

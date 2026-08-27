@@ -10,6 +10,7 @@
  */
 import { createServer } from "vite";
 import { chromium } from "playwright";
+import { bounded, closeQuietly, EVAL_MS } from "./gate-bounds.mjs";
 import { readFileSync, existsSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
@@ -104,9 +105,11 @@ try {
       }
     }
   };
-  const runOne = (mf) => withRetry(() => page.evaluate(
+  // Bounds the evaluate, NOT the retry loop: a retry that re-enters an
+  // unbounded wait is not bounded, it is three unbounded waits.
+  const runOne = (mf) => withRetry(() => bounded(page.evaluate(
     ([p, mfr]) => window.exportSession("/session", p, { maxFrames: mfr ?? undefined, encode: true }),
-    [project, mf ?? null]));
+    [project, mf ?? null]), EVAL_MS, "the in-page export run (decode, render, encode)"));
 
   console.log("\nexport run A…");
   const a = await runOne(maxFrames);
@@ -141,8 +144,7 @@ try {
   fail(String(e?.stack ?? e));
 } finally {
   if (errors.length) { console.error("--- page errors ---"); errors.forEach((e) => console.error(" ", e)); }
-  await browser.close();
-  await server.close();
+  await closeQuietly(browser, server);
 }
 console.log(failed ? "\nEXPORT GATE: FAIL" : "\nEXPORT GATE: PASS");
 process.exit(failed ? 1 : 0);
