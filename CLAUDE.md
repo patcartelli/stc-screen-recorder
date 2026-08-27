@@ -64,6 +64,7 @@ belonging to a different commit).
 
 | ticket | what | needs |
 |---|---|---|
+| STC-232 4b | **done** — both sinks draw the PiP, gate proves it, and the app can open a camera take. Increment 5 (app toggle) is unblocked | nothing; increment 5 is next |
 | STC-259 | **cause confirmed and contained** — both encoder queries bounded at 15 s, run retried 3x, then a loud SKIP. Measured on CI both ways on one commit | steps 2 and 3: the harness's first `AVAssetWriter` append is still unbounded, and whether `CameraCapture.swift`/`Capture.swift` need the same is still open |
 | STC-249 | lossy ring under REAL capture load — the semantics are tested, the live scenario is not | a recording with a stalled stats consumer |
 | STC-254 | **done** — append/teardown race fixed (part 2), SIGTRAP crash handler closed (part 3). Master CI green again | nothing; watch that master stays green |
@@ -387,3 +388,32 @@ reachable via KVC (`setValue(3, forKey: "captureResolution")`, verified in phase
   harness's `ENVIRONMENT:` marker and excludes death-by-signal, failed assertions, and the
   runner's own timeout by name, each covered by a test. STC-254 arrived as SIGTRAP on CI and
   SIGSEGV locally; retrying either three times and calling it a skip would have buried it.
+- **A gate with its OWN loader does not prove the app can open anything.** The
+  PiP determinism gate passed on a real camera take while the Electron app
+  could not open one at all: `harness/sink-identity.ts` supplied `camera.mp4`
+  to `loadSession`, and `app/src/renderer.ts` and `harness/export.ts` did not,
+  so every camera take died at load with "anchors.camera.present is true but no
+  camera.mp4 was supplied" — `loadSession` correctly refusing to silently drop
+  the PiP. Nothing caught it because every other fixture is camera-less. When a
+  loader gains an input, grep `loadSession(` and fix EVERY caller; the gate is
+  not one of the app's code paths. `app/test/preview.e2e.test.ts` now opens a
+  PiP take from the committed fixture, and fails without the renderer fix.
+- **`vitest.grant.config.ts` globbed the agent worktrees.** Its
+  `include: ["**/*.grant.test.ts"]` had no directory scoping, so once
+  `.claude/worktrees/` held other agents' checkouts, `npm run test:capture` ran
+  their copies too — which resolve `tools/test-host/STCTestHost.app` relative to
+  their own root, where it does not exist, and fail with "build it first" for a
+  bundle that IS built. Seven failures, none about this checkout.
+  `vitest.config.ts` was always scoped; the grant config was not.
+- **Preview-memory ratios are regime-dependent — quote absolute growth.**
+  PHASE-2's "~1.2x file size" came from a 458 MB take where the file dominates;
+  on a 24 MB take the fixed costs dominate (decoder buffers plus a decoded 4K
+  frame at ~30 MB) and display-only reads as 5.7x its own file. Same code, same
+  metric, incomparable numbers. `scripts/measure-preview-memory.mjs` is the
+  committed harness; PHASE-2 records what it measured and what it does NOT
+  answer.
+- **A 720p camera track is not automatically small next to 4K.** Measured: on a
+  15 s take `camera.mp4` was 1.7x the size of `display.mp4` (15 MB vs 9 MB). A
+  static screen compresses far better than a moving face, so the design spec's
+  "a 720p camera adds ~10-15%" assumed a ratio that does not hold on short
+  takes.

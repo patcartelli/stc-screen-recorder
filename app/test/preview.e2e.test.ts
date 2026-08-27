@@ -5,7 +5,7 @@ import { execFileSync } from "node:child_process";
 
 import { join } from "node:path";
 import { existsSync, readFileSync } from "node:fs";
-import { makeTakeFolder } from "./_take-fixture.js";
+import { makeTakeFolder, makePipTakeFolder } from "./_take-fixture.js";
 
 const root = join(__dirname, "..", "..");
 let app: ElectronApplication | undefined;
@@ -44,6 +44,28 @@ async function inkiness(win: any): Promise<number> {
 }
 
 describe("preview player in the app", () => {
+  // The regression this exists for: the app could not open a take with a
+  // camera AT ALL. loadSession refuses a claimed camera with no file supplied,
+  // and the renderer never supplied one — so every real PiP take died at load.
+  // The determinism gate could not see it, because the gate has its own loader.
+  test("a take with a camera track opens instead of failing to load", async () => {
+    const { dir } = makePipTakeFolder();
+    execFileSync("node", [join(root, "app", "build.mjs")], { cwd: root, stdio: "pipe" });
+    app = await electron.launch({
+      args: [root], cwd: root,
+      env: { ...process.env, STC_RECORDINGS_DIR: dir },
+    });
+    const win = await app.firstWindow();
+    await win.waitForLoadState("domcontentloaded");
+    await expect.poll(() => win.textContent("#takes"), { timeout: 20_000 }).toContain("2026-08-26");
+
+    await win.click("#takes >> text=Preview");
+    await expect.poll(() => win.isVisible("#player"), { timeout: 30_000 }).toBe(true);
+    // Real pixels, not an empty canvas — a failed load leaves the stage black.
+    await expect.poll(() => inkiness(win), { timeout: 30_000 }).toBeGreaterThan(0.2);
+  }, 120_000);
+
+
   test("opening a take renders actual video, not an empty canvas", async () => {
     const { win } = await launchWithTake();
     await win.click("#takes >> text=Preview");

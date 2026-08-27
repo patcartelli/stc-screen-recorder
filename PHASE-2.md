@@ -116,6 +116,7 @@ start/stop-only — no pause.
 | | |
 |---|---|
 | preview memory | 458 MB take → +548 MB renderer RSS (~1.2x). A ~15-minute 4K take is the practical ceiling. |
+| preview memory, PiP | see "A second decoder" below — measured 2026-08-27 |
 | export speed | 11.0 ms/frame at 4K = 1.52x realtime. A 5-minute take exports in ~3.3 min. |
 | cursor | a placeholder circle, not real pointer artwork |
 
@@ -157,3 +158,40 @@ the critical path rather than before `start` is answered; inline, every
 | **Export too slow to sit in the UI** | measured in increment 0, before the UX is designed around an assumption |
 | **Preview and export silently diverge** | increment 3's gate compares them byte-for-byte in the app. A cursor drawn in the wrong place passes every structural check, so the human check from phase 1 stays part of the loop |
 | **A take is deleted by accident** | destructive actions confirm, and delete moves to Trash rather than unlinking |
+
+## A second decoder's cost to preview — measured 2026-08-27
+
+The camera PiP design listed this as an open risk and guessed "a 720p camera
+track adds ~10-15% to renderer RSS". That guess is **not supported**, and the
+reason matters more than the number.
+
+`node scripts/measure-preview-memory.mjs <takeDir>` is the harness — committed,
+because the PHASE-2 figure above was measured ad hoc and could not be re-run
+when a second decoder arrived. It stages the take twice, once with the camera
+stripped (and `anchors.camera.present` cleared, since `loadSession` refuses a
+claimed camera with no file), and reads renderer RSS via `app.getAppMetrics()`.
+
+On a 15 s 4K take with an Elgato Facecam at 1280x720:
+
+| | files | renderer RSS | growth |
+|---|---|---|---|
+| display only | 9 MB | 118 -> 169 MB | +51 MB |
+| display + camera | 24 MB | 118 -> 232 MB | +114 MB |
+
+The camera track cost **+63 MB**. As a percentage that is +124%, and quoting
+that figure alone would be misleading twice over:
+
+1. **`camera.mp4` is 1.7x the size of `display.mp4` on this take** (15 MB vs
+   9 MB). A 720p60 camera is not automatically small next to 4K: the display
+   track is a mostly-static screen and compresses far better than a moving face.
+   The spec's estimate assumed a display track that dwarfs the camera; on short
+   takes it does not.
+2. **Ratios are regime-dependent.** PHASE-2's ~1.2x came from a 458 MB take,
+   where the file dominates. At 24 MB the fixed costs dominate instead — decoder
+   buffers plus a decoded 4K frame at ~30 MB — which is why display-only reads
+   as 5.7x its file here and 1.2x there. The two numbers are not comparable.
+
+**Quote the absolute growth, not the multiple.** And STC-251's ~15-minute 4K
+ceiling is a LONG-take question that this short take does not answer: the
+camera's contribution there is still unmeasured, and re-running this harness on
+a long take is the way to settle it rather than extrapolating from +63 MB.
