@@ -7,6 +7,13 @@ import { join } from "node:path";
 const root = join(__dirname, "..", "..");
 
 /**
+ * The bound on the harness RUN. Exported so a harness's OWN inner bounds can be
+ * checked against it instead of assumed clear of it — an inner bound set too
+ * near this one never gets to print its message, which is STC-259's whole shape.
+ */
+export const HARNESS_RUN_MS = 45_000;
+
+/**
  * Compiles a Swift source set into a throwaway binary, runs it, and returns
  * stdout.
  *
@@ -39,13 +46,19 @@ export async function runSwiftHarness(opts: {
   sources: string[];
   compileMs?: number;
   runMs?: number;
+  /**
+   * Extra environment for the harness RUN only, never the compile. Used to
+   * inject faults so a bound can be watched firing: a bound nobody has seen
+   * fire is indistinguishable from one that cannot.
+   */
+  env?: Record<string, string>;
 }): Promise<string> {
   // Deliberately BELOW the callers' vitest testTimeout (120 s). They were equal,
   // so vitest always fired first and our message — the one that names WHICH
   // step hung and prints the output tail — never got the chance. Two bounds set
   // too close together, which is exactly STC-258 repeated: the outer bound must
   // stay clear of the inner one or the inner one is decorative.
-  const { label, sources, compileMs = 45_000, runMs = 45_000 } = opts;
+  const { label, sources, compileMs = 45_000, runMs = HARNESS_RUN_MS, env } = opts;
   const bin = join(mkdtempSync(join(tmpdir(), `stc-${label}-`)), `${label}-test`);
   // Fast, no child of its own, and a hang here would be a broken toolchain
   // rather than the thing under test.
@@ -62,7 +75,7 @@ export async function runSwiftHarness(opts: {
     compileMs,
   );
 
-  return await runBounded(bin, [], `${label}: harness`, runMs);
+  return await runBounded(bin, [], `${label}: harness`, runMs, env);
 }
 
 /**
@@ -72,12 +85,19 @@ export async function runSwiftHarness(opts: {
  * by SIGSEGV IS the failure writer-gate exists to catch, and a harness that
  * printed why it could not run deserves to have that printed back.
  */
-function runBounded(cmd: string, args: string[], what: string, ms: number): Promise<string> {
+function runBounded(
+  cmd: string,
+  args: string[],
+  what: string,
+  ms: number,
+  env?: Record<string, string>,
+): Promise<string> {
   return new Promise<string>((resolve, reject) => {
     const child = spawn(cmd, args, {
       // Its own process group, so a timeout can take the grandchildren too.
       detached: true,
       stdio: ["ignore", "pipe", "pipe"],
+      env: env ? { ...process.env, ...env } : process.env,
     });
 
     let out = "";
