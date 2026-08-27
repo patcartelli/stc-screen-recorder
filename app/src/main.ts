@@ -146,7 +146,13 @@ ipcMain.handle("preview:writeProject", async (_e, bytes: ArrayBuffer) => {
   let doc: any;
   try { doc = JSON.parse(text); }
   catch { throw new Error("project.json is not JSON"); }
-  if (doc?.version !== 1) throw new Error("project.json version is not 1");
+  // v1 and v2 both accepted. This gate is in the main process and cannot share a
+  // constant with the transform's; it was missed when project-2 was minted and
+  // rejected every document the renderer wrote, so project.json silently never
+  // appeared. Same shape as STC-262's anchors gate in takes.ts.
+  if (doc?.version !== 1 && doc?.version !== 2) {
+    throw new Error(`project.json version ${doc?.version} is not supported`);
+  }
   await writeFile(join(openTake, "project.json"), text);
   return true;
 });

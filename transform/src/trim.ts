@@ -56,7 +56,9 @@ export function estimateExportMs(maxFrames: number): number {
 
 export function defaultProject(width: number, height: number, trim?: Trim): Project {
   const project: Project = {
-    version: 1,
+    // v2: `trim` lives in project-2 alongside `pip`. Emitting v1 would produce
+    // a document carrying a field its own schema does not declare.
+    version: 2,
     output: { fps: 60, width, height },
     cursor: { style: "default", scale: 1 },
   };
@@ -72,13 +74,21 @@ export function parseProject(raw: unknown, width: number, height: number, durati
   const fallback = defaultProject(width, height);
   if (!raw || typeof raw !== "object") return fallback;
   const doc = raw as Record<string, any>;
-  if (doc.version !== 1) return fallback;
+  // v1 and v2 both load: v1 documents predate trim and pip and simply have
+  // neither. Refusing v1 here would discard every project written before this
+  // change and silently replace it with a default.
+  if (doc.version !== 1 && doc.version !== 2) return fallback;
 
   const outW = Number.isInteger(doc.output?.width) ? doc.output.width : width;
   const outH = Number.isInteger(doc.output?.height) ? doc.output.height : height;
   const scale = typeof doc.cursor?.scale === "number" && doc.cursor.scale > 0 ? doc.cursor.scale : 1;
   const project = defaultProject(outW, outH);
   project.cursor = { style: "default", scale };
+
+  // Same reasoning as projectForWrite: anything this parser does not copy is
+  // lost on the next write. `pip` is validated by the schema, so it is carried
+  // as-is rather than re-derived here.
+  if (doc.pip && typeof doc.pip === "object") project.pip = doc.pip;
 
   const t = doc.trim;
   if (t && Number.isInteger(t.startNs) && Number.isInteger(t.endNs) && t.startNs >= 0 && t.endNs >= 0) {
@@ -89,10 +99,14 @@ export function parseProject(raw: unknown, width: number, height: number, durati
 
 export function projectForWrite(project: Project, durationNs: number): Project {
   const out: Project = {
-    version: 1,
+    version: 2,
     output: project.output,
     cursor: project.cursor,
   };
+  // Carried, not rebuilt from scratch. This function predates `pip`, and a
+  // document reconstructed from a fixed field list silently drops anything
+  // added since — so a take with a PiP would lose it on the next save.
+  if (project.pip) out.pip = project.pip;
   if (!isFullTake(project, durationNs) && project.trim) out.trim = project.trim;
   return out;
 }
