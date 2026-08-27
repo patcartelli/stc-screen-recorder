@@ -3,6 +3,23 @@ import Foundation
 var failures: [String] = []
 func check(_ c: Bool, _ what: String) { if !c { failures.append(what) } }
 
+/// Emits a built document as JSON, prefixed by `marker`, so the TS harness
+/// (helper/test/anchors.test.ts) can pull it back out of stdout and validate
+/// it against schema/anchors-2.schema.json with Ajv. This closes the gap
+/// STC-262 already named: the member-by-member `check()`s above can drift
+/// from the schema silently, because the only thing that ever validated a
+/// built document against anchors-2 was the grant-gated
+/// camera-capture.grant.test.ts, which needs a Camera grant and has never
+/// run in CI.
+func printJSON(_ o: [String: Any], marker: String) {
+    guard let d = try? JSONSerialization.data(withJSONObject: o, options: [.sortedKeys]),
+          let s = String(data: d, encoding: .utf8) else {
+        failures.append("\(marker) document did not serialize to JSON")
+        return
+    }
+    print("\(marker)\(s)")
+}
+
 let display = DisplayGeometry(id: 1, pointWidth: 1920, pointHeight: 1080,
                               pixelWidth: 3840, pixelHeight: 2160,
                               originX: 0, originY: 0)
@@ -20,6 +37,7 @@ do {
     check(cam?["device"] == nil, "an absent camera must not invent measurements")
     let files = d["files"] as? [String: Any]
     check(files?["camera"] == nil, "files.camera must be absent when there is no camera")
+    printJSON(d, marker: "JSON-NO-CAMERA:")
 }
 
 // 2. A present camera records its measurements and its file.
@@ -39,6 +57,7 @@ do {
     check(cam?["frameIntervalNs"] as? Int == 17_000_000, "frame interval")
     let files = d["files"] as? [String: Any]
     check(files?["camera"] as? String == "camera.mp4", "files.camera must name the file")
+    printJSON(d, marker: "JSON-WITH-CAMERA:")
 }
 
 // 3. t0Ns stays a STRING: boot-relative ns crosses 2^53 at ~104 days of uptime
