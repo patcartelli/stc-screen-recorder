@@ -169,3 +169,29 @@ describe("no fd3 — a bare terminal run still works", () => {
     expect(r.ev).toBe("status");
   });
 });
+
+describe("camera opt-in", () => {
+  // The camera is optional and must never fail a recording. Without a grant, or
+  // on a machine with no camera, start must still succeed or fail for its own
+  // reasons — never because the camera could not be opened.
+  test("start with camera:false opens no device and is unaffected", async () => {
+    const h = spawnHelper();
+    await waitFor(() => h.fd3.find((l) => l.ev === "ready"));
+    h.send({ cmd: "start", dir: tmpSession(), camera: false, seq: 1 });
+    const r = await waitFor(() => h.fd3.find((l) => l.seq === 1), 30_000, "start reply");
+    // Either outcome is fine — what must NOT appear is a camera error.
+    expect(String(r.code ?? "")).not.toMatch(/^camera-/);
+    expect(r.camera).toBeUndefined();
+  }, 60_000);
+
+  test("an unopenable camera warns and does not fail the start", async () => {
+    const h = spawnHelper();
+    await waitFor(() => h.fd3.find((l) => l.ev === "ready"));
+    h.send({ cmd: "start", dir: tmpSession(), camera: true, seq: 1 });
+    const r = await waitFor(() => h.fd3.find((l) => l.seq === 1), 30_000, "start reply");
+    // On a machine with a camera AND a grant this succeeds with a device name;
+    // without either it warns. Both are correct. A start that FAILS because of
+    // the camera is not.
+    expect(String(r.code ?? "")).not.toMatch(/^camera-/);
+  }, 60_000);
+});

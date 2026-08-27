@@ -22,6 +22,12 @@ final class CaptureSession: NSObject, SCStreamOutput, SCStreamDelegate {
 
     private var stream: SCStream?
     private var writer: AVAssetWriter?
+    /// Optional subsystem: nil unless `start` was asked for a camera AND it
+    /// actually opened. A missing/denied/busy camera leaves this nil and the
+    /// take display-only — see the warning path in `start`.
+    private var camera: CameraCapture?
+    private var cameraTrack: CameraTrack?
+    private var cameraDeviceName: String?
     /// The input and adaptor live behind the gate, not here: every access to
     /// them is either an append or a teardown, and those two must not overlap
     /// (STC-254). Holding them as plain properties is what allowed the overlap.
@@ -68,7 +74,8 @@ final class CaptureSession: NSObject, SCStreamOutput, SCStreamDelegate {
 
     // MARK: - start
 
-    func start(displayId: CGDirectDisplayID?, completion: @escaping (Result<[String: Any], Error>) -> Void) {
+    func start(displayId: CGDirectDisplayID?, camera wantCamera: Bool,
+               completion: @escaping (Result<[String: Any], Error>) -> Void) {
         // The backstop is armed HERE, before the first callback API is called,
         // so it covers the whole request rather than only the part after
         // SCShareableContent answers (STC-258).
@@ -99,14 +106,14 @@ final class CaptureSession: NSObject, SCStreamOutput, SCStreamDelegate {
             }
             let display = displayId.flatMap { id in content.displays.first { $0.displayID == id } }
                 ?? content.displays[0]
-            self.begin(display: display)
+            self.begin(display: display, camera: wantCamera)
         }
     }
 
     /// Takes no completion: `start` owns it and every path below answers through
     /// `finishStart`, which is call-once. Handing this a second reference to the
     /// same completion is how a request gets answered twice.
-    private func begin(display: SCDisplay) {
+    private func begin(display: SCDisplay, camera wantCamera: Bool) {
         // CaptureDecisions.swift hardcodes this so it can be compiled without
         // ScreenCaptureKit. If the framework ever renumbers, refuse to start
         // rather than silently discarding every frame as "not complete".
@@ -146,6 +153,24 @@ final class CaptureSession: NSObject, SCStreamOutput, SCStreamDelegate {
                     self.finishStart(.failure(CaptureError.streamFailed(err)))
                 } else {
                     self.startEventTap()
+                    // Optional subsystem: it must not sit on the critical path. PHASE-0
+                    // recorded camera/mic setup blocking startup once already. Opened
+                    // here, AFTER the display stream is confirmed up and never before
+                    // it — a missing, denied or busy camera only ever produces a
+                    // warning, never a failed start.
+                    if wantCamera {
+                        let cam = CameraCapture(dir: self.dir, t0Ns: self.t0Ns)
+                        switch cam.start() {
+                        case .success(let name):
+                            self.camera = cam
+                            self.cameraDeviceName = name
+                            IO.stat("camera-started", ["device": name])
+                        case .failure(let e):
+                            let ce = e as? CameraError
+                            IO.send("warning", ["code": ce?.code ?? "camera-failed",
+                                                "detail": ce.map { $0.description } ?? "\(e)"])
+                        }
+                    }
                     self.finishStart(.success(self.describe()))
                 }
             }
@@ -362,8 +387,10 @@ final class CaptureSession: NSObject, SCStreamOutput, SCStreamDelegate {
     }
 
     func describe() -> [String: Any] {
-        ["display": displayID, "capture": ["width": captureW, "height": captureH],
-         "source": ["pixelWidth": pixelW, "pixelHeight": pixelH]]
+        var d: [String: Any] = ["display": displayID, "capture": ["width": captureW, "height": captureH],
+                                "source": ["pixelWidth": pixelW, "pixelHeight": pixelH]]
+        if let cameraDeviceName { d["camera"] = cameraDeviceName }
+        return d
     }
 
     /// Tears down capture and writes events.json and anchors.json.
@@ -382,6 +409,14 @@ final class CaptureSession: NSObject, SCStreamOutput, SCStreamDelegate {
     func stop(reason: String, completion: @escaping ([String: Any]) -> Void) {
         if let tap { CGEvent.tapEnable(tap: tap, enable: false) }
         if let tapRunLoop { CFRunLoopStop(tapRunLoop) }
+
+        if let cam = self.camera {
+            let sem = DispatchSemaphore(value: 0)
+            cam.stop { track in self.cameraTrack = track; sem.signal() }
+            // Bounded: CameraCapture.stop already answers within 10 s, so a
+            // wait longer than that means it broke its own contract.
+            _ = sem.wait(timeout: .now() + 12)
+        }
 
         let lock = NSLock()
         var answered = false
@@ -429,7 +464,7 @@ final class CaptureSession: NSObject, SCStreamOutput, SCStreamDelegate {
                                      originX: originX, originY: originY),
             capture: CaptureGeometryDoc(width: captureW, height: captureH,
                                         firstFrameNs: Int(firstFramePtsNs)),
-            camera: nil,
+            camera: cameraTrack,
             stopReason: reason,
             stopTNs: Int(Clock.nowNs() - t0Ns))
         write(doc, to: "anchors.json")
