@@ -108,7 +108,11 @@ describe("capture — a real recording (requires Screen Recording)", () => {
     const load = (p: string) => JSON.parse(readFileSync(p, "utf8"));
     for (const [file, schema] of [
       ["events.json", "schema/events-1.schema.json"],
-      ["anchors.json", "schema/anchors-1.schema.json"],
+      // v2 since STC-232 increment 3: the helper always emits version 2 and
+      // always writes a camera block, present:false when there is no camera.
+      // This file is grant-gated, so `npm test` cannot catch it drifting —
+      // which is exactly how the takes.ts version gate went stale (STC-262).
+      ["anchors.json", "schema/anchors-2.schema.json"],
     ] as const) {
       const validate = ajv.compile(load(join(root, schema)));
       const ok = validate(load(join(dir, file)));

@@ -119,6 +119,36 @@ start/stop-only — no pause.
 | export speed | 11.0 ms/frame at 4K = 1.52x realtime. A 5-minute take exports in ~3.3 min. |
 | cursor | a placeholder circle, not real pointer artwork |
 
+## Two concurrent H.264 encodes — measured 2026-08-27
+
+The camera PiP design (STC-232) listed this as an open risk: nothing had ever
+measured what a second hardware encode costs the display track. One 15 s take
+with both running, on this machine, `tools/test-host --camera`:
+
+| | |
+|---|---|
+| display | 3840x2160, **862 frames, 0 dropped, 0 non-monotonic**, 56.6 fps avg, 23.1 MB |
+| camera | Elgato Facecam 4K [USB2] at 1280x720, 16.67 ms interval (60.0 fps), 14.7 MB |
+| camera track | first frame 0.604 s, last 15.220 s, against a 15.381 s session |
+
+**The display track lost nothing measurable.** Zero dropped and zero
+non-monotonic frames is the same result the display-only smoke test produced,
+so a 720p second encode does not visibly tax a 4K60 capture on this hardware.
+
+Two caveats worth keeping with the numbers. This is a single 15 s take, not a
+soak — the increment-5 smoke test should repeat it at five minutes, which is
+where the display-only baseline (9311 frames, 0 dropped, peak 60.0 fps) was
+established. And it is one machine with a hardware encoder; CI runs a
+*paravirtualised* encoder shared with other tenants (see STC-259), where the
+answer may differ entirely.
+
+**Camera open is slower than the design spec assumes.** Phase 0's figure is a
+~1035 ms warm-up. Measured here: a cold Elgato Facecam 4K on USB2 took
+**2.246 s merely to open** — before any warm-up — while a warm one delivered
+its first frame at 604 ms. That spread is the reason the camera is opened off
+the critical path rather than before `start` is answered; inline, every
+`started` reply would have been 2.2 s late on a cold device.
+
 ## Risks
 
 | risk | approach |

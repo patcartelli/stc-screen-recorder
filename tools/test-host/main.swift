@@ -26,7 +26,7 @@ func arg(_ name: String) -> String? {
 }
 
 guard let outPath = arg("--out") else {
-    FileHandle.standardError.write("usage: --out <result.json> [--probe | --camera-request | --camera-probe --helper <bin> | --helper <bin> --dir <sessionDir> --ms <n>]\n".data(using: .utf8)!)
+    FileHandle.standardError.write("usage: --out <result.json> [--probe | --camera-request | --camera-probe --helper <bin> | --helper <bin> --dir <sessionDir> --ms <n> [--camera]]\n".data(using: .utf8)!)
     exit(2)
 }
 let outURL = URL(fileURLWithPath: outPath)
@@ -108,7 +108,7 @@ func runCameraRequest() {
 /// Drives the helper through start -> record -> stop and records everything it
 /// said. Assertions live in the test suite, not here: this writes a transcript,
 /// it does not decide whether the transcript is good.
-func runSession(helper: String, dir: String, recordMs: Int) {
+func runSession(helper: String, dir: String, recordMs: Int, camera: Bool) {
     let p = Process()
     p.executableURL = URL(fileURLWithPath: helper)
     // No fd3: Process cannot hand a child an arbitrary descriptor without
@@ -166,7 +166,9 @@ func runSession(helper: String, dir: String, recordMs: Int) {
         writeResult(["verdict": "no-ready"]); p.terminate(); exit(5)
     }
 
-    send(["cmd": "start", "dir": dir, "seq": 1])
+    var startCmd: [String: Any] = ["cmd": "start", "dir": dir, "seq": 1]
+    if camera { startCmd["camera"] = true }
+    send(startCmd)
     let startOutcome = waitFor("start", { ($0["seq"] as? Int) == 1 }, timeout: 30)
 
     if startOutcome?["ev"] as? String == "started" {
@@ -296,7 +298,8 @@ DispatchQueue.main.async {
         exit(2)
     }
     DispatchQueue.global().async {
-        runSession(helper: helper, dir: dir, recordMs: Int(arg("--ms") ?? "3000") ?? 3000)
+        runSession(helper: helper, dir: dir, recordMs: Int(arg("--ms") ?? "3000") ?? 3000,
+                   camera: args.contains("--camera"))
     }
 }
 app.run()

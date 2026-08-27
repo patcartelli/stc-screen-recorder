@@ -94,9 +94,10 @@ final class App {
         startedAtNs = Clock.nowNs()
 
         let displayId = (cmd["displayId"] as? Int).map { CGDirectDisplayID($0) }
+        let wantCamera = cmd["camera"] as? Bool ?? false
         let session = CaptureSession(dir: url, t0Ns: startedAtNs)
         capture = session
-        session.start(displayId: displayId) { [weak self] result in
+        session.start(displayId: displayId, camera: wantCamera) { [weak self] result in
             DispatchQueue.main.async {
                 guard let self else { return }
                 switch result {
