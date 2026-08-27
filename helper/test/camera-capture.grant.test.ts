@@ -93,5 +93,16 @@ describe("camera capture — requires Screen Recording AND Camera", () => {
     // ~58.8 fps measured; anything outside this is not a camera frame interval.
     expect(cam.frameIntervalNs).toBeGreaterThan(8_000_000);
     expect(cam.frameIntervalNs).toBeLessThan(50_000_000);
+    // 3. Upper bound. Every assertion above is a LOWER bound, so deleting the
+    //    "- Int64(t0Ns)" in CameraCapture.swift (making the PTS boot-relative
+    //    instead of session-relative — ~10^13 ns on real uptime) would still
+    //    pass every one of them: greater than firstFrameNs + 300ms, greater
+    //    than 500ms, last > first, interval unchanged. This is the assertion
+    //    that actually distinguishes a session-relative value from an
+    //    additive rebase to boot time (or to stream-start, or to any other
+    //    origin later than t0Ns): anchors.stop.t is the session duration in
+    //    session-relative ns, measured by this same helper run, so no
+    //    session-relative timestamp can legitimately exceed it.
+    expect(cam.lastFramePtsNs).toBeLessThanOrEqual(anchors.stop.t);
   }, 180_000);
 });
