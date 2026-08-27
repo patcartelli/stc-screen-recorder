@@ -17,6 +17,58 @@ func diag(_ m: String) {
     FileHandle.standardError.write(("[writer-gate] " + m + "\n").data(using: .utf8)!)
 }
 
+/// Runs `body` on another thread and gives up waiting after `ms`.
+///
+/// STC-259: any FIRST touch of a paravirtualized H.264 encoder can block
+/// forever on a contended CI host. Blocking calls into VideoToolbox cannot be
+/// cancelled, so this does not try — it abandons the wait and leaves the thread
+/// wedged, which is safe because the very next thing is process exit.
+///
+/// The bound must stay well clear of runSwiftHarness's 45 s outer bound. Set
+/// them close and the outer one wins the race, this message is never printed,
+/// and the run reads as an unexplained stall — the failure mode of all five
+/// STC-259 sightings, and of three separate bounds added to this harness.
+func bounded(_ what: String, ms: Int, _ body: @escaping () -> Void) {
+    let done = DispatchSemaphore(value: 0)
+    DispatchQueue.global().async { body(); done.signal() }
+    if done.wait(timeout: .now() + .milliseconds(ms)) == .timedOut {
+        environmentFailure("\(what) did not answer within \(ms) ms — it is still blocked")
+    }
+}
+
+/// Set by the test to prove `bounded` actually fires. The real trigger is a
+/// contended CI host, which cannot be summoned on demand.
+let injectedFault = ProcessInfo.processInfo.environment["STC_WG_FAULT"]
+
+/// Appends one line per process start, when the test asks for it.
+///
+/// The runner retries this harness when the machine declines an encoder, and a
+/// retry nobody can count is a retry nobody has verified. Reading the count off
+/// the machine beats trusting the loop that produced it.
+func recordAttempt() {
+    guard let path = ProcessInfo.processInfo.environment["STC_WG_ATTEMPT_LOG"] else { return }
+    let line = "start \(ProcessInfo.processInfo.processIdentifier)\n"
+    if let fh = FileHandle(forWritingAtPath: path) {
+        fh.seekToEndOfFile()
+        fh.write(line.data(using: .utf8)!)
+        try? fh.close()
+    } else {
+        try? line.write(toFile: path, atomically: true, encoding: .utf8)
+    }
+}
+
+/// How long any single encoder query gets before it is called wedged.
+///
+/// A healthy query answers in milliseconds — 68 ms measured on this machine —
+/// so 15 s is slack, not tolerance. It also has to stay well under the runner's
+/// HARNESS_RUN_MS, which the test asserts against the value printed below
+/// rather than trusting these two numbers to be kept in step by hand.
+///
+/// The override exists so the fault test can fire this bound in a second
+/// instead of fifteen; it must never be set in a real run.
+let encoderQueryBoundMs =
+    Int(ProcessInfo.processInfo.environment["STC_WG_ENCODER_BOUND_MS"] ?? "") ?? 15_000
+
 /// Reports what VideoToolbox will actually give us before we ask AVFoundation
 /// for a writer.
 ///
@@ -28,6 +80,11 @@ func diag(_ m: String) {
 /// reports a healthy encoder kills that hypothesis just as usefully as one that
 /// reports none confirms it.
 func reportEncoders() {
+    if injectedFault == "encoder-query-hang" {
+        diag("FAULT INJECTED: acting as if VTCopyVideoEncoderList never returns")
+        Thread.sleep(forTimeInterval: 600)
+        return
+    }
     var listCF: CFArray?
     let status = VTCopyVideoEncoderList(nil, &listCF)
     guard status == noErr, let list = listCF as? [[CFString: Any]] else {
@@ -119,10 +176,19 @@ func makeBuffer() -> CVPixelBuffer {
 /// concurrent harness processes fail here, while the one that gets resources
 /// completes 300 iterations cleanly.
 func environmentFailure(_ what: String) -> Never {
+    // stderr FIRST. It is unbuffered and the runner streams it live, so this
+    // survives even if the exit below never completes. stdout is block-buffered
+    // when piped, which is the normal case here.
+    diag("ENVIRONMENT: \(what)")
     print("ENVIRONMENT: \(what)")
-    print("This is the machine declining to provide an asset writer, NOT a")
+    print("This is the machine declining to provide what the harness needs, NOT a")
     print("WriterGate regression. The race assertions never ran.")
-    exit(2)
+    // `_exit`, not `exit`. This is reachable with a thread still wedged inside
+    // VideoToolbox, and `exit` runs atexit handlers that could want a lock that
+    // thread is holding — turning a legible failure back into the silent stall
+    // it exists to replace. `_exit` skips them, so stdout is flushed by hand.
+    fflush(stdout)
+    _exit(2)
 }
 
 /// A directory of this process's own.
@@ -181,9 +247,17 @@ func makeWriter(_ name: String) -> (AVAssetWriter, AVAssetWriterInput, AVAssetWr
 // trouble would then be the thing hanging on encoder trouble. This line tells
 // the two apart at a glance.
 diag("harness started (pid \(ProcessInfo.processInfo.processIdentifier))")
-reportEncoders()
+recordAttempt()
+// On stdout, because the test reads it back and checks it against the runner's
+// own bound. A constant nobody compares is a constant that drifts.
+print("encoder query bound \(encoderQueryBoundMs) ms")
+diag("encoder query bound \(encoderQueryBoundMs) ms")
+
+// Both are first touches of the encoder, and the fifth STC-259 sighting caught
+// the inventory blocking forever.
+bounded("the encoder query VTCopyVideoEncoderList", ms: encoderQueryBoundMs, reportEncoders)
 diag("encoder inventory done")
-probeEncoderAcquisition()
+bounded("the encoder query VTCompressionSessionCreate", ms: encoderQueryBoundMs, probeEncoderAcquisition)
 diag("phase 1: closed-gate assertions")
 
 // 1. A closed gate drops, and says so, rather than appending into a finished input.
