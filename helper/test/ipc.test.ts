@@ -180,8 +180,11 @@ describe("camera opt-in", () => {
     h.send({ cmd: "start", dir: tmpSession(), camera: false, seq: 1 });
     const r = await waitFor(() => h.fd3.find((l) => l.seq === 1), 30_000, "start reply");
     // Either outcome is fine — what must NOT appear is a camera error.
+    // (No assertion on `r.camera` here: describe() never emits that field,
+    // camera:false or not, so checking it is undefined would pass no matter
+    // what this code does — see the flag-comparison test below for coverage
+    // that actually depends on the flag's value.)
     expect(String(r.code ?? "")).not.toMatch(/^camera-/);
-    expect(r.camera).toBeUndefined();
   }, 60_000);
 
   test("an unopenable camera warns and does not fail the start", async () => {
@@ -197,17 +200,16 @@ describe("camera opt-in", () => {
     // this warns. Both are correct. A start that FAILS because of the camera
     // is not.
     expect(String(r.code ?? "")).not.toMatch(/^camera-/);
-    expect(r.camera).toBeUndefined();
   }, 60_000);
 
-  test("the camera flag does not change how start fails without a grant", async () => {
+  test("the camera flag does not change how or whether start succeeds", async () => {
     // The two tests above pass vacuously on any machine without a Screen
     // Recording grant (every CI run): start fails with "no-displays" before
     // the camera path is ever reached, so a camera-flag bug that perturbed
     // that path would never be exercised. This assertion needs no grant and
-    // would catch exactly that: run start twice, once per flag value, and if
-    // both fail, they must fail IDENTICALLY — proving the flag took no part
-    // in how start failed.
+    // would catch exactly that: run start twice, once per flag value, and
+    // check that the flag played no part in the outcome — on EITHER branch,
+    // not just the ungranted one.
     const h1 = spawnHelper();
     await waitFor(() => h1.fd3.find((l) => l.ev === "ready"));
     h1.send({ cmd: "start", dir: tmpSession(), camera: false, seq: 1 });
@@ -219,8 +221,25 @@ describe("camera opt-in", () => {
     const r2 = await waitFor(() => h2.fd3.find((l) => l.seq === 1), 30_000, "start reply (camera:true)");
 
     if (r1.ev === "error" && r2.ev === "error") {
+      // No grant (every CI run): both fail before the camera path is ever
+      // reached, so identical failures are the proof the flag took no part.
       expect(r2.code).toBe(r1.code);
       expect(r2.detail).toBe(r1.detail);
+    } else if (r1.ev === "started" && r2.ev === "started") {
+      // Granted machine: both succeed, which is just as meaningful — the
+      // camera flag must not perturb DISPLAY capture setup. The reported
+      // display geometry must be identical whether or not a camera was
+      // also requested.
+      expect(r2.capture).toEqual(r1.capture);
+      expect(r2.source).toEqual(r1.source);
+      expect(r2.display).toBe(r1.display);
+    } else {
+      // A MIXED outcome — one call started, the other errored — is exactly
+      // the bug this test exists to catch: the camera flag changed whether
+      // display capture itself succeeded, which it must never do.
+      throw new Error(
+        `camera flag changed whether start succeeded: camera:false -> ${r1.ev}` +
+        ` (${r1.code ?? "no code"}), camera:true -> ${r2.ev} (${r2.code ?? "no code"})`);
     }
   }, 90_000);
 });
