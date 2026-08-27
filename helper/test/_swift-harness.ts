@@ -40,7 +40,12 @@ export async function runSwiftHarness(opts: {
   compileMs?: number;
   runMs?: number;
 }): Promise<string> {
-  const { label, sources, compileMs = 120_000, runMs = 120_000 } = opts;
+  // Deliberately BELOW the callers' vitest testTimeout (120 s). They were equal,
+  // so vitest always fired first and our message — the one that names WHICH
+  // step hung and prints the output tail — never got the chance. Two bounds set
+  // too close together, which is exactly STC-258 repeated: the outer bound must
+  // stay clear of the inner one or the inner one is decorative.
+  const { label, sources, compileMs = 45_000, runMs = 45_000 } = opts;
   const bin = join(mkdtempSync(join(tmpdir(), `stc-${label}-`)), `${label}-test`);
   // Fast, no child of its own, and a hang here would be a broken toolchain
   // rather than the thing under test.
