@@ -371,6 +371,17 @@ reachable via KVC (`setValue(3, forKey: "captureResolution")`, verified in phase
   `console.warn` therefore vanishes exactly when it is needed, leaving a silent green tick where
   a gate did not run: CLAUDE.md's "success by finding nothing to do" trap, self-inflicted. Write
   skip notices with `process.stderr.write`, which survives, and verify by actually skipping.
+- **A test seam that fakes state the subject contradicts races the subject's own self-healing.**
+  `supervisor.test.ts`'s crash-mid-recording test called `markRecordingForTest()` against a live,
+  *idle* helper. The supervisor treats the heartbeat as the authority and heals any desync, so any
+  stats line landing between the kill and `waitForExit` resolving cleared `recordingDir` and the
+  crash had nothing left to report as lost — `expected +0 to be 1`, green on this Mac 8/8 and on
+  reruns, red on a loaded CI VM (run 33104414974). Nothing was wrong with the product: the
+  self-healing is the documented feature. The fix is a world the fake can be true in —
+  `app/test/_fake-helper.mjs` speaks the control plane, can actually be recording, and lets the
+  test drive the real `startRecording`. Waiting for the helper's own heartbeat to AGREE is the
+  load-bearing step; it is precisely what the old fake could not survive.
+
 - **Retry logic must key on the failure being the MACHINE's, never on "it failed"** — a retry
   that absorbs a real regression is worse than no retry. `writer-gate` keys strictly on the
   harness's `ENVIRONMENT:` marker and excludes death-by-signal, failed assertions, and the
