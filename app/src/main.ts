@@ -22,14 +22,14 @@ let sup: HelperSupervisor | undefined;
 let openTake: string | undefined;
 
 // The renderer is sandboxed and cannot read files. It gets bytes over IPC and
-// never names a path: it may ask for one of three fixed filenames, and only
+// never names a path: it may ask for one of a few fixed filenames, and only
 // from the take the main process deliberately opened.
 //
 // A custom protocol was the first attempt and cannot work here — the window is
 // loaded from file://, and Chromium refuses cross-origin fetches from a file
 // origin to any non-http scheme. Serving the app itself over a custom scheme
 // would fix that, but IPC removes the origin question altogether.
-const TAKE_FILES = new Set(["anchors.json", "events.json", "display.mp4"]);
+const TAKE_FILES = new Set(["anchors.json", "events.json", "display.mp4", "project.json"]);
 
 function send(channel: string, payload: unknown): void {
   if (win && !win.isDestroyed()) win.webContents.send(channel, payload);
@@ -37,7 +37,7 @@ function send(channel: string, payload: unknown): void {
 
 function createWindow(): void {
   win = new BrowserWindow({
-    width: 520, height: 620, title: "stc recorder",
+    width: 520, height: 680, title: "stc recorder",
     webPreferences: { preload: join(here, "preload.cjs"), contextIsolation: true, nodeIntegration: false },
   });
   win.loadFile(join(here, "..", "renderer", "index.html"));
@@ -139,6 +139,23 @@ ipcMain.handle("preview:open", async (_e, dir: string) => {
 });
 
 ipcMain.handle("preview:close", async () => { openTake = undefined; });
+
+ipcMain.handle("preview:writeProject", async (_e, bytes: ArrayBuffer) => {
+  if (!openTake) throw new Error("no take is open");
+  const text = Buffer.from(bytes).toString("utf8");
+  let doc: any;
+  try { doc = JSON.parse(text); }
+  catch { throw new Error("project.json is not JSON"); }
+  // v1 and v2 both accepted. This gate is in the main process and cannot share a
+  // constant with the transform's; it was missed when project-2 was minted and
+  // rejected every document the renderer wrote, so project.json silently never
+  // appeared. Same shape as STC-262's anchors gate in takes.ts.
+  if (doc?.version !== 1 && doc?.version !== 2) {
+    throw new Error(`project.json version ${doc?.version} is not supported`);
+  }
+  await writeFile(join(openTake, "project.json"), text);
+  return true;
+});
 
 ipcMain.handle("export:write", async (_e, name: string, bytes: ArrayBuffer) => {
   if (!openTake) throw new Error("no take is open");

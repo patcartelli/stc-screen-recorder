@@ -4,6 +4,7 @@ import { execFileSync } from "node:child_process";
 
 
 import { join } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
 import { makeTakeFolder } from "./_take-fixture.js";
 
 const root = join(__dirname, "..", "..");
@@ -12,7 +13,7 @@ afterEach(async () => { await app?.close().catch(() => {}); app = undefined; });
 
 
 async function launchWithTake() {
-  const { dir } = makeTakeFolder();
+  const { dir, takeDir } = makeTakeFolder();
   execFileSync("node", [join(root, "app", "build.mjs")], { cwd: root, stdio: "pipe" });
   app = await electron.launch({
     args: [root], cwd: root,
@@ -21,7 +22,7 @@ async function launchWithTake() {
   const win = await app.firstWindow();
   await win.waitForLoadState("domcontentloaded");
   await expect.poll(() => win.textContent("#takes"), { timeout: 20_000 }).toContain("2026-08-24");
-  return win;
+  return { win, takeDir };
 }
 
 /** Fraction of sampled pixels that are not pure black. */
@@ -44,7 +45,7 @@ async function inkiness(win: any): Promise<number> {
 
 describe("preview player in the app", () => {
   test("opening a take renders actual video, not an empty canvas", async () => {
-    const win = await launchWithTake();
+    const { win } = await launchWithTake();
     await win.click("#takes >> text=Preview");
     await expect.poll(() => win.isVisible("#player"), { timeout: 30_000 }).toBe(true);
     // A black canvas would satisfy "the element exists"; require real pixels.
@@ -53,7 +54,7 @@ describe("preview player in the app", () => {
   }, 120_000);
 
   test("scrubbing changes the displayed frame", async () => {
-    const win = await launchWithTake();
+    const { win } = await launchWithTake();
     await win.click("#takes >> text=Preview");
     await expect.poll(() => inkiness(win), { timeout: 30_000 }).toBeGreaterThan(0.2);
 
@@ -69,7 +70,7 @@ describe("preview player in the app", () => {
   }, 120_000);
 
   test("play advances the clock and pause stops it", async () => {
-    const win = await launchWithTake();
+    const { win } = await launchWithTake();
     await win.click("#takes >> text=Preview");
     await expect.poll(() => inkiness(win), { timeout: 30_000 }).toBeGreaterThan(0.2);
 
@@ -92,5 +93,35 @@ describe("preview player in the app", () => {
     const stopped = await win.textContent("#clock");
     await new Promise((r) => setTimeout(r, 900));
     expect(await win.textContent("#clock")).toBe(stopped);   // paused really is paused
+  }, 120_000);
+
+  test("in/out markers persist as project.trim and survive reopen", async () => {
+    const { win, takeDir } = await launchWithTake();
+    await win.click("#takes >> text=Preview");
+    await expect.poll(() => win.isVisible("#player"), { timeout: 30_000 }).toBe(true);
+    await expect.poll(() => win.textContent("#triminfo"), { timeout: 10_000 }).toMatch(/Full take/);
+
+    await win.fill("#scrub", "200");
+    await win.dispatchEvent("#scrub", "input");
+    await expect.poll(() => win.textContent("#clock"), { timeout: 20_000 }).not.toMatch(/^0:00 /);
+    await win.click("#markin");
+    await win.fill("#scrub", "400");
+    await win.dispatchEvent("#scrub", "input");
+    await win.click("#markout");
+
+    await expect.poll(() => win.textContent("#triminfo"), { timeout: 10_000 }).toMatch(/–/);
+    await expect.poll(() => win.textContent("#triminfo"), { timeout: 10_000 }).toMatch(/to export/);
+    await expect.poll(() => existsSync(join(takeDir, "project.json")), { timeout: 10_000 }).toBe(true);
+    const project = JSON.parse(readFileSync(join(takeDir, "project.json"), "utf8"));
+    expect(project.trim.startNs).toBeGreaterThan(0);
+    expect(project.trim.endNs).toBeGreaterThan(project.trim.startNs);
+
+    await win.click("#closepreview");
+    await expect.poll(() => win.isVisible("#player"), { timeout: 10_000 }).toBe(false);
+    await win.click("#takes >> text=Preview");
+    await expect.poll(() => win.textContent("#triminfo"), { timeout: 30_000 }).toMatch(/–/);
+
+    await win.click("#resettrim");
+    await expect.poll(() => win.textContent("#triminfo"), { timeout: 10_000 }).toMatch(/Full take/);
   }, 120_000);
 });

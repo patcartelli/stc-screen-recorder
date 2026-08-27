@@ -62,7 +62,29 @@ describe("export from the app", () => {
     expect(m.preEncodeHash).toMatch(/^[0-9a-f]{64}$/);
   }, 900_000);
 
-test("cancel stops the export instead of running to completion", async () => {
+  test("export honours the trim window", async () => {
+    const { win, takeDir } = await launchWithTake();
+    await win.fill("#scrub", "0");
+    await win.dispatchEvent("#scrub", "input");
+    await win.click("#markin");
+    await win.fill("#scrub", "80");
+    await win.dispatchEvent("#scrub", "input");
+    await win.click("#markout");
+    await expect.poll(() => win.textContent("#triminfo"), { timeout: 10_000 }).toMatch(/–/);
+
+    await win.click("#export");
+    const status = await settledStatus(win);
+    expect(status.text, `export did not finish: ${status.alert}`).toMatch(/^Done —/);
+
+    const m = JSON.parse(readFileSync(join(takeDir, "export-2026-08-24_10-00-00.json"), "utf8"));
+    expect(m.trim).toBeTruthy();
+    expect(m.trim.endNs).toBeGreaterThan(m.trim.startNs);
+    // Full fixture export is ~300 frames; 8% of ~5 s is a few dozen.
+    expect(m.frames).toBeGreaterThan(0);
+    expect(m.frames).toBeLessThan(80);
+  }, 300_000);
+
+  test("cancel stops the export instead of running to completion", async () => {
     const { win } = await launchWithTake();
     await win.click("#export");
     await expect.poll(() => win.textContent("#exportstatus"), { timeout: 60_000 })

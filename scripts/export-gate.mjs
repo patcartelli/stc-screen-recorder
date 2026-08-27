@@ -76,11 +76,23 @@ try {
   await page.reload({ waitUntil: "domcontentloaded" });
   await page.waitForFunction(() => window.__exportReady === true, { timeout: 60_000 });
 
-  const project = {
-    version: 1,
+  // Read the take's OWN project.json when it has one, exactly as the app does.
+  // Hardcoding a default here was harmless while nothing in a project could
+  // change the output — but trim can. With a trimmed project on disk the app
+  // exported a clip while this side exported the whole take, and the identity
+  // gate compared two different things and called it a mismatch.
+  let project = {
+    version: 2,
     output: { fps: 60, width: anchors.capture.width, height: anchors.capture.height },
     cursor: { style: "default", scale: 1 },
   };
+  const projectPath = join(sessionDir, "project.json");
+  if (existsSync(projectPath)) {
+    const onDisk = JSON.parse(readFileSync(projectPath, "utf8"));
+    project = { ...project, ...onDisk,
+                output: { ...project.output, ...(onDisk.output ?? {}) } };
+    console.log(`project.json found: trim=${JSON.stringify(onDisk.trim ?? null)}`);
+  }
 
   // Vite may still reload once while pre-bundling; retry rather than fail.
   const withRetry = async (fn) => {

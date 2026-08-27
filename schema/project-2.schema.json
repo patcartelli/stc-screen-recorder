@@ -5,39 +5,111 @@
   "description": "Everything the user can change after recording. render(project, session, t) is a pure function of this document plus the session data. Adds PiP geometry in phase 3.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["version", "output", "cursor"],
+  "required": [
+    "version",
+    "output",
+    "cursor"
+  ],
   "properties": {
-    "version": { "const": 2 },
+    "version": {
+      "const": 2
+    },
     "output": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["fps", "width", "height"],
+      "required": [
+        "fps",
+        "width",
+        "height"
+      ],
       "properties": {
-        "fps": { "enum": [60], "description": "export samples every other 120 Hz sim tick; only 60 supported in phase 1" },
-        "width": { "type": "integer", "minimum": 1, "maximum": 3840 },
-        "height": { "type": "integer", "minimum": 1, "maximum": 2160 }
+        "fps": {
+          "enum": [
+            60
+          ],
+          "description": "export samples every other 120 Hz sim tick; only 60 supported in phase 1"
+        },
+        "width": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 3840
+        },
+        "height": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2160
+        }
       }
     },
     "cursor": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["style", "scale"],
+      "required": [
+        "style",
+        "scale"
+      ],
       "properties": {
-        "style": { "enum": ["default"] },
-        "scale": { "type": "number", "exclusiveMinimum": 0, "maximum": 8 }
+        "style": {
+          "enum": [
+            "default"
+          ]
+        },
+        "scale": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 8
+        }
       }
     },
     "pip": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["enabled", "corner", "widthPct", "marginPx"],
+      "required": [
+        "enabled",
+        "corner",
+        "widthPct",
+        "marginPx"
+      ],
       "description": "Fixed-corner picture-in-picture. Absent means no PiP.",
       "properties": {
-        "enabled": { "type": "boolean" },
-        "corner": { "enum": ["bottom-right"], "description": "only corner implemented in phase 3" },
-        "widthPct": { "type": "number", "exclusiveMinimum": 0, "maximum": 1,
-                      "description": "fraction of output width; 0.125 gives 480px on a 3840px canvas" },
-        "marginPx": { "type": "integer", "minimum": 0 }
+        "enabled": {
+          "type": "boolean"
+        },
+        "corner": {
+          "enum": [
+            "bottom-right"
+          ],
+          "description": "only corner implemented in phase 3"
+        },
+        "widthPct": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 1,
+          "description": "fraction of output width; 0.125 gives 480px on a 3840px canvas"
+        },
+        "marginPx": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "trim": {
+      "type": "object",
+      "description": "Non-destructive in/out. Absent means the full take. Session-relative integer ns; endNs must be greater than startNs.",
+      "additionalProperties": false,
+      "required": [
+        "startNs",
+        "endNs"
+      ],
+      "properties": {
+        "startNs": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "endNs": {
+          "type": "integer",
+          "minimum": 0
+        }
       }
     }
   }

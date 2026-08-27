@@ -55,12 +55,20 @@ export interface Anchors {
   stop?: { t: number; reason: "user" | "display-reconfigured" | "device-lost" | "error" };
 }
 
+/** Mirrors the optional `trim` block in schema/project-2.schema.json. */
+export interface Trim {
+  startNs: number;
+  endNs: number;
+}
+
 /** Mirrors schema/project-1.schema.json and schema/project-2.schema.json. */
 export interface Project {
   version: 1 | 2;
   output: { fps: 60; width: number; height: number };
   cursor: { style: "default"; scale: number };
   pip?: Pip;
+  /** Absent means the full take. */
+  trim?: Trim;
 }
 
 /**

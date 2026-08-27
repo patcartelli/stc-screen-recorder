@@ -33,8 +33,27 @@
     #player[hidden] { display: none; }
     #stage { width: 100%; height: auto; background: #000; border-radius: 6px; display: block; }
     .transport { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
-    .transport input[type=range] { flex: 1; }
+    .timeline { position: relative; flex: 1; height: 28px; }
+    .timeline .bar { position: absolute; left: 0; right: 0; top: 12px; height: 4px;
+                     background: rgba(128,128,128,.28); border-radius: 2px; pointer-events: none; }
+    .timeline .kept { position: absolute; top: 0; height: 4px;
+                      background: rgba(128,128,128,.9); border-radius: 2px; }
+    .timeline .handle { position: absolute; top: 6px; width: 10px; height: 16px;
+                        margin-left: -5px; padding: 0; border-radius: 2px; z-index: 2;
+                        cursor: ew-resize; background: currentColor; }
+    .timeline .handle.in { border-radius: 2px 0 0 2px; }
+    .timeline .handle.out { border-radius: 0 2px 2px 0; }
+    .timeline #scrub { position: absolute; left: 0; right: 0; width: 100%; top: 0;
+                       height: 28px; margin: 0; background: none; z-index: 1;
+                       -webkit-appearance: none; appearance: none; }
+    .timeline #scrub::-webkit-slider-runnable-track { height: 4px; background: transparent; }
+    .timeline #scrub::-webkit-slider-thumb { -webkit-appearance: none; appearance: none;
+                       width: 8px; height: 8px; margin-top: -2px; border-radius: 50%;
+                       background: currentColor; }
     #clock { font-variant-numeric: tabular-nums; font-size: 12px; opacity: .7; min-width: 84px; }
+    .trimbar { display: flex; align-items: center; gap: 8px; margin-top: 6px; font-size: 12px; }
+    .trimbar button { padding: 3px 10px; font-size: 12px; }
+    #triminfo { opacity: .7; font-variant-numeric: tabular-nums; }
     #exportbar { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
     #exportbar[hidden] { display: none; }
     #exportprogress { flex: 1; }
@@ -62,10 +81,21 @@
     <canvas id="stage"></canvas>
     <div class="transport">
       <button id="playpause">Play</button>
-      <input id="scrub" type="range" min="0" max="1000" value="0" step="1">
+      <div class="timeline" id="timeline">
+        <div class="bar"><div class="kept" id="kept"></div></div>
+        <button type="button" class="handle in" id="trim-in" aria-label="In point"></button>
+        <button type="button" class="handle out" id="trim-out" aria-label="Out point"></button>
+        <input id="scrub" type="range" min="0" max="1000" value="0" step="1">
+      </div>
       <span id="clock">0:00 / 0:00</span>
       <button id="export">Export</button>
       <button id="closepreview">Close</button>
+    </div>
+    <div class="trimbar">
+      <button id="markin">In</button>
+      <button id="markout">Out</button>
+      <button id="resettrim">Full take</button>
+      <span id="triminfo"></span>
     </div>
     <div id="exportbar" hidden>
       <progress id="exportprogress" max="1000" value="0"></progress>
