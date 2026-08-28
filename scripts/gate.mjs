@@ -23,7 +23,36 @@ page.on("pageerror", (e) => consoleErrors.push(String(e)));
 let failed = false;
 const fail = (msg) => { failed = true; console.error("FAIL:", msg); };
 
+/**
+ * The machine declined, as distinct from the gate finding a wrong answer.
+ *
+ * ONLY a bound firing counts. Every determinism check in this file reports
+ * through fail() with a concrete number — a hash mismatch, a frame count, zero
+ * encoded bytes — and none of those may ever be retried or skipped, because
+ * they are the regressions the gate exists to catch. A timeout is the one
+ * failure that carries no information about the code.
+ */
+const BOUND_FIRED = [
+  /did not complete within \d+ms/,        // an in-page bound (decoder, encoder)
+  /did not return within \d+ ?ms/,        // the out-of-process bound on the page
+];
+const environment = (msg) => {
+  failed = true;
+  console.error("ENVIRONMENT:", msg);
+};
+
 try {
+  // A retry nobody has watched happen is the same trap as a bound nobody has
+  // watched fire. STC_GATE_FAULT makes the machine-declined path reachable on
+  // demand; the tests assert against observed behaviour, not the code reading
+  // as though it would work.
+  if (process.env.STC_GATE_FAULT === "environment") {
+    throw new Error("decoder flush did not complete within 60000ms (INJECTED)");
+  }
+  if (process.env.STC_GATE_FAULT === "regression") {
+    fail("gate A: 7 preview/export hash mismatches (INJECTED)");
+    throw new Error("injected regression");
+  }
   await page.goto("http://localhost:5199/");
   await page.waitForFunction(() => window.__ready === true, { timeout: 60_000 });
   const r = await bounded(
@@ -58,7 +87,12 @@ try {
   console.log(`gate C — encoded MP4 size: ${r.encodedBytes} bytes`);
   if (!(r.encodedBytes > 0)) fail("gate C: encode pipeline produced no bytes");
 } catch (e) {
-  fail(String(e));
+  const msg = String(e);
+  // A bound fired => the machine did not service the pipeline. Anything else
+  // thrown here is ours. `failed` is set either way; only the LABEL differs,
+  // and scripts/gate-retry.mjs keys on that label alone.
+  if (BOUND_FIRED.some((re) => re.test(msg))) environment(msg);
+  else fail(msg);
 } finally {
   if (consoleErrors.length) {
     console.error("--- page console errors ---");
