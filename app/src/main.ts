@@ -1,4 +1,5 @@
 import { app, BrowserWindow, ipcMain, dialog, shell } from "electron";
+import { readSettings, writeSettings, type Settings } from "./settings.js";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { existsSync, readdirSync } from "node:fs";
@@ -71,6 +72,12 @@ app.on("window-all-closed", async () => {
 // Devices are released on a deliberate quit, not left to process teardown.
 app.on("before-quit", async () => { await sup?.shutdown(); });
 
+ipcMain.handle("recorder:getSettings", async (): Promise<Settings> =>
+  readSettings(app.getPath("userData")));
+
+ipcMain.handle("recorder:setSettings", async (_e, patch: Partial<Settings>): Promise<Settings> =>
+  writeSettings(app.getPath("userData"), patch ?? {}));
+
 ipcMain.handle("recorder:status", async () => ({
   state: sup?.state ?? "starting",
   pid: sup?.pid,
@@ -84,7 +91,11 @@ ipcMain.handle("recorder:start", async () => {
   // fails — so a denied grant leaves nothing behind on the user's Desktop.
   const dir = newTakeDir(process.env, new Date(), existing);
   try {
-    const r = await sup.startRecording(dir);
+    // Read from the stored preference, NOT passed up from the renderer. Main
+    // already owns this setting, and a renderer-supplied flag would be a second
+    // source of truth for the thing that turns on a physical camera.
+    const { camera } = readSettings(app.getPath("userData"));
+    const r = await sup.startRecording(dir, { camera });
     return { ok: true, dir, info: r };
   } catch (e: any) {
     // A missing Screen Recording grant is the common case and is actionable —

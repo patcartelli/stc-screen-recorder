@@ -4,6 +4,8 @@ interface Take {
   width: number; height: number; events: number; bytes: number; label?: string;
 }
 declare const recorder: {
+  getSettings: () => Promise<{ camera: boolean }>;
+  setSettings: (p: { camera?: boolean }) => Promise<{ camera: boolean }>;
   status(): Promise<{ state: string; pid?: number }>;
   takes(): Promise<{ takes: Take[]; invalid: { name: string; reason: string }[] }>;
   labelTake(dir: string, label: string): Promise<boolean>;
@@ -32,7 +34,34 @@ import {
 
 const $ = (id: string) => document.getElementById(id)!;
 const recordBtn = $("record") as HTMLButtonElement;
+const cameraBox = $("camera") as HTMLInputElement;
 let recording = false;
+
+/**
+ * Opt-in, default off, sticky. The stored preference is the authority — main
+ * reads it again at `start`, so this control only proposes changes.
+ *
+ * Disabled while recording: the helper opens the device at start and closes it
+ * at stop, so a mid-take flip would misdescribe what is being recorded.
+ */
+void (async () => {
+  try {
+    cameraBox.checked = (await recorder.getSettings()).camera;
+  } catch {
+    cameraBox.checked = false;
+  }
+})();
+
+cameraBox.addEventListener("change", async () => {
+  try {
+    const saved = await recorder.setSettings({ camera: cameraBox.checked });
+    // Show what was actually stored, not what was clicked.
+    cameraBox.checked = saved.camera;
+  } catch (e) {
+    cameraBox.checked = !cameraBox.checked;
+    alertUser(`Could not save the camera setting: ${String(e)}`);
+  }
+});
 let currentDir: string | undefined;
 
 function setState(text: string): void { $("state").textContent = text; }
@@ -52,6 +81,9 @@ recordBtn.addEventListener("click", async () => {
         setState("idle");
       } else {
         recording = true;
+      // The device is opened at start and closed at stop, so the setting must
+      // not appear changeable mid-take — it would misdescribe the recording.
+      cameraBox.disabled = true;
         currentDir = r.dir;
         recordBtn.textContent = "Stop";
         setState("recording");
@@ -59,6 +91,7 @@ recordBtn.addEventListener("click", async () => {
     } else {
       await recorder.stop();
       recording = false;
+      cameraBox.disabled = false;
       recordBtn.textContent = "Record";
       setState("idle");
       await refreshTakes();
