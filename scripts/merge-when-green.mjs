@@ -58,8 +58,8 @@ if (!pr) {
 }
 const gh = (...args) => execFileSync("gh", args, { encoding: "utf8" }).trim();
 
-const { headRefOid, state, mergeable, title } = JSON.parse(
-  gh("pr", "view", pr, "--json", "headRefOid,state,mergeable,title"));
+const { headRefOid, state, mergeable, title, headRefName } = JSON.parse(
+  gh("pr", "view", pr, "--json", "headRefOid,state,mergeable,title,headRefName"));
 
 if (state !== "OPEN") { console.error(`PR #${pr} is ${state}, not OPEN`); process.exit(1); }
 console.log(`PR #${pr}: ${title}`);
@@ -110,12 +110,59 @@ for (;;) {
     if (last !== run.status) { console.log(`CI ${run.status}…`); last = run.status; }
   } else if (run.conclusion === "success") {
     console.log(`CI passed (run ${run.databaseId}) — merging`);
-    console.log(gh("pr", "merge", pr, method, "--delete-branch"));
-    process.exit(0);
+    merge();
   } else {
     console.error(`\nCI ${run.conclusion} (run ${run.databaseId}) — NOT merging`);
     console.error(`  gh run view ${run.databaseId} --log-failed`);
     process.exit(1);
   }
   execFileSync("sleep", ["15"]);
+}
+
+/**
+ * Merge, then ASK GITHUB whether it merged. gh's exit code is not the
+ * authority, and this script's exit code has been wrong in both directions
+ * because of that.
+ *
+ * `--delete-branch` is deliberately NOT passed. It merges server-side and then
+ * deletes the LOCAL branch, which means switching off it — and that fails from
+ * a git worktree, because master is checked out in the main checkout:
+ *
+ *   failed to run git: fatal: 'master' is already used by worktree at /repo
+ *
+ * The merge stood and the script exited 1 anyway (PR #34). Cleanup deletes the
+ * remote ref over the API instead, which touches no local branch, and its
+ * failure is reported without changing the exit code: a tidy-up that did not
+ * happen is not a merge that did not happen.
+ */
+function merge() {
+  let mergeError = null;
+  try {
+    const out = gh("pr", "merge", pr, method);
+    if (out) console.log(out);
+  } catch (e) {
+    mergeError = e;
+  }
+
+  const after = JSON.parse(gh("pr", "view", pr, "--json", "state,mergedAt"));
+  if (after.state !== "MERGED") {
+    console.error(`\nmerge did not land — PR #${pr} is ${after.state}`);
+    if (mergeError) console.error(`  ${String(mergeError.stderr ?? mergeError.message).trim()}`);
+    process.exit(1);
+  }
+  console.log(`merged${after.mergedAt ? ` at ${after.mergedAt}` : ""}`);
+  if (mergeError) {
+    console.error(`  (gh exited non-zero but the PR is merged: ` +
+                  `${String(mergeError.stderr ?? mergeError.message).trim().split("\n")[0]})`);
+  }
+
+  // Best-effort, and it may not change the exit code.
+  try {
+    gh("api", "-X", "DELETE", `repos/{owner}/{repo}/git/refs/heads/${headRefName}`);
+    console.log(`deleted remote branch ${headRefName}`);
+  } catch (e) {
+    console.error(`  (remote branch ${headRefName} not deleted: ` +
+                  `${String(e.stderr ?? e.message).trim().split("\n")[0]}) — the merge stands`);
+  }
+  process.exit(0);
 }
