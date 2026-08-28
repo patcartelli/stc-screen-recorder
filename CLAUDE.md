@@ -468,6 +468,24 @@ reachable via KVC (`setValue(3, forKey: "captureResolution")`, verified in phase
   decoder that never started from one that stalled at the last frame, and those are different bugs.
   `FLUSH_MS` is one constant so the bound and the message it prints cannot disagree.
 
+- **The determinism gate retries on the MACHINE and skips loudly; it never retries a wrong answer.**
+  `npm run gate` is now `scripts/gate-retry.mjs`, which runs `gate.mjs` up to 3 times and keys
+  strictly on the `ENVIRONMENT:` label the gate prints when a BOUND fired. Every determinism check
+  reports through `fail()` with a concrete number — a hash mismatch, a frame count, zero encoded
+  bytes — and a run containing any `FAIL:` line, a death by signal, or the runner's own bound is
+  disqualified from being retried. After 3 environment failures it announces a SKIP (an Actions
+  `::warning`, and stderr not `console.warn`) and exits 0: the annotation is the record that the
+  gate did NOT run, which is not the same as a pass.
+  Why this and not "let it fail loudly": master was red on ~half of pushes, and a red X that means
+  either "you broke determinism" or "Apple's shared GPU did not answer" is AMBIGUOUS, not loud —
+  it is how a real breakage survives, and one did on 2026-08-28 (#28/#32). Red now always means the
+  code; SKIP means the machine.
+  `STC_GATE_FAULT=environment|regression` makes both paths reachable on demand and
+  `STC_GATE_ATTEMPT_LOG` counts attempts, so the retry is asserted against observed behaviour:
+  3 attempts then SKIP for the machine, 1 attempt then exit 1 for a regression. Each guard was
+  mutation-tested — dropping the `FAIL:` disqualifier, the signal check, or the condition itself
+  each breaks 3 tests.
+
 - **Retry logic must key on the failure being the MACHINE's, never on "it failed"** — a retry
   that absorbs a real regression is worse than no retry. `writer-gate` keys strictly on the
   harness's `ENVIRONMENT:` marker and excludes death-by-signal, failed assertions, and the
