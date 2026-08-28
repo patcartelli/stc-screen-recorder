@@ -50,7 +50,8 @@ describe("preview player in the app", () => {
   // The determinism gate could not see it, because the gate has its own loader.
   test("a take with a camera track opens instead of failing to load", async () => {
     const { dir } = makePipTakeFolder();
-    execFileSync("node", [join(root, "app", "build.mjs")], { cwd: root, stdio: "pipe" });
+    // The bundle is built once in vitest.global-setup.ts. Building it here
+    // raced every other suite doing the same on app/dist/ — see that file.
     app = await electron.launch({
       args: [root], cwd: root,
       env: { ...process.env, STC_RECORDINGS_DIR: dir },
