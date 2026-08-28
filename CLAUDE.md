@@ -451,6 +451,23 @@ reachable via KVC (`setValue(3, forKey: "captureResolution")`, verified in phase
   When writing such a test: `execFileSync` returns stdout ONLY, so an assertion on a message
   written to stderr fails for the wrong reason. Use `spawnSync` and read both streams.
 
+- **The 26-minute "gate stall" was TEARDOWN, not the gate — and not the encoder.** Root-caused from
+  the logs of run 33108160534: the gate did not hang. It FAILED correctly 66 s in with
+  `TimeoutError: decoder flush did not complete within 60000ms`, printed that, and then sat for
+  another 26 minutes in `finally` on an unbounded `browser.close()` — closing a browser whose
+  renderer is wedged inside a stuck decoder never returns. The job timeout killed it, which reports
+  as "cancelled", so the log looked like a hang with no explanation. #30's `closeQuietly` bounds
+  teardown at 30 s and now names it: master runs 33194258237 and 33193936334 show the whole thing
+  finishing in 96 s with `(teardown: browser.close() did not return within 30000 ms)` and a clean
+  exit 1. **The earlier guess that this was `VideoEncoder.configure()` blocking synchronously was
+  wrong** — the encoder is not involved; read the failing step's log before theorising.
+  The REMAINING fault is the decoder: `VideoDecoder.flush()` not settling for a 90-frame 640x360
+  fixture on CI, on roughly HALF of master's push runs. `decode.ts` now reports, on the failure path
+  only, how many chunks went in, how many frames came out, `decodeQueueSize`, `state`, and what
+  `isConfigSupported` says for hardware and software — because "did not complete" cannot tell a
+  decoder that never started from one that stalled at the last frame, and those are different bugs.
+  `FLUSH_MS` is one constant so the bound and the message it prints cannot disagree.
+
 - **Retry logic must key on the failure being the MACHINE's, never on "it failed"** — a retry
   that absorbs a real regression is worse than no retry. `writer-gate` keys strictly on the
   harness's `ENVIRONMENT:` marker and excludes death-by-signal, failed assertions, and the
