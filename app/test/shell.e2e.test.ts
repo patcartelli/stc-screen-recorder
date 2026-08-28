@@ -1,6 +1,5 @@
 import { describe, test, expect, afterEach } from "vitest";
 import { _electron as electron, type ElectronApplication } from "playwright";
-import { execFileSync } from "node:child_process";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -11,7 +10,8 @@ let app: ElectronApplication | undefined;
 afterEach(async () => { await app?.close().catch(() => {}); app = undefined; });
 
 async function launch() {
-  execFileSync("node", [join(root, "app", "build.mjs")], { cwd: root, stdio: "pipe" });
+  // The bundle is built once in vitest.global-setup.ts. Building it here
+  // raced every other suite doing the same on app/dist/ — see that file.
   // Never write takes to the real ~/Desktop/stc from an automated run.
   app = await electron.launch({
     args: [root], cwd: root,

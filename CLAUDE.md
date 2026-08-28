@@ -400,6 +400,24 @@ reachable via KVC (`setValue(3, forKey: "captureResolution")`, verified in phase
   responds to submission timing. Pre-encode determinism is untouched, which is what the gate proves;
   gate C only asserts the encoder produced bytes at all.
 
+- **"E2E flake" on this machine is usually SATURATION, not a test bug — and the tell is which tests
+  fail.** A loaded run takes down `transform/test/schema.test.ts` (pure JSON-schema validation, no
+  Electron, no subprocess) and `spawnSync xcrun ETIMEDOUT` alongside the Electron suites. When a
+  pure-computation test and the toolchain itself time out, nothing is wrong with the E2E tests:
+  the box is starved and the most timing-sensitive tests simply fail first, which is why the app
+  E2E files look like the culprits. Measured 2026-08-27: the full suite is 207+ tests spawning
+  Electron many times over plus the helper's process-heavy tests, and a `npm run gate` loop
+  alongside it is enough to push it over. Before debugging a flake, check `uptime` and
+  `ps -Ao command | grep -c '[s]tc-screen-recorder/node_modules/electron'` — a killed run leaves
+  Electron orphans behind (`afterEach` closes with `.catch(() => {})`, which swallows the failure),
+  and they accumulate across interrupted runs until everything times out. A CLEAN completed run
+  leaks nothing; interrupted ones do.
+  Cautionary tale from the same session: a load experiment using `(while :; do :; done) &` spinners
+  survived both `kill $(jobs -p)` and a `pkill -f` whose pattern did not match the resulting bare
+  `/bin/zsh`. They ran for 26 minutes at 8 cores, load hit 404, and every before/after measurement
+  taken in that window was worthless — including one that appeared to show a fix making things
+  worse. If you generate load, kill it by PID and CONFIRM with `ps` before believing any number.
+
 - **Retry logic must key on the failure being the MACHINE's, never on "it failed"** — a retry
   that absorbs a real regression is worse than no retry. `writer-gate` keys strictly on the
   harness's `ENVIRONMENT:` marker and excludes death-by-signal, failed assertions, and the
