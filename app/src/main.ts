@@ -15,7 +15,14 @@ import { newTakeDir, takesRoot, listTakes, setTakeLabel } from "./takes.js";
  */
 
 const here = dirname(fileURLToPath(import.meta.url));
-const HELPER = join(here, "..", "..", "helper", "build", "stc-helper");
+/**
+ * Overridable for the same reason STC_RECORDINGS_DIR is: the E2E suite needs to
+ * drive the real start path against a stand-in, because the real helper cannot
+ * record without a Screen Recording grant and CI has no way to give one. Also
+ * useful for pointing the app at a debug build.
+ */
+const HELPER = process.env.STC_HELPER_BIN
+  || join(here, "..", "..", "helper", "build", "stc-helper");
 
 let win: BrowserWindow | undefined;
 let sup: HelperSupervisor | undefined;

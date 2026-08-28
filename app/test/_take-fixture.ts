@@ -34,12 +34,18 @@ export function makeTakeFolder(takeName = "2026-08-24_10-00-00"): { dir: string;
  * correctly refusing to silently drop the PiP. Nothing in the suite noticed,
  * because every other fixture is camera-less.
  */
-export function makePipTakeFolder(takeName = "2026-08-26_11-00-00-pip"): { dir: string; takeDir: string } {
+export function makePipTakeFolder(
+  takeName = "2026-08-26_11-00-00-pip",
+  opts: { withProject?: boolean } = {},
+): { dir: string; takeDir: string } {
   const dir = mkdtempSync(join(tmpdir(), "stc-pip-takes-"));
   const takeDir = join(dir, takeName);
   mkdirSync(takeDir, { recursive: true });
-  for (const f of ["anchors.json", "events.json", "display.mp4", "camera.mp4", "project.json"]) {
-    cpSync(join(root, "fixtures", "pip", f), join(takeDir, f));
-  }
+  const files = ["anchors.json", "events.json", "display.mp4", "camera.mp4"];
+  // Nothing writes a project.json at record time, so a take the app records is
+  // exactly this: a camera track and no edit document. `withProject: false` is
+  // the realistic case, not the exotic one.
+  if (opts.withProject !== false) files.push("project.json");
+  for (const f of files) cpSync(join(root, "fixtures", "pip", f), join(takeDir, f));
   return { dir, takeDir };
 }
