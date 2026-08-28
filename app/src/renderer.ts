@@ -231,8 +231,12 @@ async function openPreviewOrThrow(take: Take): Promise<void> {
   const cameraMp4 = anchors.files?.camera ? await readVideo(anchors.files.camera) : undefined;
   const session = await loadSession({ anchors, events, displayMp4: mp4, cameraMp4 });
   const durationNs = session.frames[session.frames.length - 1] ?? 0;
+  // The take's own camera decides whether a PiP is on by default. Without this
+  // an app-recorded camera take previews with pip: null — nothing writes a
+  // project.json at record time.
   const project = parseProject(
     projectRaw, anchors.capture.width, anchors.capture.height, durationNs,
+    anchors.camera?.present === true,
   );
 
   openSession = session;

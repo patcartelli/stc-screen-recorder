@@ -1,4 +1,4 @@
-import type { Project, Trim } from "./types.js";
+import type { Pip, Project, Trim } from "./types.js";
 
 const NS_PER_S = 1_000_000_000;
 
@@ -54,7 +54,19 @@ export function estimateExportMs(maxFrames: number): number {
   return maxFrames * EXPORT_MS_PER_FRAME;
 }
 
-export function defaultProject(width: number, height: number, trim?: Trim): Project {
+/**
+ * The PiP a camera take gets when its own project does not say otherwise.
+ *
+ * Matches `fixtures/pip/project.json`'s geometry so the fixture and the app
+ * agree about what "default" means.
+ */
+export const DEFAULT_PIP: Pip = {
+  enabled: true, corner: "bottom-right", widthPct: 0.125, marginPx: 32,
+};
+
+export function defaultProject(
+  width: number, height: number, trim?: Trim, hasCamera = false,
+): Project {
   const project: Project = {
     // v2: `trim` lives in project-2 alongside `pip`. Emitting v1 would produce
     // a document carrying a field its own schema does not declare.
@@ -62,6 +74,16 @@ export function defaultProject(width: number, height: number, trim?: Trim): Proj
     output: { fps: 60, width, height },
     cursor: { style: "default", scale: 1 },
   };
+  // A recorded camera track is part of the take, so a take that has one shows
+  // its PiP without needing an edit document to say so.
+  //
+  // Without this, every take the app records with the camera on previews with
+  // an INVISIBLE PiP: nothing writes a project.json at record time, so
+  // parseProject falls back to a default, the default had no pip, render()
+  // returned pip: null, and composite() drew nothing — next to a perfectly good
+  // camera.mp4. The first real hardware take needed a project written by hand
+  // before anything appeared.
+  if (hasCamera) project.pip = { ...DEFAULT_PIP };
   if (trim) project.trim = trim;
   return project;
 }
@@ -70,8 +92,10 @@ export function defaultProject(width: number, height: number, trim?: Trim): Proj
  * A corrupt sidecar must not cost the recording. Unknown versions, missing
  * fields and non-integer times fall back to a default project for this take.
  */
-export function parseProject(raw: unknown, width: number, height: number, durationNs: number): Project {
-  const fallback = defaultProject(width, height);
+export function parseProject(
+  raw: unknown, width: number, height: number, durationNs: number, hasCamera = false,
+): Project {
+  const fallback = defaultProject(width, height, undefined, hasCamera);
   if (!raw || typeof raw !== "object") return fallback;
   const doc = raw as Record<string, any>;
   // v1 and v2 both load: v1 documents predate trim and pip and simply have
@@ -82,7 +106,7 @@ export function parseProject(raw: unknown, width: number, height: number, durati
   const outW = Number.isInteger(doc.output?.width) ? doc.output.width : width;
   const outH = Number.isInteger(doc.output?.height) ? doc.output.height : height;
   const scale = typeof doc.cursor?.scale === "number" && doc.cursor.scale > 0 ? doc.cursor.scale : 1;
-  const project = defaultProject(outW, outH);
+  const project = defaultProject(outW, outH, undefined, hasCamera);
   project.cursor = { style: "default", scale };
 
   // Same reasoning as projectForWrite: anything this parser does not copy is
