@@ -436,6 +436,21 @@ reachable via KVC (`setValue(3, forKey: "captureResolution")`, verified in phase
   matched itself — a phantom baseline of 2 with nothing running, and a "peak 6" that was mostly
   the grep. Calibrate against a known state (0 idle, 1 with one app) before trusting a number.
 
+- **`npm run merge`'s exit code has been wrong in BOTH directions; it is now decided by asking
+  GitHub, not by trusting `gh`.** First it looked like it exited 0 after giving up — that was an
+  invocation piping it through `tail`, and a pipeline reports its LAST command's status, not the
+  script's. Then it genuinely exited 1 after a merge that landed (PR #34): `gh pr merge
+  --delete-branch` merges server-side and then deletes the LOCAL branch, which means switching off
+  it, which fails from a worktree because master is checked out in the main checkout
+  (`fatal: 'master' is already used by worktree`). The merge stood and the script called it a
+  failure. It no longer passes `--delete-branch`: it merges, re-reads the PR's state as the
+  authority, and deletes the remote ref over the API — which touches no local branch. A cleanup
+  that did not happen is not a merge that did not happen, so that failure is REPORTED and does not
+  change the exit code. `transform/test/merge-when-green.test.ts` drives the real script with a
+  stub `gh` on PATH and watches all four outcomes, including both directions of wrongness.
+  When writing such a test: `execFileSync` returns stdout ONLY, so an assertion on a message
+  written to stderr fails for the wrong reason. Use `spawnSync` and read both streams.
+
 - **Retry logic must key on the failure being the MACHINE's, never on "it failed"** — a retry
   that absorbs a real regression is worse than no retry. `writer-gate` keys strictly on the
   harness's `ENVIRONMENT:` marker and excludes death-by-signal, failed assertions, and the
