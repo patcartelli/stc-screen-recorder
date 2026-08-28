@@ -419,6 +419,23 @@ reachable via KVC (`setValue(3, forKey: "captureResolution")`, verified in phase
   taken in that window was worthless — including one that appeared to show a fix making things
   worse. If you generate load, kill it by PID and CONFIRM with `ps` before believing any number.
 
+- **The E2E files run one at a time; everything else stays parallel.** `vitest.config.ts` is two
+  projects — `unit` (default parallelism) and `e2e` (`fileParallelism: false`). Measured
+  2026-08-28 with a sampler counting Electron MAIN processes: a full run peaked at FIVE apps on the
+  machine at once before, and ONE after. That is the largest single source of the saturation
+  described above. The cost is real and was measured too: the full suite goes 19 s -> 36 s, since
+  the E2E files no longer overlap. `vitest.grant.config.ts` reached the same conclusion earlier for
+  its own reason (concurrent `open -W` on one app bundle).
+  **This is not proven to reduce the flake** — both arms were green on an idle machine, and a flake
+  that needs a loaded machine cannot be measured on a quiet one without generating load, which is
+  itself how a whole afternoon of measurements got invalidated. It removes a known saturation
+  source; that is the whole claim.
+  When counting processes to check any of this, filter with `startsWith` on the absolute binary
+  path and list `ps` ONCE from inside the script. Three separate measurements in one session were
+  wrong because the shell running the check had the search string in its own command line and
+  matched itself — a phantom baseline of 2 with nothing running, and a "peak 6" that was mostly
+  the grep. Calibrate against a known state (0 idle, 1 with one app) before trusting a number.
+
 - **Retry logic must key on the failure being the MACHINE's, never on "it failed"** — a retry
   that absorbs a real regression is worse than no retry. `writer-gate` keys strictly on the
   harness's `ENVIRONMENT:` marker and excludes death-by-signal, failed assertions, and the
