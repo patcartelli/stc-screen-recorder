@@ -32,7 +32,7 @@ const server = await createServer({
     configureServer(s) {
       s.middlewares.use("/session", (req, res, next) => {
         const name = (req.url || "").split("?")[0].replace(/^\//, "");
-        if (!["anchors.json", "events.json", "display.mp4"].includes(name)) return next();
+        if (!["anchors.json", "events.json", "project.json", "display.mp4", "camera.mp4"].includes(name)) return next();
         res.setHeader("content-type", name.endsWith(".json") ? "application/json" : "video/mp4");
         res.end(readFileSync(join(sessionDir, name)));
       });
@@ -50,11 +50,28 @@ try {
   await page.waitForFunction(() => window.__exportReady === true, { timeout: 60_000 });
   await page.reload({ waitUntil: "domcontentloaded" });
   await page.waitForFunction(() => window.__exportReady === true, { timeout: 60_000 });
-  const project = {
+  // The take's OWN project.json, merged over the defaults — same as
+  // export-gate.mjs. Hardcoding a project here meant this script silently
+  // dropped trim AND the PiP: it exported a camera take with pip absent, so
+  // render() returned pip: null and the clip produced for a human to verify
+  // had no PiP in it at all. The script that makes the artifact for
+  // watch-and-confirm is the last place that can afford to describe a
+  // different project than the take's.
+  let project = {
     version: 1,
     output: { fps: 60, width: anchors.capture.width, height: anchors.capture.height },
     cursor: { style: "default", scale: 1 },
   };
+  const projectPath = join(sessionDir, "project.json");
+  if (existsSync(projectPath)) {
+    const onDisk = JSON.parse(readFileSync(projectPath, "utf8"));
+    project = { ...project, ...onDisk,
+                output: { ...project.output, ...(onDisk.output ?? {}) } };
+    console.log(`project.json found: pip=${JSON.stringify(onDisk.pip ?? null)} ` +
+                `trim=${JSON.stringify(onDisk.trim ?? null)}`);
+  } else {
+    console.log("no project.json in this take — exporting with defaults (no pip, no trim)");
+  }
   const frames = Math.round(seconds * 60);
   const fromFrame = Math.round(fromSeconds * 60);
   console.log(`exporting ${seconds}s from t=${fromSeconds}s (${frames} frames) ` +

@@ -199,12 +199,12 @@ const VIDEO_CHUNK_BYTES = 32 * 1024 * 1024;
  * of heap for a 458 MB take. Assembling slices into a pre-allocated destination
  * keeps the peak at roughly the file size plus one slice.
  */
-async function readVideo(): Promise<ArrayBuffer> {
-  const size = await recorder.takeFileSize("display.mp4");
+async function readVideo(name = "display.mp4"): Promise<ArrayBuffer> {
+  const size = await recorder.takeFileSize(name);
   const out = new Uint8Array(size);
   for (let offset = 0; offset < size; offset += VIDEO_CHUNK_BYTES) {
     const length = Math.min(VIDEO_CHUNK_BYTES, size - offset);
-    out.set(new Uint8Array(await recorder.readTakeChunk("display.mp4", offset, length)), offset);
+    out.set(new Uint8Array(await recorder.readTakeChunk(name, offset, length)), offset);
   }
   return out.buffer;
 }
@@ -224,7 +224,12 @@ async function openPreviewOrThrow(take: Take): Promise<void> {
     recorder.readTakeFile("project.json").then((b) => JSON.parse(dec.decode(b)))
       .catch(() => null),
   ]);
-  const session = await loadSession({ anchors, events, displayMp4: mp4 });
+  // Chunked like the display track, and only when the take's own anchors claim
+  // a camera: loadSession refuses a file the anchors do not claim, and refuses
+  // a claim with no file. Skipping this made every camera take unopenable in
+  // the app — the sequencing constraint increment 4b exists to discharge.
+  const cameraMp4 = anchors.files?.camera ? await readVideo(anchors.files.camera) : undefined;
+  const session = await loadSession({ anchors, events, displayMp4: mp4, cameraMp4 });
   const durationNs = session.frames[session.frames.length - 1] ?? 0;
   const project = parseProject(
     projectRaw, anchors.capture.width, anchors.capture.height, durationNs,

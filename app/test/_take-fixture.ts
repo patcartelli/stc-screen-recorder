@@ -24,3 +24,22 @@ export function makeTakeFolder(takeName = "2026-08-24_10-00-00"): { dir: string;
   }
   return { dir, takeDir };
 }
+
+/**
+ * A take WITH a camera track, from the committed PiP fixture.
+ *
+ * Exists because every camera take was unopenable in the app until the
+ * renderer passed camera.mp4 to loadSession: the load threw "anchors.camera
+ * .present is true but no camera.mp4 was supplied", which is loadSession
+ * correctly refusing to silently drop the PiP. Nothing in the suite noticed,
+ * because every other fixture is camera-less.
+ */
+export function makePipTakeFolder(takeName = "2026-08-26_11-00-00-pip"): { dir: string; takeDir: string } {
+  const dir = mkdtempSync(join(tmpdir(), "stc-pip-takes-"));
+  const takeDir = join(dir, takeName);
+  mkdirSync(takeDir, { recursive: true });
+  for (const f of ["anchors.json", "events.json", "display.mp4", "camera.mp4", "project.json"]) {
+    cpSync(join(root, "fixtures", "pip", f), join(takeDir, f));
+  }
+  return { dir, takeDir };
+}

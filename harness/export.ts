@@ -12,7 +12,14 @@ import type { Project } from "@transform/types";
     fetch(`${dir}/events.json`).then((r) => r.json()),
     fetch(`${dir}/display.mp4`).then((r) => r.arrayBuffer()),
   ]);
-  const session = await loadSession({ anchors, events, displayMp4 });
+  // Fetched only when the take's own anchors say it has one — loadSession
+  // refuses a camera.mp4 that the anchors do not claim, and refuses a claim
+  // with no file. Without this the export of any camera take dies at load with
+  // "no camera.mp4 was supplied", which is exactly what it did.
+  const cameraMp4 = anchors.files?.camera
+    ? await fetch(`${dir}/${anchors.files.camera}`).then((r) => r.arrayBuffer())
+    : undefined;
+  const session = await loadSession({ anchors, events, displayMp4, cameraMp4 });
   const r = await runExport(session, project, { hash: true, ...opts });
 
   let encodedBase64: string | undefined;
