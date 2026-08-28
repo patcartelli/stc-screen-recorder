@@ -64,7 +64,7 @@ belonging to a different commit).
 
 | ticket | what | needs |
 |---|---|---|
-| STC-232 4b | **done** — both sinks draw the PiP, gate proves it, and the app can open a camera take. Increment 5 (app toggle) is unblocked | nothing; increment 5 is next |
+| STC-232 4b | **done and VISUALLY CONFIRMED 2026-08-28** — both sinks draw the PiP, gate proves it, app opens camera takes, and a human watched a real 4K take. Increment 5 is unblocked | nothing; increment 5 is next |
 | STC-259 | **cause confirmed and contained** — both encoder queries bounded at 15 s, run retried 3x, then a loud SKIP. Measured on CI both ways on one commit | steps 2 and 3: the harness's first `AVAssetWriter` append is still unbounded, and whether `CameraCapture.swift`/`Capture.swift` need the same is still open |
 | STC-249 | lossy ring under REAL capture load — the semantics are tested, the live scenario is not | a recording with a stalled stats consumer |
 | STC-254 | **done** — append/teardown race fixed (part 2), SIGTRAP crash handler closed (part 3). Master CI green again | nothing; watch that master stays green |
@@ -441,6 +441,18 @@ reachable via KVC (`setValue(3, forKey: "captureResolution")`, verified in phase
   harness's `ENVIRONMENT:` marker and excludes death-by-signal, failed assertions, and the
   runner's own timeout by name, each covered by a test. STC-254 arrived as SIGTRAP on CI and
   SIGSEGV locally; retrying either three times and calling it a skip would have buried it.
+- **The PiP is visually confirmed (2026-08-28), and that is a separate fact from every gate.**
+  Watched on a real 15 s 4K take (`Elgato Facecam 4K [USB2]`, 60 fps): camera bottom-right,
+  correctly proportioned, appearing when the camera track starts, in sync with the screen. This
+  is the same class of check PHASE-1 recorded for the cursor, and it is not redundant with the
+  determinism gate — a uniformly mispositioned or time-shifted PiP passes every automated check
+  in this repo, including the blind-hash check, which only proves the PiP changed *some* pixels.
+  NB the first clip produced for this check was WRONG: `scripts/export-one.mjs` hardcoded a
+  project with no `pip`, so it exported the take with the PiP disabled and the reviewer correctly
+  reported seeing no PiP. Any artifact made for human verification must come from the take's own
+  `project.json` — fixed, but the lesson is that the verification path needs verifying too.
+  STILL NOT MEASURED: the camera-to-display sync NUMBER. "Looks in sync" is an eye's tolerance,
+  not a millisecond figure; `scratch/` has `avsync.cjs` for producing one, and increment 5 owns it.
 - **A gate with its OWN loader does not prove the app can open anything.** The
   PiP determinism gate passed on a real camera take while the Electron app
   could not open one at all: `harness/sink-identity.ts` supplied `camera.mp4`

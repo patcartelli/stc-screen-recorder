@@ -10,9 +10,11 @@
 
 ## Status (2026-08-27)
 
-**Tasks 1-4 are done and merged into PR #25; CI green.** Task 5 is the only one
-left, and it cannot be done without a camera-granted machine and a human's
-eyes.
+**Tasks 1-4 merged (#25) and the loader gap they missed fixed (#28). Task 5's
+memory measurement and watch-and-confirm are both DONE** — the PiP was watched
+on a real 15 s 4K take on 2026-08-28 and is correct. What remains of Task 5
+belongs to increment 5: the app toggle, and a MEASURED camera-to-display sync
+number rather than "looks right".
 
 What Task 4 established, worth knowing before touching any of this: with the
 PiP draw forced off, the preview-vs-export comparison still reported
@@ -703,7 +705,7 @@ Alongside the existing "preview ~1.2x file size in RAM" line, with its caveats a
 node scripts/export-one.mjs <a real PiP take> 20
 ```
 
-- [ ] **Step 4: WATCH IT. This is not optional.**
+- [x] **Step 4: WATCH IT. This is not optional.** — DONE 2026-08-28, confirmed correct on a real 4K take.
 
 The spec is explicit and PHASE-2 learned it the hard way with the cursor: **a uniformly mispositioned or time-shifted PiP passes every automated check in this repo.** Hashes prove the sinks agree; only watching proves the agreed answer is right.
 
