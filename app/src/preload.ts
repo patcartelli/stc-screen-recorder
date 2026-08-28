@@ -7,6 +7,8 @@ import { contextBridge, ipcRenderer } from "electron";
  */
 contextBridge.exposeInMainWorld("recorder", {
   status: () => ipcRenderer.invoke("recorder:status"),
+  getSettings: () => ipcRenderer.invoke("recorder:getSettings"),
+  setSettings: (patch: Record<string, unknown>) => ipcRenderer.invoke("recorder:setSettings", patch),
   takes: () => ipcRenderer.invoke("recorder:takes"),
   labelTake: (dir: string, label: string) => ipcRenderer.invoke("take:label", dir, label),
   deleteTake: (dir: string) => ipcRenderer.invoke("take:delete", dir),

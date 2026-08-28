@@ -13,7 +13,7 @@
  * for. It is a stand-in for the helper's CONTROL PLANE only; it captures
  * nothing, and no test may use it to make claims about capture.
  */
-import { writeSync } from "node:fs";
+import { writeSync, writeFileSync } from "node:fs";
 
 const argv = process.argv.slice(2);
 const i = argv.indexOf("--stats-interval-ms");
@@ -48,6 +48,13 @@ process.stdin.on("data", (chunk) => {
       case "start":
         state = "recording";
         session = cmd.dir ?? null;
+        // The start payload, when a test asks for it. Whether `camera` actually
+        // reaches the helper is the whole of the app-toggle feature, and
+        // nothing else in the suite can see it.
+        if (process.env.STC_FAKE_START_LOG) {
+          try { writeFileSync(process.env.STC_FAKE_START_LOG, JSON.stringify(cmd) + "\n", { flag: "a" }); }
+          catch { /* a test seam is not worth killing the stand-in */ }
+        }
         send("started", { seq, session });
         break;
       case "stop":

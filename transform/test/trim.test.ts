@@ -83,4 +83,30 @@ describe("estimateExportMs", () => {
   test("is the measured 11 ms/frame", () => {
     expect(estimateExportMs(60)).toBe(60 * EXPORT_MS_PER_FRAME);
   });
+
+  // A camera take recorded by the app has NO project.json — nothing writes one
+  // at record time — so without a default it previews with pip: null and an
+  // invisible PiP, despite a perfectly good camera.mp4 next to it. That is what
+  // made the first real hardware take need a hand-written project.
+  test("a take with a camera gets a PiP even with no project.json", () => {
+    const p = parseProject(null, 3840, 2160, duration, true);
+    expect(p.pip).toEqual({ enabled: true, corner: "bottom-right", widthPct: 0.125, marginPx: 32 });
+  });
+
+  test("a take with no camera still gets no PiP", () => {
+    expect(parseProject(null, 3840, 2160, duration, false).pip).toBeUndefined();
+    // Unchanged for every take that already exists.
+    expect(parseProject(null, 1920, 1080, duration)).toEqual(defaultProject(1920, 1080));
+  });
+
+  // The default is a DEFAULT, not an override. Someone who turned the PiP off
+  // must stay off, or disabling it on a camera take would be impossible.
+  test("an explicit pip in the document beats the default", () => {
+    const raw = {
+      version: 2, output: { fps: 60, width: 640, height: 360 },
+      cursor: { style: "default", scale: 1 },
+      pip: { enabled: false, corner: "bottom-right", widthPct: 0.125, marginPx: 32 },
+    };
+    expect(parseProject(raw, 640, 360, duration, true).pip!.enabled).toBe(false);
+  });
 });
