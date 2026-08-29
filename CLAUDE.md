@@ -486,6 +486,24 @@ reachable via KVC (`setValue(3, forKey: "captureResolution")`, verified in phase
   mutation-tested — dropping the `FAIL:` disqualifier, the signal check, or the condition itself
   each breaks 3 tests.
 
+- **The retry is part of the job's worst case, and the clearance test now says so.** #39 wrapped
+  the determinism gate in 3 attempts bounded at 10 min each, and the existing clearance test —
+  `PRE_GATE + EVAL_SLOTS x EVAL_MS + SEEK_MS = 21.5 min < 30 min cap` — did not model it and stayed
+  green while that ONE gate could consume the entire cap before the other three ran. Third time
+  this repo has met "a new bound must be checked against every bound already covering the same
+  code", and the first two are in this file. `scripts/gate-bounds.mjs`'s `worstCaseJobMs()` now
+  models the job per gate INCLUDING `ATTEMPTS`, `ATTEMPT_MS` is 5 min (was 10), and the cap is 45.
+  Two assertions the old test could not make: `ATTEMPT_MS > attemptFloorMs()` (`EVAL_MS` + both
+  teardown bounds + launch) — below that, gate-retry's own bound fires before the gate can print
+  `ENVIRONMENT:`, `isEnvironmentFailure()` correctly refuses to retry, and the retry silently stops
+  working — and the worst case must scale with `ATTEMPTS`. Verified by watching all four fail,
+  including #39's shipped 600_000.
+- **Every gate must tear down through `closeQuietly`, and a test enforces it.** #30 bounded
+  teardown in three gates and missed `seek-gate.mjs`, which then did the identical 17.5-minute
+  `browser.close()` hang on the handoff PR — failing correctly in 10 s with a full decoder dump
+  first, exactly like the original. `gate-bounds.test.ts` now refuses a direct `browser.close()` in
+  any gate and requires each to import `closeQuietly`.
+
 - **Retry logic must key on the failure being the MACHINE's, never on "it failed"** — a retry
   that absorbs a real regression is worse than no retry. `writer-gate` keys strictly on the
   harness's `ENVIRONMENT:` marker and excludes death-by-signal, failed assertions, and the

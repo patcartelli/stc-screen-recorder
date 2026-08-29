@@ -18,7 +18,11 @@ jobs:
     # macOS is not a preference: the helper is Swift against ScreenCaptureKit,
     # and the transform's sinks need a Chrome with H.264 (WebCodecs).
     runs-on: macos-15
-    timeout-minutes: 30
+    # Must clear scripts/gate-bounds.mjs's worstCaseJobMs() with margin, which
+    # transform/test/gate-bounds.test.ts asserts. It was 30 until #39 wrapped the
+    # determinism gate in a retry: 3 attempts is 15 min for that gate alone, and
+    # the four gates plus build/typecheck/tests model to 38 min worst case.
+    timeout-minutes: 45
 
     # A post-merge master run re-verifies a tree CI already approved as a PR
     # head, which is the largest remaining duplication. It is NOT skipped by

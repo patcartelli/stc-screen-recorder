@@ -3,7 +3,9 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   bounded, EVAL_MS, ENCODER_MS, EVAL_SLOTS, SEEK_MS, PRE_GATE_BUDGET_MS,
+  worstCaseJobMs, attemptFloorMs,
 } from "../../scripts/gate-bounds.mjs";
+import { ATTEMPTS, ATTEMPT_MS } from "../../scripts/gate-retry.mjs";
 import * as bounds from "../../scripts/gate-bounds.mjs";
 
 const root = join(__dirname, "..", "..");
@@ -91,7 +93,10 @@ describe("gate bounds — clearance against the CI job timeout", () => {
     expect(m, "ci.yml must declare timeout-minutes for this clearance to mean anything").not.toBeNull();
 
     const jobCapMs = Number(m![1]) * 60_000;
-    const worstCaseMs = PRE_GATE_BUDGET_MS + EVAL_SLOTS * EVAL_MS + SEEK_MS;
+    // The model lives with the constants and accounts for the RETRY. The old
+    // flat sum (PRE_GATE + EVAL_SLOTS x EVAL_MS + SEEK_MS) said 21.5 min and
+    // stayed silent when #39 made the determinism gate alone capable of 30.
+    const worstCaseMs = worstCaseJobMs();
     const marginMs = jobCapMs - worstCaseMs;
 
     expect(worstCaseMs).toBeLessThan(jobCapMs);
@@ -116,6 +121,20 @@ describe("gate bounds — clearance against the CI job timeout", () => {
       .toMatch(/runGate\(\s*\{\s*encoderMs:/);
     expect(src, "gate.mjs must assert the bound the page reports back")
       .toMatch(/encoderBoundMs\s*!==\s*ENCODER_MS/);
+  });
+
+  test("one attempt's bound clears what an attempt legitimately costs", () => {
+    // If ATTEMPT_MS is below the floor, gate-retry's own bound fires before the
+    // gate can print `ENVIRONMENT:` — and isEnvironmentFailure() then correctly
+    // refuses to retry it, so the retry silently stops working. Same shape as
+    // an inner bound set equal to the outer one.
+    expect(ATTEMPT_MS).toBeGreaterThan(attemptFloorMs());
+  });
+
+  test("the retry is part of the worst case, not sitting outside it", () => {
+    // Guards the specific regression: a model that ignores ATTEMPTS would not
+    // move when the retry count does.
+    expect(worstCaseJobMs()).toBeGreaterThanOrEqual(ATTEMPTS * ATTEMPT_MS);
   });
 
   test("every bounded evaluate in the CI gates is accounted for", () => {

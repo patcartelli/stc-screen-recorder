@@ -29,8 +29,20 @@ import { spawn } from "node:child_process";
 import { appendFileSync } from "node:fs";
 
 export const ATTEMPTS = 3;
-/** The gate's own per-attempt bound. Its inner bounds are far smaller. */
-export const ATTEMPT_MS = 600_000;
+/**
+ * The bound on ONE attempt, and it must clear what an attempt can legitimately
+ * cost: the in-page bound (EVAL_MS), both teardown bounds, and the browser/vite
+ * launch. Set it below that and this outer bound fires first, the attempt is
+ * labelled with THIS runner's message instead of the gate's `ENVIRONMENT:` one,
+ * and isEnvironmentFailure() then correctly refuses to retry it — the retry
+ * would silently stop working.
+ *
+ * It was 600_000 when the retry landed in #39, which made the worst case
+ * ATTEMPTS x 10 min = 30 min for this gate ALONE — the entire CI job cap,
+ * before the other three gates run. gate-bounds.test.ts models the whole job
+ * now and asserts both directions of that.
+ */
+export const ATTEMPT_MS = 300_000;
 
 /**
  * The machine declined — not the code. `ENVIRONMENT:` alone is not enough:

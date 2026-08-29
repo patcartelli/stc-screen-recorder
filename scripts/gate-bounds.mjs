@@ -24,6 +24,10 @@
  */
 
 /** Per-evaluate bound. Override for experiments; CI uses the default. */
+// The retry's shape is part of the job's worst case, so it is read from its
+// one home rather than restated here.
+import { ATTEMPTS, ATTEMPT_MS } from "./gate-retry.mjs";
+
 export const EVAL_MS = Number(process.env.STC_GATE_EVAL_MS ?? 180_000);
 
 /**
@@ -54,6 +58,36 @@ export const EVAL_SLOTS = 4;
 export const SEEK_MS = 90_000;
 /** What the job spends before the gates — build, typecheck, tests: ~6 min on CI, rounded up. */
 export const PRE_GATE_BUDGET_MS = 8 * 60_000;
+/** Vite server plus a Chrome launch, per gate. */
+export const LAUNCH_MS = 30_000;
+
+/**
+ * The worst case for the WHOLE job, modelled per gate rather than as a flat
+ * count of evaluates.
+ *
+ * The flat model (PRE_GATE + EVAL_SLOTS x EVAL_MS + SEEK_MS) was correct until
+ * #39 wrapped the determinism gate in a retry, and then it was silently wrong:
+ * it still said 21.5 min while that one gate could now take 30 on its own. A
+ * new bound has to be checked against every bound already covering the same
+ * code — the lesson this file's own comment cites, missed the next time it
+ * applied.
+ *
+ * Each gate pays its own launch and both teardown bounds; only the determinism
+ * gate is retried.
+ */
+export function worstCaseJobMs() {
+  const perGateOverhead = LAUNCH_MS + 2 * TEARDOWN_MS;
+  const determinism = ATTEMPTS * ATTEMPT_MS;          // each attempt self-bounded
+  const exportGate = 2 * EVAL_MS + perGateOverhead;   // runs A and B
+  const identity = EVAL_MS + perGateOverhead;
+  const seek = SEEK_MS + perGateOverhead;
+  return PRE_GATE_BUDGET_MS + determinism + exportGate + identity + seek;
+}
+
+/** What one determinism-gate attempt can legitimately cost. ATTEMPT_MS must clear it. */
+export function attemptFloorMs() {
+  return EVAL_MS + 2 * TEARDOWN_MS + LAUNCH_MS;
+}
 
 /** Bound a promise settled by someone else's callback. `what` becomes the message. */
 export function bounded(promise, ms, what) {
