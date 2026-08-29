@@ -96,3 +96,59 @@ func decideCursorEvent(type: CGEventType, timestampNs: UInt64, t0Ns: UInt64) -> 
     guard timestampNs >= t0Ns else { return .beforeStart }
     return .event(t: Int(timestampNs - t0Ns), kind: kind, button: button)
 }
+
+
+// ── which camera to open (STC-286) ──────────────────────────────────────────
+
+/// A FourCC as the Int32 `AVCaptureDevice.transportType` reports.
+func fourCC(_ s: String) -> Int32 {
+    var v: Int32 = 0
+    for b in s.utf8.prefix(4) { v = (v << 8) | Int32(b) }
+    return v
+}
+
+/// `'virt'` — a software camera with no capture hardware behind it.
+let kTransportVirtual = fourCC("virt")
+/// `'usb '` — a plugged-in camera, which is what someone who plugged one in wants.
+let kTransportUSB = fourCC("usb ")
+
+struct CameraChoice: Equatable {
+    let name: String
+    /// True only when every candidate was virtual and one had to be taken anyway.
+    let isVirtual: Bool
+}
+
+/**
+ Picks the camera to record from, given each candidate's name and transportType.
+
+ `AVCaptureDevice.DiscoverySession(...).devices.first` is not a choice, it is
+ whatever AVFoundation returned first — and on 2026-08-29 that was
+ "Elgato Virtual Camera". A virtual camera with nothing feeding it idles at
+ about 1 fps, so three consecutive takes recorded 12 frames in 11 seconds
+ beside a perfectly good display track, and the app reported success.
+
+ Ranked by transportType rather than by name: "Camo", "OBS", "NDI" and friends
+ are not a closed set, and a name test fails silently on the next one. USB
+ first because someone who plugged a camera in meant to use it; built-in and
+ Continuity next; virtual last and only if it is all there is — refusing to
+ record at all would be worse, and a virtual camera is a legitimate setup for
+ streamers. When it IS the only option the caller is told, so it can warn
+ instead of quietly shipping a 1 fps PiP.
+
+ Pure, so it is tested without a camera — the same reason decideCameraOpen is.
+ */
+func pickCamera(_ devices: [(name: String, transportType: Int32)]) -> CameraChoice? {
+    guard !devices.isEmpty else { return nil }
+    // Stable: equal ranks keep discovery order, so this only ever moves a
+    // device that is genuinely worse, never shuffles equals.
+    func rank(_ t: Int32) -> Int {
+        if t == kTransportVirtual { return 2 }
+        if t == kTransportUSB { return 0 }
+        return 1
+    }
+    let best = devices.enumerated().min { a, b in
+        let ra = rank(a.element.transportType), rb = rank(b.element.transportType)
+        return ra == rb ? a.offset < b.offset : ra < rb
+    }!.element
+    return CameraChoice(name: best.name, isVirtual: best.transportType == kTransportVirtual)
+}

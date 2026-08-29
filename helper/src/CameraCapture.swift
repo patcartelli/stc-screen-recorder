@@ -81,7 +81,27 @@ final class CameraCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
         let discovery = AVCaptureDevice.DiscoverySession(
             deviceTypes: [.builtInWideAngleCamera, .externalUnknown],
             mediaType: .video, position: .unspecified)
-        guard let device = discovery.devices.first else { return .failure(CameraError.noDevice) }
+        // NOT `.devices.first` — that is not a choice, it is whatever
+        // AVFoundation returned first, and on 2026-08-29 that was
+        // "Elgato Virtual Camera": ~1 fps with nothing behind it, so three
+        // takes recorded 12 frames in 11 s beside a good display track and the
+        // app reported success (STC-286). pickCamera ranks by transportType.
+        let candidates = discovery.devices.map { (name: $0.localizedName, transportType: $0.transportType) }
+        guard let choice = pickCamera(candidates),
+              let device = discovery.devices.first(where: { $0.localizedName == choice.name })
+        else { return .failure(CameraError.noDevice) }
+        if choice.isVirtual {
+            // Every candidate was virtual. Recording it beats refusing, but the
+            // user must not discover a 1 fps PiP after the fact.
+            // IO.send, not IO.stat: this must not be droppable. The lossy
+            // channel exists so stats cannot back-pressure capture, and a
+            // warning the user needs before they trust a take is not a stat.
+            IO.send("warning", ["code": "virtual-camera-only",
+                                "device": choice.name,
+                                "detail": "the only camera available is a virtual device, which "
+                                        + "may deliver very few frames; connect a physical camera "
+                                        + "for a usable picture-in-picture"])
+        }
         // Guarded by `lock`, same as the frame counters below: this runs on
         // the open queue (CaptureSession.startCameraAsync's background
         // queue) while `track()` reads it from the stop path, which can run
