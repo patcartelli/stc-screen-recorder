@@ -46,6 +46,40 @@ describe("gate bounds — the .d.mts stays in step with the module", () => {
   });
 });
 
+describe("gate teardown is bounded in EVERY gate", () => {
+  // Closing a browser whose renderer is wedged NEVER RETURNS, and the gates run
+  // in `finally`. STC-259's 26-minute "stall" was exactly this: gate.mjs failed
+  // correctly at 66 s, then sat 26 more minutes in browser.close(). A job
+  // timeout reports as "cancelled", so the real error scrolled past unread.
+  //
+  // #30 fixed it in gate.mjs and two others and MISSED seek-gate.mjs, which
+  // then did the identical thing on 2026-08-28: failed in 10 s with a full
+  // decoder dump, then held the job until the 30-minute cap. This test is here
+  // so the next gate cannot be the one that was missed.
+  const GATES = ["gate.mjs", "seek-gate.mjs", "export-gate.mjs", "identity-gate.mjs"];
+
+  test("no gate calls browser.close() directly", () => {
+    const offenders: string[] = [];
+    for (const f of GATES) {
+      const src = readFileSync(join(root, "scripts", f), "utf8");
+      src.split("\n").forEach((line, i) => {
+        if (/\bbrowser\.close\(/.test(line)) offenders.push(`scripts/${f}:${i + 1} ${line.trim()}`);
+      });
+    }
+    expect(offenders,
+      `an unbounded teardown holds the CI job until its cap and reports as ` +
+      `"cancelled", losing the real error:\n${offenders.join("\n")}`).toEqual([]);
+  });
+
+  test("every gate tears down through closeQuietly", () => {
+    for (const f of GATES) {
+      const src = readFileSync(join(root, "scripts", f), "utf8");
+      expect(src, `scripts/${f} must import closeQuietly from gate-bounds.mjs`)
+        .toMatch(/closeQuietly/);
+    }
+  });
+});
+
 describe("gate bounds — clearance against the CI job timeout", () => {
   test("the gates' bounds sum to less than the job cap, with margin", () => {
     // Kept honest against the workflow rather than against this comment. An
