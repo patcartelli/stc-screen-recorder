@@ -608,3 +608,28 @@ reachable via KVC (`setValue(3, forKey: "captureResolution")`, verified in phase
   filled that corner anyway. The fix in all three cases was a positive discriminator: name the parts
   and require each, or compare against a control that differs ONLY by the thing under test. Five
   mutations are watched failing in `gate-bounds.test.ts`, including that one.
+- **"Red means the code" only became true once ALL FOUR gates could say ENVIRONMENT.** #39 gave the
+  determinism gate a machine label and the claim was made then; it was 1-of-4 true. The other three
+  routed machine faults through `fail()`, so on 2026-08-29 a decoder that accepted 8 chunks and
+  emitted none reddened a PR twice through the seek gate — on the PR whose subject was that
+  distinction. All four now label a bound firing as ENVIRONMENT.
+  The three non-determinism gates SKIP on the first one and are NOT retried: retrying all four at
+  3 attempts models to 118 min and would need a ~2 hour cap, against 58.8 min as it stands. The
+  cost is stated rather than buried — with the fault near 50%, those gates will skip often, and a
+  skipped gate is not a passed gate. If skipping becomes the norm the answer is fixing the decoder,
+  not adding attempts.
+- **Ask the ERROR whether a bound fired; do not match its text.** `bounded()` tags its own timeouts
+  (`e.boundFired`), so a gate with a single catch-all can tell "my bound fired" from "I found a
+  wrong answer" structurally. Text patterns survive only for bounds that fire INSIDE the page,
+  which reject across the process boundary as plain Errors and cannot carry a property — and that
+  list lives once in `gate-bounds.mjs` rather than being reinvented per gate.
+  Where a gate ALREADY branches on the distinction, use the branch: `seek-gate`'s
+  `stuckOnFirstSeek` is split by `classifyDecoderStall()` on the source's own state — fed,
+  configured, no error, nothing out is the machine; never fed, errored, needs-keyframe, or already
+  producing is OURS. Labelling the whole branch ENVIRONMENT would let a broken `SeekingFrameSource`
+  skip silently, which is the regression-absorbing skip the retry rules exist to prevent.
+- **`gate-bounds.mjs` owns every bound; `gate-retry.mjs` imports them.** The reverse — bounds
+  importing the retry's constants — was right while the retry was the only runner, and became a
+  cycle the moment every gate got a bound. ESM resolves that cycle by hanging on the top-level
+  await and exiting 13, not by failing clearly. One direction: the runner depends on the bounds,
+  the bounds depend on nothing.

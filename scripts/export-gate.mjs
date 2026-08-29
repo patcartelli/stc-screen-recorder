@@ -10,7 +10,7 @@
  */
 import { createServer } from "vite";
 import { chromium } from "playwright";
-import { bounded, closeQuietly, EVAL_MS } from "./gate-bounds.mjs";
+import { bounded, closeQuietly, EVAL_MS, isBoundFailure } from "./gate-bounds.mjs";
 import { readFileSync, existsSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
@@ -70,6 +70,12 @@ page.on("pageerror", (e) => errors.push(String(e)));
 
 let failed = false;
 const fail = (m) => { failed = true; console.error("FAIL:", m); };
+/**
+ * The machine declined, as distinct from this gate finding a wrong answer.
+ * Both fail the run; only the LABEL differs, and gate-retry keys on it —
+ * ENVIRONMENT is skippable, FAIL: never is.
+ */
+const environment = (m) => { failed = true; console.error("ENVIRONMENT:", m); };
 
 try {
   await page.goto("http://localhost:5200/export.html");
@@ -141,7 +147,10 @@ try {
   }
   console.log(`\npeak buffered frames: ${a.peakBufferedFrames} (bounded, not proportional to length)`);
 } catch (e) {
-  fail(String(e?.stack ?? e));
+  // A bound firing means the machine did not service the pipeline; anything
+  // else thrown here is ours. Asked of the error, not matched against its text.
+  if (isBoundFailure(e)) environment(String(e?.stack ?? e));
+  else fail(String(e?.stack ?? e));
 } finally {
   if (errors.length) { console.error("--- page errors ---"); errors.forEach((e) => console.error(" ", e)); }
   await closeQuietly(browser, server);

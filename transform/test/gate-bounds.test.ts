@@ -8,6 +8,7 @@ import {
 } from "../../scripts/gate-bounds.mjs";
 import { ATTEMPTS, ATTEMPT_MS } from "../../scripts/gate-retry.mjs";
 import * as bounds from "../../scripts/gate-bounds.mjs";
+import { isEnvironmentFailure } from "../../scripts/gate-retry.mjs";
 
 const root = join(__dirname, "..", "..");
 
@@ -34,6 +35,22 @@ describe("gate bounds — the bound itself", () => {
 });
 
 describe("gate bounds — the .d.mts stays in step with the module", () => {
+  // The peer's ask, and the case that makes the whole skip safe: a gate that
+  // stalls on the machine AND separately finds a wrong answer must stay RED.
+  // With (b) there are now four producers of the ENVIRONMENT label instead of
+  // one, so this is the assertion standing between "skip a machine fault" and
+  // "skip a regression that happened to co-occur with one".
+  test("a run that prints BOTH ENVIRONMENT and FAIL: is never skippable", () => {
+    const both =
+      "ENVIRONMENT: the decoder accepted chunks and emitted none\n" +
+      "FAIL: 3 seeks returned the wrong frame\n";
+    expect(isEnvironmentFailure(both),
+      "a regression co-occurring with a machine fault must stay red").toBe(false);
+    // And each alone still classifies as before.
+    expect(isEnvironmentFailure("ENVIRONMENT: the decoder emitted none\n")).toBe(true);
+    expect(isEnvironmentFailure("FAIL: 3 seeks returned the wrong frame\n")).toBe(false);
+  });
+
   test("every name the declaration file promises exists at runtime", () => {
     // A hand-written .d.mts is a second file that must be widened with the
     // first — exactly the shape of STC-262. tsc checks the declaration; only

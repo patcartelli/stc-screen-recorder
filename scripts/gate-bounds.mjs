@@ -23,11 +23,26 @@
  * hand. Normal is ~10 s per evaluate, so EVAL_MS is ~18x headroom, not a guess.
  */
 
-/** Per-evaluate bound. Override for experiments; CI uses the default. */
-// The retry's shape is part of the job's worst case, so it is read from its
-// one home rather than restated here.
-import { ATTEMPTS, ATTEMPT_MS } from "./gate-retry.mjs";
+/**
+ * How many times the determinism gate is attempted, and the bound on ONE
+ * attempt.
+ *
+ * These live HERE, with the other bounds, and gate-retry imports them — not the
+ * other way round. #42 put them in gate-retry and had this file import them,
+ * which was right while gate-retry was the only runner; once every gate is
+ * bounded from GATE_PROCESS_MS below, that direction becomes a cycle
+ * (gate-bounds -> gate-retry -> gate-bounds) and ESM deadlocks on the top-level
+ * await rather than failing clearly. One direction: gate-retry depends on
+ * bounds, bounds depend on nothing.
+ *
+ * ATTEMPT_MS must clear attemptFloorMs() — see gate-bounds.test.ts. It was
+ * 600_000 in #39, which made ATTEMPTS x 10 min = the entire job cap for this
+ * gate alone.
+ */
+export const ATTEMPTS = 3;
+export const ATTEMPT_MS = 420_000;
 
+/** Per-evaluate bound. Override for experiments; CI uses the default. */
 export const EVAL_MS = Number(process.env.STC_GATE_EVAL_MS ?? 180_000);
 
 /**
@@ -177,9 +192,37 @@ export function bounded(promise, ms, what) {
   return Promise.race([
     promise,
     new Promise((_, reject) => {
-      timer = setTimeout(() => reject(new Error(`${what} did not return within ${ms} ms`)), ms);
+      timer = setTimeout(() => {
+        const e = new Error(`${what} did not return within ${ms} ms`);
+        // TAGGED, so a gate can tell "my bound fired" from "I found a wrong
+        // answer" by asking the error rather than by matching its text. A gate
+        // with one catch-all had no other option and gate.mjs matches strings
+        // for exactly that reason; this removes the need to invent that list
+        // again in every gate that grows a catch.
+        e.boundFired = true;
+        reject(e);
+      }, ms);
     }),
   ]).finally(() => clearTimeout(timer));
+}
+
+/**
+ * Did this failure come from a bound firing, rather than from the gate finding
+ * a wrong answer?
+ *
+ * Structural first: `bounded()` tags its own timeouts. The patterns are the
+ * fallback for bounds that fire INSIDE the page — those reject across the
+ * process boundary as plain Errors and cannot carry a property. One shared list
+ * so each gate does not invent its own and drift.
+ */
+const IN_PAGE_BOUND = [
+  /did not complete within \d+ ?ms/,   // an in-page bound (decoder, encoder)
+  /did not return within \d+ ?ms/,     // the out-of-process bound on the page
+];
+export function isBoundFailure(e) {
+  if (e && typeof e === "object" && e.boundFired === true) return true;
+  const msg = String(e?.stack ?? e ?? "");
+  return IN_PAGE_BOUND.some((re) => re.test(msg));
 }
 
 /**
