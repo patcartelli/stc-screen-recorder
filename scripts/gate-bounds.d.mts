@@ -14,6 +14,9 @@ export declare const EVAL_SLOTS: number;
 export declare const SEEK_MS: number;
 export declare const PRE_GATE_BUDGET_MS: number;
 export declare const LAUNCH_MS: number;
+export declare const READY_MS: number;
+export declare const FLOOR_MARGIN: number;
+export declare const UNMODELLED_GC_RETRY_PATH: boolean;
 
 export declare function worstCaseJobMs(): number;
 export declare function attemptFloorMs(): number;

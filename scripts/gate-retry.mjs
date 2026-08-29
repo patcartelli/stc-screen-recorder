@@ -31,8 +31,8 @@ import { appendFileSync } from "node:fs";
 export const ATTEMPTS = 3;
 /**
  * The bound on ONE attempt, and it must clear what an attempt can legitimately
- * cost: the in-page bound (EVAL_MS), both teardown bounds, and the browser/vite
- * launch. Set it below that and this outer bound fires first, the attempt is
+ * cost: the in-page bound (EVAL_MS), both teardown bounds, the browser/vite
+ * launch, AND the 60 s wait for the page to reach `__ready`. Set it below that and this outer bound fires first, the attempt is
  * labelled with THIS runner's message instead of the gate's `ENVIRONMENT:` one,
  * and isEnvironmentFailure() then correctly refuses to retry it — the retry
  * would silently stop working.
@@ -42,7 +42,7 @@ export const ATTEMPTS = 3;
  * before the other three gates run. gate-bounds.test.ts models the whole job
  * now and asserts both directions of that.
  */
-export const ATTEMPT_MS = 300_000;
+export const ATTEMPT_MS = 420_000;
 
 /**
  * The machine declined — not the code. `ENVIRONMENT:` alone is not enough:

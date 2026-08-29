@@ -494,10 +494,21 @@ reachable via KVC (`setValue(3, forKey: "captureResolution")`, verified in phase
   code", and the first two are in this file. `scripts/gate-bounds.mjs`'s `worstCaseJobMs()` now
   models the job per gate INCLUDING `ATTEMPTS`, `ATTEMPT_MS` is 5 min (was 10), and the cap is 45.
   Two assertions the old test could not make: `ATTEMPT_MS > attemptFloorMs()` (`EVAL_MS` + both
-  teardown bounds + launch) — below that, gate-retry's own bound fires before the gate can print
-  `ENVIRONMENT:`, `isEnvironmentFailure()` correctly refuses to retry, and the retry silently stops
-  working — and the worst case must scale with `ATTEMPTS`. Verified by watching all four fail,
-  including #39's shipped 600_000.
+  teardown bounds + launch + the 60 s `__ready` wait) — below that, gate-retry's own bound fires
+  before the gate can print `ENVIRONMENT:`, `isEnvironmentFailure()` correctly refuses to retry, and
+  the retry silently stops working — and the worst case must scale with `ATTEMPTS`.
+  **The first draft of that floor was itself 60 s short**, because it omitted the `__ready` wait
+  that sits inside every retried attempt, which let `ATTEMPT_MS` sit BELOW the true cost of an
+  attempt — the exact failure the assertion existed to prevent. Caught in review, not by the test.
+  Worse, the first repair was VACUOUS: raising `ATTEMPT_MS` and the cap left enough slack that
+  removing the term again still passed. **Assert composition, not magnitude** — the guards now say
+  the floor must ACCOUNT FOR each named bound, and `READY_MS` is checked against the timeout parsed
+  out of `gate.mjs` so it cannot drift from what the gate actually waits. All four mutations
+  watched failing after that change, not before it.
+  What the model does NOT cover is stated in `gate-bounds.mjs`: the three non-retried gates each
+  retry their evaluate up to 3x on Playwright's "garbage collected" error, re-entering the 60 s
+  readiness wait each time. Counting all of them gives ~80 min, which is too loose to be a bound;
+  the structural fix is a per-process bound per gate, like `ATTEMPT_MS` gives the determinism gate.
 - **Every gate must tear down through `closeQuietly`, and a test enforces it.** #30 bounded
   teardown in three gates and missed `seek-gate.mjs`, which then did the identical 17.5-minute
   `browser.close()` hang on the handoff PR — failing correctly in 10 s with a full decoder dump

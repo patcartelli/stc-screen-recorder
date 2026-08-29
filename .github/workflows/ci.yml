@@ -20,9 +20,11 @@ jobs:
     runs-on: macos-15
     # Must clear scripts/gate-bounds.mjs's worstCaseJobMs() with margin, which
     # transform/test/gate-bounds.test.ts asserts. It was 30 until #39 wrapped the
-    # determinism gate in a retry: 3 attempts is 15 min for that gate alone, and
-    # the four gates plus build/typecheck/tests model to 38 min worst case.
-    timeout-minutes: 45
+    # determinism gate in a retry, and the model then also had to gain the 60 s
+    # readiness wait every gate does — worst case is 47 min. Minutes are free on
+    # a public repo and every wait inside the job is bounded, so this cap is a
+    # backstop, not an operating point: a healthy run is ~6 min.
+    timeout-minutes: 55
 
     # A post-merge master run re-verifies a tree CI already approved as a PR
     # head, which is the largest remaining duplication. It is NOT skipped by

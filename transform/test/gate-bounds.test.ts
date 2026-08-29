@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   bounded, EVAL_MS, ENCODER_MS, EVAL_SLOTS, SEEK_MS, PRE_GATE_BUDGET_MS,
-  worstCaseJobMs, attemptFloorMs,
+  worstCaseJobMs, attemptFloorMs, FLOOR_MARGIN, READY_MS, LAUNCH_MS, TEARDOWN_MS,
 } from "../../scripts/gate-bounds.mjs";
 import { ATTEMPTS, ATTEMPT_MS } from "../../scripts/gate-retry.mjs";
 import * as bounds from "../../scripts/gate-bounds.mjs";
@@ -128,7 +128,41 @@ describe("gate bounds — clearance against the CI job timeout", () => {
     // gate can print `ENVIRONMENT:` — and isEnvironmentFailure() then correctly
     // refuses to retry it, so the retry silently stops working. Same shape as
     // an inner bound set equal to the outer one.
-    expect(ATTEMPT_MS).toBeGreaterThan(attemptFloorMs());
+    // Not a bare `>`. The clearance test below demands a real 5-minute margin
+    // and says "not a token margin"; this one is the MORE dangerous of the two
+    // — blowing the job cap is a loud timeout, crossing the floor is silent —
+    // so it gets a real margin too. #42 shipped ATTEMPT_MS at 300s against a
+    // floor that omitted the 60s readiness wait: 300 > 270 passed, while the
+    // true floor was 330.
+    expect(ATTEMPT_MS).toBeGreaterThanOrEqual(attemptFloorMs() * FLOOR_MARGIN);
+  });
+
+  test("READY_MS matches the wait the gate actually performs", () => {
+    // Tied to the source, not to a number someone remembered. If a gate raises
+    // its readiness timeout, the model must move with it.
+    const src = readFileSync(join(root, "scripts", "gate.mjs"), "utf8");
+    // [\s\S]*? not [^)]*: the predicate is an arrow function and contains ")".
+    const m = src.match(/waitForFunction\([\s\S]*?timeout:\s*([0-9_]+)/);
+    expect(m, "gate.mjs must declare a readiness timeout for READY_MS to track").not.toBeNull();
+    expect(READY_MS).toBeGreaterThanOrEqual(Number(m![1]!.replace(/_/g, "")));
+  });
+
+  test("the floor ACCOUNTS FOR every bound one attempt passes through", () => {
+    // Composition, not magnitude. The first draft of this asserted
+    // `floor >= EVAL_MS + READY_MS`, which stayed green when READY_MS was
+    // dropped from the floor entirely — the omission it existed to catch. A
+    // guard satisfied by slack elsewhere is not a guard.
+    expect(attemptFloorMs())
+      .toBeGreaterThanOrEqual(EVAL_MS + 2 * TEARDOWN_MS + LAUNCH_MS + READY_MS);
+  });
+
+  test("the worst case ACCOUNTS FOR the readiness wait in every gate", () => {
+    const nonRetriedGates = 3;                       // export, identity, seek
+    const perGateOverhead = LAUNCH_MS + 2 * TEARDOWN_MS + READY_MS;
+    expect(worstCaseJobMs()).toBeGreaterThanOrEqual(
+      PRE_GATE_BUDGET_MS + ATTEMPTS * ATTEMPT_MS
+      + 2 * EVAL_MS + EVAL_MS + SEEK_MS
+      + nonRetriedGates * perGateOverhead);
   });
 
   test("the retry is part of the worst case, not sitting outside it", () => {
