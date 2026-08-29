@@ -5,14 +5,14 @@
   "scripts": {
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.browser.json --noEmit && tsc -p tsconfig.node.json --noEmit",
-    "gate": "node scripts/gate-retry.mjs",
+    "gate": "node scripts/gate-retry.mjs scripts/gate.mjs",
     "gate:once": "node scripts/gate.mjs",
     "app:build": "node app/build.mjs",
     "app:start": "npm run app:build && electron .",
-    "gate:export": "node scripts/export-gate.mjs",
+    "gate:export": "node scripts/gate-retry.mjs scripts/export-gate.mjs",
     "test:capture": "vitest run --config vitest.grant.config.ts",
-    "gate:seek": "node scripts/seek-gate.mjs",
-    "gate:identity": "node scripts/identity-gate.mjs",
+    "gate:seek": "node scripts/gate-retry.mjs scripts/seek-gate.mjs",
+    "gate:identity": "node scripts/gate-retry.mjs scripts/identity-gate.mjs",
     "test:slow": "vitest run --config vitest.slow.config.ts",
     "merge": "node scripts/merge-when-green.mjs"
   },

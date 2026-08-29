@@ -13,8 +13,22 @@ export declare const TEARDOWN_MS: number;
 export declare const EVAL_SLOTS: number;
 export declare const SEEK_MS: number;
 export declare const PRE_GATE_BUDGET_MS: number;
+export declare const LAUNCH_MS: number;
+export declare const READY_MS: number;
+export declare const FLOOR_MARGIN: number;
+
+export declare const ATTEMPTS: number;
+export declare const ATTEMPT_MS: number;
+export declare const GC_RETRIES: number;
+export declare const GATE_PROCESS_MS: Record<string, number>;
+export declare const GATE_ATTEMPTS: Record<string, number>;
+export declare function gateFloorMs(script: string): number;
+export declare function worstCaseJobMs(): number;
+export declare function attemptFloorMs(): number;
 
 export declare function bounded<T>(promise: PromiseLike<T>, ms: number, what: string): Promise<T>;
+export declare function isBoundFailure(e: unknown): boolean;
+
 export declare function closeQuietly(
   browser: { close(): Promise<unknown> } | undefined,
   server: { close(): Promise<unknown> } | undefined,

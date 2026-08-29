@@ -5,7 +5,8 @@
 import { createServer } from "vite";
 import { chromium } from "playwright";
 import { readFileSync } from "node:fs";
-import { closeQuietly } from "./gate-bounds.mjs";
+import { closeQuietly, isBoundFailure } from "./gate-bounds.mjs";
+import { classifyDecoderStall } from "./decoder-stall.mjs";
 
 const server = await createServer({
   configFile: false, root: "harness", publicDir: false,
@@ -36,6 +37,15 @@ page.on("console", (m) => {
 
 let failed = false;
 const fail = (m) => { failed = true; console.error("FAIL:", m); };
+/**
+ * The machine declined, as distinct from this gate finding a wrong answer.
+ *
+ * Both still fail the run; only the LABEL differs, and gate-retry keys on that
+ * label alone — ENVIRONMENT is skippable, FAIL: never is. Until this existed,
+ * a decoder that accepted chunks and emitted none reddened PRs wearing the code
+ * label, twice in one night on CI run 33228579869.
+ */
+const environment = (m) => { failed = true; console.error("ENVIRONMENT:", m); };
 try {
   // Vite pre-bundles dependencies on first load and RELOADS the page when it
   // does, which destroys any in-flight evaluate ("resulting promise was garbage
@@ -62,8 +72,34 @@ try {
   }
 
   if (r.fatal) { fail(`page threw: ${r.fatal}`); throw new Error("see above"); }
+  // A label nobody has watched being applied is the same trap as a bound nobody
+  // has watched fire. Both paths are reachable on demand so the tests assert
+  // against observed behaviour, not against code that reads as though it works.
+  if (process.env.STC_SEEK_FAULT === "machine") {
+    r = { stuckOnFirstSeek: true, debug: {
+      decoderState: "configured", decodeQueueSize: 8, pending: 0, nextFeed: 8,
+      nextOutIndex: 0, currentIndex: -1, needsKeyframe: false, failure: null, waiting: true,
+    } };
+  }
+  if (process.env.STC_SEEK_FAULT === "ours") {
+    // Same symptom, our fault: nothing was ever submitted to the decoder.
+    r = { stuckOnFirstSeek: true, debug: {
+      decoderState: "configured", decodeQueueSize: 0, pending: 0, nextFeed: 0,
+      nextOutIndex: 0, currentIndex: -1, needsKeyframe: false, failure: null, waiting: true,
+    } };
+  }
+
   if (r.stuckOnFirstSeek) {
-    fail("frameAt(0) never resolved. Source state:");
+    // Which of the two this is comes from the source's own STATE, never from
+    // the text of a message: fed-configured-silent is the machine, anything
+    // else is ours. Labelling the whole branch ENVIRONMENT would let a broken
+    // SeekingFrameSource skip quietly, and a skip that absorbs a regression is
+    // worse than no skip at all.
+    const verdict = classifyDecoderStall(r.debug);
+    const say = verdict === "machine" ? environment : fail;
+    say(verdict === "machine"
+      ? "the decoder accepted chunks and emitted none — frameAt(0) never resolved. Source state:"
+      : "frameAt(0) never resolved, and the source state says this is OURS. Source state:");
     console.error("   ", JSON.stringify(r.debug, null, 2).split("\n").join("\n    "));
     throw new Error("see above");
   }
@@ -87,7 +123,13 @@ try {
   console.log(`live frames after close(): ${r.liveFramesAfterClose}`);
   if (r.liveFramesAfterClose !== 0) fail("frames leaked past close()");
 } catch (e) {
-  fail(String(e?.stack ?? e));
+  const msg = String(e?.stack ?? e);
+  // `see above` means a branch above already labelled it and printed the
+  // detail; re-reporting here would overwrite ENVIRONMENT with FAIL: and undo
+  // the distinction this file just made.
+  if (/see above/.test(msg)) { /* already labelled and printed above */ }
+  else if (isBoundFailure(e)) environment(msg);
+  else fail(msg);
 } finally {
   if (errors.length) { console.error("--- page errors ---"); errors.slice(0, 5).forEach((e) => console.error(" ", e)); }
   // Bounded. Closing a browser whose renderer is wedged never returns, and this

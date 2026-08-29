@@ -486,6 +486,35 @@ reachable via KVC (`setValue(3, forKey: "captureResolution")`, verified in phase
   mutation-tested — dropping the `FAIL:` disqualifier, the signal check, or the condition itself
   each breaks 3 tests.
 
+- **The retry is part of the job's worst case, and the clearance test now says so.** #39 wrapped
+  the determinism gate in 3 attempts bounded at 10 min each, and the existing clearance test —
+  `PRE_GATE + EVAL_SLOTS x EVAL_MS + SEEK_MS = 21.5 min < 30 min cap` — did not model it and stayed
+  green while that ONE gate could consume the entire cap before the other three ran. Third time
+  this repo has met "a new bound must be checked against every bound already covering the same
+  code", and the first two are in this file. `scripts/gate-bounds.mjs`'s `worstCaseJobMs()` now
+  models the job per gate INCLUDING `ATTEMPTS`, `ATTEMPT_MS` is 5 min (was 10), and the cap is 45.
+  Two assertions the old test could not make: `ATTEMPT_MS > attemptFloorMs()` (`EVAL_MS` + both
+  teardown bounds + launch + the 60 s `__ready` wait) — below that, gate-retry's own bound fires
+  before the gate can print `ENVIRONMENT:`, `isEnvironmentFailure()` correctly refuses to retry, and
+  the retry silently stops working — and the worst case must scale with `ATTEMPTS`.
+  **The first draft of that floor was itself 60 s short**, because it omitted the `__ready` wait
+  that sits inside every retried attempt, which let `ATTEMPT_MS` sit BELOW the true cost of an
+  attempt — the exact failure the assertion existed to prevent. Caught in review, not by the test.
+  Worse, the first repair was VACUOUS: raising `ATTEMPT_MS` and the cap left enough slack that
+  removing the term again still passed. **Assert composition, not magnitude** — the guards now say
+  the floor must ACCOUNT FOR each named bound, and `READY_MS` is checked against the timeout parsed
+  out of `gate.mjs` so it cannot drift from what the gate actually waits. All four mutations
+  watched failing after that change, not before it.
+  What the model does NOT cover is stated in `gate-bounds.mjs`: the three non-retried gates each
+  retry their evaluate up to 3x on Playwright's "garbage collected" error, re-entering the 60 s
+  readiness wait each time. Counting all of them gives ~80 min, which is too loose to be a bound;
+  the structural fix is a per-process bound per gate, like `ATTEMPT_MS` gives the determinism gate.
+- **Every gate must tear down through `closeQuietly`, and a test enforces it.** #30 bounded
+  teardown in three gates and missed `seek-gate.mjs`, which then did the identical 17.5-minute
+  `browser.close()` hang on the handoff PR — failing correctly in 10 s with a full decoder dump
+  first, exactly like the original. `gate-bounds.test.ts` now refuses a direct `browser.close()` in
+  any gate and requires each to import `closeQuietly`.
+
 - **Retry logic must key on the failure being the MACHINE's, never on "it failed"** — a retry
   that absorbs a real regression is worse than no retry. `writer-gate` keys strictly on the
   harness's `ENVIRONMENT:` marker and excludes death-by-signal, failed assertions, and the
@@ -561,3 +590,46 @@ reachable via KVC (`setValue(3, forKey: "captureResolution")`, verified in phase
   All four constraints were verified by watching them fail — `document` in main, `process` in the
   renderer, `require` in the transform, and the `composite()` arity drift — each confirmed to make
   `npm run typecheck` exit non-zero, then reverted.
+- **Every gate carries its own PROCESS bound, and the job's worst case is a SUM, not a model.**
+  Only the determinism gate had an outer bound (`ATTEMPT_MS` via `gate-retry`); the other three ran
+  unbounded while `worstCaseJobMs()` guessed at their internals. That guess went wrong twice — once
+  omitting the retry entirely, once the readiness wait — and on 2026-08-28 an unbounded seek gate
+  held a CI job to its cap for 17.5 minutes after failing correctly in 10 seconds. `gate-run.mjs`
+  now bounds each gate from `GATE_PROCESS_MS`, so the worst case cannot be under-counted the way a
+  model can, and the previously-absorbed GC-retry path is accounted for rather than named in a
+  comment. A gate with no declared bound is REFUSED, not silently defaulted.
+  The cap rose 30 → 45 → 55 → 65 as the model stopped lying, and that is not a regression: a wedged
+  gate now dies at its own 7.5-13 min bound instead of holding the job, so failures got faster while
+  the number went up. The cap is a backstop behind four tighter bounds.
+- **A bound's own slack will hide a missing term in its floor — assert COMPOSITION, not magnitude.**
+  Dropping `GC_RETRIES * READY_MS` from export-gate's floor left all 20 gate-bounds tests green,
+  because a 780 s bound clears the reduced floor comfortably. Same shape as #42's vacuous first
+  repair, and as a PiP test that passed with the compositor wiring removed because the display frame
+  filled that corner anyway. The fix in all three cases was a positive discriminator: name the parts
+  and require each, or compare against a control that differs ONLY by the thing under test. Five
+  mutations are watched failing in `gate-bounds.test.ts`, including that one.
+- **"Red means the code" only became true once ALL FOUR gates could say ENVIRONMENT.** #39 gave the
+  determinism gate a machine label and the claim was made then; it was 1-of-4 true. The other three
+  routed machine faults through `fail()`, so on 2026-08-29 a decoder that accepted 8 chunks and
+  emitted none reddened a PR twice through the seek gate — on the PR whose subject was that
+  distinction. All four now label a bound firing as ENVIRONMENT.
+  The three non-determinism gates SKIP on the first one and are NOT retried: retrying all four at
+  3 attempts models to 118 min and would need a ~2 hour cap, against 58.8 min as it stands. The
+  cost is stated rather than buried — with the fault near 50%, those gates will skip often, and a
+  skipped gate is not a passed gate. If skipping becomes the norm the answer is fixing the decoder,
+  not adding attempts.
+- **Ask the ERROR whether a bound fired; do not match its text.** `bounded()` tags its own timeouts
+  (`e.boundFired`), so a gate with a single catch-all can tell "my bound fired" from "I found a
+  wrong answer" structurally. Text patterns survive only for bounds that fire INSIDE the page,
+  which reject across the process boundary as plain Errors and cannot carry a property — and that
+  list lives once in `gate-bounds.mjs` rather than being reinvented per gate.
+  Where a gate ALREADY branches on the distinction, use the branch: `seek-gate`'s
+  `stuckOnFirstSeek` is split by `classifyDecoderStall()` on the source's own state — fed,
+  configured, no error, nothing out is the machine; never fed, errored, needs-keyframe, or already
+  producing is OURS. Labelling the whole branch ENVIRONMENT would let a broken `SeekingFrameSource`
+  skip silently, which is the regression-absorbing skip the retry rules exist to prevent.
+- **`gate-bounds.mjs` owns every bound; `gate-retry.mjs` imports them.** The reverse — bounds
+  importing the retry's constants — was right while the retry was the only runner, and became a
+  cycle the moment every gate got a bound. ESM resolves that cycle by hanging on the top-level
+  await and exiting 13, not by failing clearly. One direction: the runner depends on the bounds,
+  the bounds depend on nothing.

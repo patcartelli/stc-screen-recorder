@@ -18,7 +18,20 @@ jobs:
     # macOS is not a preference: the helper is Swift against ScreenCaptureKit,
     # and the transform's sinks need a Chrome with H.264 (WebCodecs).
     runs-on: macos-15
-    timeout-minutes: 30
+    # Must clear scripts/gate-bounds.mjs's worstCaseJobMs() with margin, which
+    # transform/test/gate-bounds.test.ts asserts. 30 -> 45 -> 55 -> 65 as the
+    # model stopped under-counting: first the retry (#39), then the readiness
+    # wait, now the GC-retry path that was previously absorbed by margin and
+    # named in a comment.
+    #
+    # Rising is not a regression here. Every gate now carries its OWN process
+    # bound, so a wedged gate dies at 7.5-13 min instead of holding the job to
+    # this cap — the seek gate that held one for 17.5 minutes on 2026-08-28
+    # would now be killed at 7.5. This cap is a BACKSTOP behind four tighter
+    # bounds rather than the thing that catches a wedge, which is exactly why it
+    # can afford to state the worst case honestly instead of optimistically.
+    # Minutes are free on a public repo; a healthy run is ~6 min.
+    timeout-minutes: 65
 
     # A post-merge master run re-verifies a tree CI already approved as a PR
     # head, which is the largest remaining duplication. It is NOT skipped by
@@ -90,7 +103,7 @@ jobs:
           mkdir -p "$TAKE"
           cp fixtures/basic/anchors.json fixtures/basic/events.json fixtures/basic/display.mp4 "$TAKE/"
           npm run gate:export -- "$TAKE"
-          node scripts/identity-gate.mjs "$TAKE"
+          npm run gate:identity -- "$TAKE"
 
       # The helper has crashed three times on CI and each time produced only a
       # signal number (STC-254). The stack trace lives in the OS crash report,

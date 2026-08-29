@@ -27,10 +27,12 @@
  */
 import { spawn } from "node:child_process";
 import { appendFileSync } from "node:fs";
+// One direction only: this depends on bounds, bounds depend on nothing. The
+// reverse made a cycle that ESM resolves by hanging on the top-level await.
+import { ATTEMPTS, ATTEMPT_MS, GATE_PROCESS_MS, GATE_ATTEMPTS } from "./gate-bounds.mjs";
 
-export const ATTEMPTS = 3;
-/** The gate's own per-attempt bound. Its inner bounds are far smaller. */
-export const ATTEMPT_MS = 600_000;
+export { ATTEMPTS, ATTEMPT_MS };
+
 
 /**
  * The machine declined — not the code. `ENVIRONMENT:` alone is not enough:
@@ -46,14 +48,15 @@ export function isEnvironmentFailure(output, { signal = null } = {}) {
 }
 
 /** A skipped gate has to be louder than a green tick, or it is just a silent pass. */
-export function announceSkip(detail, { write = (s) => process.stderr.write(s) } = {}) {
+export function announceSkip(detail, { write = (s) => process.stderr.write(s), gate = "Determinism gate", attempts = ATTEMPTS } = {}) {
+  const tries = attempts === 1 ? "on its only attempt" : `after ${attempts} attempts`;
   const line =
-    `Determinism gate DID NOT RUN — the machine could not service the video ` +
-    `pipeline after ${ATTEMPTS} attempts (STC-259). This is NOT a pass.`;
+    `${gate} DID NOT RUN — the machine could not service the video ` +
+    `pipeline ${tries} (STC-259). This is NOT a pass.`;
   // stderr, not console.warn: vitest discards console output from a skipped
   // test, and an annotation that only prints when it is not needed is the
   // silent skip this exists to prevent.
-  if (process.env.GITHUB_ACTIONS) write(`::warning title=Determinism gate skipped::${line}\n`);
+  if (process.env.GITHUB_ACTIONS) write(`::warning title=${gate} skipped::${line}\n`);
   write(`\n${line}\n${detail.slice(-800)}\n`);
   return line;
 }
@@ -98,12 +101,36 @@ export async function runWithRetry(cmd, args, opts = {}) {
                            `environment reason; retrying\n`);
     }
   }
-  announceSkip(last.out);
+  announceSkip(last.out, { gate: opts.gate ?? "Determinism gate", attempts });
   return 0;
 }
 
-// CLI: retry the determinism gate.
+// CLI: run ONE gate under its declared bound, retried only if it declares
+// attempts. This is the single entry point for every gate — a gate that is not
+// in GATE_PROCESS_MS is refused rather than silently defaulted, because
+// defaulting is how a gate ends up unbounded and holding a CI job to its cap.
 if (import.meta.url === `file://${process.argv[1]}`) {
+  const { basename } = await import("node:path");
+
   const target = process.argv[2] ?? new URL("./gate.mjs", import.meta.url).pathname;
-  process.exit(await runWithRetry(process.execPath, [target]));
+  // Everything after the target belongs to the GATE, not to this runner — CI
+  // calls `npm run gate:export -- "$TAKE"`, and swallowing that argument left
+  // export-gate hunting for a session it was never told about ("no session
+  // found", exit 2). A wrapper that quietly drops its child's arguments is
+  // worse than no wrapper.
+  const gateArgs = process.argv.slice(3);
+  const name = basename(target);
+  const attemptMs = GATE_PROCESS_MS[name];
+  if (typeof attemptMs !== "number") {
+    console.error(
+      `FAIL: no process bound declared for ${name}. Add it to GATE_PROCESS_MS in ` +
+      `scripts/gate-bounds.mjs, with a floor in gateFloorMs(), so the CI job's ` +
+      `worst case accounts for it.`,
+    );
+    process.exit(2);
+  }
+  const attempts = GATE_ATTEMPTS[name] ?? 1;
+  const label = name.replace(/-?gate\.mjs$/, "") || "determinism";
+  const gate = `${label.charAt(0).toUpperCase()}${label.slice(1)} gate`;
+  process.exit(await runWithRetry(process.execPath, [target, ...gateArgs], { attempts, attemptMs, gate }));
 }

@@ -3,8 +3,12 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   bounded, EVAL_MS, ENCODER_MS, EVAL_SLOTS, SEEK_MS, PRE_GATE_BUDGET_MS,
+  worstCaseJobMs, attemptFloorMs, FLOOR_MARGIN, READY_MS, LAUNCH_MS, TEARDOWN_MS,
+  GATE_PROCESS_MS, GATE_ATTEMPTS, gateFloorMs, GC_RETRIES,
 } from "../../scripts/gate-bounds.mjs";
+import { ATTEMPTS, ATTEMPT_MS } from "../../scripts/gate-retry.mjs";
 import * as bounds from "../../scripts/gate-bounds.mjs";
+import { isEnvironmentFailure } from "../../scripts/gate-retry.mjs";
 
 const root = join(__dirname, "..", "..");
 
@@ -31,6 +35,22 @@ describe("gate bounds — the bound itself", () => {
 });
 
 describe("gate bounds — the .d.mts stays in step with the module", () => {
+  // The peer's ask, and the case that makes the whole skip safe: a gate that
+  // stalls on the machine AND separately finds a wrong answer must stay RED.
+  // With (b) there are now four producers of the ENVIRONMENT label instead of
+  // one, so this is the assertion standing between "skip a machine fault" and
+  // "skip a regression that happened to co-occur with one".
+  test("a run that prints BOTH ENVIRONMENT and FAIL: is never skippable", () => {
+    const both =
+      "ENVIRONMENT: the decoder accepted chunks and emitted none\n" +
+      "FAIL: 3 seeks returned the wrong frame\n";
+    expect(isEnvironmentFailure(both),
+      "a regression co-occurring with a machine fault must stay red").toBe(false);
+    // And each alone still classifies as before.
+    expect(isEnvironmentFailure("ENVIRONMENT: the decoder emitted none\n")).toBe(true);
+    expect(isEnvironmentFailure("FAIL: 3 seeks returned the wrong frame\n")).toBe(false);
+  });
+
   test("every name the declaration file promises exists at runtime", () => {
     // A hand-written .d.mts is a second file that must be widened with the
     // first — exactly the shape of STC-262. tsc checks the declaration; only
@@ -42,6 +62,115 @@ describe("gate bounds — the .d.mts stays in step with the module", () => {
     for (const name of declared) {
       expect(bounds, `gate-bounds.d.mts declares ${name}, the module does not export it`)
         .toHaveProperty(name);
+    }
+  });
+});
+
+describe("every gate has a per-process bound, and the model knows all of them", () => {
+  // The structural fix gate-bounds.mjs asked for: give every gate a bound the
+  // way gate-retry gives the determinism gate ATTEMPT_MS, and the job's worst
+  // case stops being a MODEL of each gate's internals and becomes a SUM of
+  // declared bounds. A model has to be re-derived whenever a gate changes and
+  // silently rots when nobody does; a process bound is enforced by the runner.
+
+  test("every gate npm runs is routed through the bounded runner", () => {
+    // The drift this prevents: a new gate added to package.json that nobody
+    // bounds, discovered when it holds a CI job to its cap.
+    const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
+    const gateScripts = Object.entries(pkg.scripts as Record<string, string>)
+      .filter(([name]) => /^gate(:|$)/.test(name) && name !== "gate:once");
+    expect(gateScripts.length, "expected the four CI gates").toBeGreaterThanOrEqual(4);
+    for (const [name, cmd] of gateScripts) {
+      expect(cmd, `npm run ${name} must go through gate-run.mjs so it is bounded`)
+        .toMatch(/gate-run\.mjs|gate-retry\.mjs/);
+    }
+  });
+
+  // package.json is not the only caller. CI invoked identity-gate.mjs directly
+  // — bypassing the bound entirely — and the package.json check above could not
+  // see it. A gate is only bounded if EVERY caller goes through the runner.
+  test("ci.yml runs gates through npm, never a gate script directly", () => {
+    const ci = readFileSync(join(root, ".github", "workflows", "ci.yml"), "utf8");
+    const direct = ci.split("\n")
+      .map((line, i) => ({ line: line.trim(), n: i + 1 }))
+      .filter(({ line }) => /node\s+scripts\/[a-z-]*gate[a-z-]*\.mjs/.test(line));
+    expect(direct.map((d) => `ci.yml:${d.n} ${d.line}`),
+      "these bypass the per-gate process bound; use `npm run gate:<name>` instead")
+      .toEqual([]);
+  });
+
+  // The runner wraps the gate, so anything CI passes after the script name has
+  // to reach it. Dropping it left export-gate with no session directory and a
+  // "no session found" exit 2 — a wrapper silently eating its child's args.
+  test("the runner forwards arguments to the gate", () => {
+    const src = readFileSync(join(root, "scripts", "gate-retry.mjs"), "utf8");
+    expect(src, "gate-retry's CLI must pass argv past the target through to the gate")
+      .toMatch(/process\.argv\.slice\(3\)/);
+    expect(src, "and actually hand them to runWithRetry")
+      .toMatch(/\[target, \.\.\.gateArgs\]/);
+  });
+
+  test("every routed gate has a declared process bound", () => {
+    const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
+    const targets = Object.entries(pkg.scripts as Record<string, string>)
+      .filter(([name]) => /^gate(:|$)/.test(name) && name !== "gate:once")
+      .map(([, cmd]) => cmd.match(/scripts\/([a-z-]+\.mjs)(?!.*scripts\/)/)?.[1])
+      .filter((x): x is string => !!x && x !== "gate-run.mjs" && x !== "gate-retry.mjs");
+    for (const t of targets) {
+      expect(GATE_PROCESS_MS, `no process bound declared for scripts/${t}`).toHaveProperty(t);
+    }
+  });
+
+  test("the worst case is the SUM of declared bounds, not a model of internals", () => {
+    // Composition, not magnitude — the mistake #42 made and caught by mutation.
+    // Deleting any gate's term must move the total.
+    let expected = PRE_GATE_BUDGET_MS;
+    for (const [name, ms] of Object.entries(GATE_PROCESS_MS)) {
+      expected += ms * (GATE_ATTEMPTS[name] ?? 1);
+    }
+    expect(worstCaseJobMs()).toBe(expected);
+  });
+
+  // MAGNITUDE IS NOT COMPOSITION. Verified: deleting GC_RETRIES * READY_MS from
+  // export-gate's floor left all 20 tests green, because a 780 s bound clears
+  // the reduced floor comfortably. The bound's own slack hides the deletion —
+  // the exact failure #42 shipped and caught only by mutation. So the parts are
+  // named here, and dropping any of them fails.
+  test("each gate's floor ACCOUNTS FOR the waits that gate performs", () => {
+    const lt = LAUNCH_MS + 2 * TEARDOWN_MS;
+    const composed: Record<string, number> = {
+      "gate.mjs": lt + READY_MS + EVAL_MS,
+      "export-gate.mjs": lt + GC_RETRIES * READY_MS + 2 * EVAL_MS,
+      "identity-gate.mjs": lt + GC_RETRIES * READY_MS + EVAL_MS,
+      "seek-gate.mjs": lt + GC_RETRIES * READY_MS + SEEK_MS,
+    };
+    for (const [name, min] of Object.entries(composed)) {
+      expect(gateFloorMs(name),
+        `scripts/${name}'s floor must account for its launch, teardowns, ` +
+        `readiness waits and evaluate bounds`).toBeGreaterThanOrEqual(min);
+    }
+  });
+
+  // GC_RETRIES is arithmetic about someone else's loop, so it rots the moment
+  // that loop changes. Read it off the gates instead of trusting the constant —
+  // the same anti-drift check #42 put on READY_MS.
+  test("GC_RETRIES matches the retry loop the gates actually run", () => {
+    for (const f of ["seek-gate.mjs", "export-gate.mjs", "identity-gate.mjs"]) {
+      const src = readFileSync(join(root, "scripts", f), "utf8");
+      const m = src.match(/for \(let \w+ = 1; \w+ <= (\d+); \w+\+\+\)/);
+      expect(m, `scripts/${f} must have the GC retry loop GC_RETRIES models`).not.toBeNull();
+      expect(GC_RETRIES,
+        `scripts/${f} retries ${m?.[1]} times; GC_RETRIES says ${GC_RETRIES}`)
+        .toBeGreaterThanOrEqual(Number(m![1]));
+    }
+  });
+
+  test("each gate's bound clears what that gate legitimately costs", () => {
+    // Same rule ATTEMPT_MS follows: a bound below the floor fires before the
+    // gate can say anything useful, and the informative inner message loses.
+    for (const [name, ms] of Object.entries(GATE_PROCESS_MS)) {
+      expect(ms, `scripts/${name}'s process bound is below its own floor`)
+        .toBeGreaterThanOrEqual(gateFloorMs(name) * FLOOR_MARGIN);
     }
   });
 });
@@ -91,7 +220,10 @@ describe("gate bounds — clearance against the CI job timeout", () => {
     expect(m, "ci.yml must declare timeout-minutes for this clearance to mean anything").not.toBeNull();
 
     const jobCapMs = Number(m![1]) * 60_000;
-    const worstCaseMs = PRE_GATE_BUDGET_MS + EVAL_SLOTS * EVAL_MS + SEEK_MS;
+    // The model lives with the constants and accounts for the RETRY. The old
+    // flat sum (PRE_GATE + EVAL_SLOTS x EVAL_MS + SEEK_MS) said 21.5 min and
+    // stayed silent when #39 made the determinism gate alone capable of 30.
+    const worstCaseMs = worstCaseJobMs();
     const marginMs = jobCapMs - worstCaseMs;
 
     expect(worstCaseMs).toBeLessThan(jobCapMs);
@@ -116,6 +248,54 @@ describe("gate bounds — clearance against the CI job timeout", () => {
       .toMatch(/runGate\(\s*\{\s*encoderMs:/);
     expect(src, "gate.mjs must assert the bound the page reports back")
       .toMatch(/encoderBoundMs\s*!==\s*ENCODER_MS/);
+  });
+
+  test("one attempt's bound clears what an attempt legitimately costs", () => {
+    // If ATTEMPT_MS is below the floor, gate-retry's own bound fires before the
+    // gate can print `ENVIRONMENT:` — and isEnvironmentFailure() then correctly
+    // refuses to retry it, so the retry silently stops working. Same shape as
+    // an inner bound set equal to the outer one.
+    // Not a bare `>`. The clearance test below demands a real 5-minute margin
+    // and says "not a token margin"; this one is the MORE dangerous of the two
+    // — blowing the job cap is a loud timeout, crossing the floor is silent —
+    // so it gets a real margin too. #42 shipped ATTEMPT_MS at 300s against a
+    // floor that omitted the 60s readiness wait: 300 > 270 passed, while the
+    // true floor was 330.
+    expect(ATTEMPT_MS).toBeGreaterThanOrEqual(attemptFloorMs() * FLOOR_MARGIN);
+  });
+
+  test("READY_MS matches the wait the gate actually performs", () => {
+    // Tied to the source, not to a number someone remembered. If a gate raises
+    // its readiness timeout, the model must move with it.
+    const src = readFileSync(join(root, "scripts", "gate.mjs"), "utf8");
+    // [\s\S]*? not [^)]*: the predicate is an arrow function and contains ")".
+    const m = src.match(/waitForFunction\([\s\S]*?timeout:\s*([0-9_]+)/);
+    expect(m, "gate.mjs must declare a readiness timeout for READY_MS to track").not.toBeNull();
+    expect(READY_MS).toBeGreaterThanOrEqual(Number(m![1]!.replace(/_/g, "")));
+  });
+
+  test("the floor ACCOUNTS FOR every bound one attempt passes through", () => {
+    // Composition, not magnitude. The first draft of this asserted
+    // `floor >= EVAL_MS + READY_MS`, which stayed green when READY_MS was
+    // dropped from the floor entirely — the omission it existed to catch. A
+    // guard satisfied by slack elsewhere is not a guard.
+    expect(attemptFloorMs())
+      .toBeGreaterThanOrEqual(EVAL_MS + 2 * TEARDOWN_MS + LAUNCH_MS + READY_MS);
+  });
+
+  test("the worst case ACCOUNTS FOR the readiness wait in every gate", () => {
+    const nonRetriedGates = 3;                       // export, identity, seek
+    const perGateOverhead = LAUNCH_MS + 2 * TEARDOWN_MS + READY_MS;
+    expect(worstCaseJobMs()).toBeGreaterThanOrEqual(
+      PRE_GATE_BUDGET_MS + ATTEMPTS * ATTEMPT_MS
+      + 2 * EVAL_MS + EVAL_MS + SEEK_MS
+      + nonRetriedGates * perGateOverhead);
+  });
+
+  test("the retry is part of the worst case, not sitting outside it", () => {
+    // Guards the specific regression: a model that ignores ATTEMPTS would not
+    // move when the retry count does.
+    expect(worstCaseJobMs()).toBeGreaterThanOrEqual(ATTEMPTS * ATTEMPT_MS);
   });
 
   test("every bounded evaluate in the CI gates is accounted for", () => {
