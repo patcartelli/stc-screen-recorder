@@ -113,6 +113,12 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const { basename } = await import("node:path");
 
   const target = process.argv[2] ?? new URL("./gate.mjs", import.meta.url).pathname;
+  // Everything after the target belongs to the GATE, not to this runner — CI
+  // calls `npm run gate:export -- "$TAKE"`, and swallowing that argument left
+  // export-gate hunting for a session it was never told about ("no session
+  // found", exit 2). A wrapper that quietly drops its child's arguments is
+  // worse than no wrapper.
+  const gateArgs = process.argv.slice(3);
   const name = basename(target);
   const attemptMs = GATE_PROCESS_MS[name];
   if (typeof attemptMs !== "number") {
@@ -126,5 +132,5 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const attempts = GATE_ATTEMPTS[name] ?? 1;
   const label = name.replace(/-?gate\.mjs$/, "") || "determinism";
   const gate = `${label.charAt(0).toUpperCase()}${label.slice(1)} gate`;
-  process.exit(await runWithRetry(process.execPath, [target], { attempts, attemptMs, gate }));
+  process.exit(await runWithRetry(process.execPath, [target, ...gateArgs], { attempts, attemptMs, gate }));
 }

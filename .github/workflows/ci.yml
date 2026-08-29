@@ -103,7 +103,7 @@ jobs:
           mkdir -p "$TAKE"
           cp fixtures/basic/anchors.json fixtures/basic/events.json fixtures/basic/display.mp4 "$TAKE/"
           npm run gate:export -- "$TAKE"
-          node scripts/identity-gate.mjs "$TAKE"
+          npm run gate:identity -- "$TAKE"
 
       # The helper has crashed three times on CI and each time produced only a
       # signal number (STC-254). The stack trace lives in the OS crash report,

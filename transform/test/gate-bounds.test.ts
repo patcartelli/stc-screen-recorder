@@ -86,6 +86,30 @@ describe("every gate has a per-process bound, and the model knows all of them", 
     }
   });
 
+  // package.json is not the only caller. CI invoked identity-gate.mjs directly
+  // — bypassing the bound entirely — and the package.json check above could not
+  // see it. A gate is only bounded if EVERY caller goes through the runner.
+  test("ci.yml runs gates through npm, never a gate script directly", () => {
+    const ci = readFileSync(join(root, ".github", "workflows", "ci.yml"), "utf8");
+    const direct = ci.split("\n")
+      .map((line, i) => ({ line: line.trim(), n: i + 1 }))
+      .filter(({ line }) => /node\s+scripts\/[a-z-]*gate[a-z-]*\.mjs/.test(line));
+    expect(direct.map((d) => `ci.yml:${d.n} ${d.line}`),
+      "these bypass the per-gate process bound; use `npm run gate:<name>` instead")
+      .toEqual([]);
+  });
+
+  // The runner wraps the gate, so anything CI passes after the script name has
+  // to reach it. Dropping it left export-gate with no session directory and a
+  // "no session found" exit 2 — a wrapper silently eating its child's args.
+  test("the runner forwards arguments to the gate", () => {
+    const src = readFileSync(join(root, "scripts", "gate-retry.mjs"), "utf8");
+    expect(src, "gate-retry's CLI must pass argv past the target through to the gate")
+      .toMatch(/process\.argv\.slice\(3\)/);
+    expect(src, "and actually hand them to runWithRetry")
+      .toMatch(/\[target, \.\.\.gateArgs\]/);
+  });
+
   test("every routed gate has a declared process bound", () => {
     const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
     const targets = Object.entries(pkg.scripts as Record<string, string>)
