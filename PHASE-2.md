@@ -195,3 +195,45 @@ that figure alone would be misleading twice over:
 ceiling is a LONG-take question that this short take does not answer: the
 camera's contribution there is still unmeasured, and re-running this harness on
 a long take is the way to settle it rather than extrapolating from +63 MB.
+
+## Camera-to-display sync — MEASURED 2026-08-29
+
+The camera PiP design asks for a millisecond figure, not "looks in sync". It was
+confirmed by eye on 2026-08-28; this is the number.
+
+**Camera lags the display by 65 ms** (cross-correlation r=0.895, margin 0.255
+over unrelated lags), on a 22 s take: `FaceTime HD Camera` at 30.0 fps against a
+3840x2160 display track at 57.1 fps.
+
+### Method
+
+One physical event visible in both tracks. The camera faces the user and cannot
+see the screen, but a full-screen white flash changes room and face illumination
+enough to register — `display.mp4` records the flash directly, `camera.mp4` sees
+it reflected. Both tracks carry session-relative ns from the same mach clock, so
+the gap between them IS the camera's latency, with no extra reference needed.
+
+- `node scripts/flash-for-sync.mjs 4000` while capturing
+- `node scripts/measure-camera-sync.mjs <takeDir>`
+
+NOT `scratch/avsync.cjs` — that measures camera-to-MIC from a clap and needs a
+`mic.wav` this project does not produce (audio is deferred, STC-233/234). An
+earlier handoff pointed at it for this measurement; that pointer was wrong.
+
+### What the number does and does not cover
+
+- **One take, one camera, one machine.** A FaceTime HD at 30 fps. An Elgato
+  Facecam at 60 fps would very likely differ, and USB2 adds its own latency.
+- **The resolution floor is 33.4 ms** — the camera's own frame interval. A 30 fps
+  camera cannot locate an event finer than one frame, so 65 ms is 65 +/- ~33, not
+  65.0.
+- **Edge-pairing was tried first and was WRONG.** It found 5 steps in the display
+  and 1 in the camera, paired them by index, and reported -1233 ms — the camera
+  seeing a flash before the screen showed it. Auto-exposure ramps rather than
+  steps, and one spurious transition shifts every later pair. Correlation uses
+  the whole signal instead of chosen points, which is why it survives different
+  frame rates, different brightness scales and an extra transition.
+- **The tool refuses rather than guessing.** Verified on a take recorded without
+  flashes: luma swing 4.5 against a threshold of 20, so it reports NO FLASH
+  instead of correlating two noise floors. It also refuses when the correlation
+  peak does not clear unrelated lags by 0.15.

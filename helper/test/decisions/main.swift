@@ -104,5 +104,48 @@ check("a failed open is still just a failure even if a stop arrived — there is
       decideCameraOpen(opened: false, stoppingBegan: true),
       CameraOpenDecision.reportFailure)
 
+// ── which camera to open (STC-286) ──────────────────────────────────────────
+// Measured on this machine 2026-08-29: the helper opened "Elgato Virtual
+// Camera" because it is `discovery.devices.first`, and a virtual camera with
+// nothing behind it idles at ~1 fps. Three consecutive takes recorded 12 frames
+// in 11 s next to a perfectly good display track, and nothing warned.
+//
+// transportType is the discriminator, measured rather than guessed:
+//   Elgato Virtual Camera 'virt'   FaceTime HD 'bltn'
+//   iPhone (Continuity)   'othr'   a USB camera 'usb '
+// Name matching was rejected: "Camo", "OBS" and friends are not a closed set.
+let virt = fourCC("virt"), bltn = fourCC("bltn")
+let usb = fourCC("usb "), othr = fourCC("othr")
+
+check("a real camera is preferred over a virtual one",
+      pickCamera([("Elgato Virtual Camera", virt), ("FaceTime HD Camera", bltn)])?.name,
+      Optional("FaceTime HD Camera"))
+check("and the order it was discovered in does not rescue it",
+      pickCamera([("FaceTime HD Camera", bltn), ("Elgato Virtual Camera", virt)])?.name,
+      Optional("FaceTime HD Camera"))
+// Someone with a Facecam wants the Facecam. Preferring "built-in" would take
+// it away from them, which is why this is not a builtIn-first rule.
+check("a USB camera beats the built-in",
+      pickCamera([("FaceTime HD Camera", bltn), ("Elgato Facecam 4K", usb)])?.name,
+      Optional("Elgato Facecam 4K"))
+check("Continuity beats a virtual device but not a USB one",
+      pickCamera([("Elgato Virtual Camera", virt), ("iPhone Camera", othr),
+                  ("Elgato Facecam 4K", usb)])?.name,
+      Optional("Elgato Facecam 4K"))
+// A virtual camera is a legitimate setup for streamers. Refusing to record at
+// all would be worse than recording it — but it must be a deliberate last
+// resort, and the caller must be able to say so.
+check("a virtual camera is still used when it is the only one",
+      pickCamera([("Elgato Virtual Camera", virt)])?.name,
+      Optional("Elgato Virtual Camera"))
+check("and the caller is told it fell back",
+      pickCamera([("Elgato Virtual Camera", virt)])?.isVirtual,
+      Optional(true))
+check("a real pick is not flagged as a fallback",
+      pickCamera([("FaceTime HD Camera", bltn)])?.isVirtual,
+      Optional(false))
+check("no devices at all is nil, not a crash",
+      pickCamera([]) == nil, true)
+
 print(failures == 0 ? "ALL PASS" : "\(failures) FAILURES")
 exit(failures == 0 ? 0 : 1)

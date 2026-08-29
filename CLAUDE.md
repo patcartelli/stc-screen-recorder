@@ -633,3 +633,18 @@ reachable via KVC (`setValue(3, forKey: "captureResolution")`, verified in phase
   cycle the moment every gate got a bound. ESM resolves that cycle by hanging on the top-level
   await and exiting 13, not by failing clearly. One direction: the runner depends on the bounds,
   the bounds depend on nothing.
+- **The camera-to-display sync number is 65 ms, and `scratch/avsync.cjs` is NOT how you get it.**
+  That script measures camera-to-MIC from a clap and needs a `mic.wav` this project does not
+  produce; a handoff pointed at it for this measurement and was wrong. The camera faces the user,
+  so the shared event is a full-screen FLASH — recorded directly in `display.mp4`, seen as
+  reflected room light in `camera.mp4`, both on the same mach clock.
+  `scripts/flash-for-sync.mjs` while capturing, then `scripts/measure-camera-sync.mjs <take>`.
+  Measured 2026-08-29: FaceTime HD at 30 fps lags a 4K display track by 65 ms, r=0.895. The
+  resolution floor is the camera's own frame interval (33.4 ms), so it is 65 +/- ~33, not 65.0.
+- **Correlate the whole signal; do not pair edges.** The first version of the sync measurement
+  found 5 luminance steps in the display and 1 in the camera, paired them by index and reported
+  **-1233 ms** — the camera seeing a flash before the screen showed it, which is not a measurement
+  but a bug with a decimal point. Auto-exposure ramps rather than steps, and one spurious
+  transition shifts every later pair. Cross-correlation survives different frame rates, different
+  brightness scales and an extra transition, and it reports how far its peak stands above
+  unrelated lags so a weak answer can be refused instead of printed.
