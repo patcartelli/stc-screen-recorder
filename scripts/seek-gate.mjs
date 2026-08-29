@@ -5,6 +5,7 @@
 import { createServer } from "vite";
 import { chromium } from "playwright";
 import { readFileSync } from "node:fs";
+import { closeQuietly } from "./gate-bounds.mjs";
 
 const server = await createServer({
   configFile: false, root: "harness", publicDir: false,
@@ -89,7 +90,13 @@ try {
   fail(String(e?.stack ?? e));
 } finally {
   if (errors.length) { console.error("--- page errors ---"); errors.slice(0, 5).forEach((e) => console.error(" ", e)); }
-  await browser.close(); await server.close();
+  // Bounded. Closing a browser whose renderer is wedged never returns, and this
+  // runs in `finally` — so an unbounded close holds the CI job to its cap and
+  // reports as "cancelled", burying the real error above it. That is STC-259's
+  // 26-minute "stall", and it happened here again on 2026-08-28: this gate
+  // failed correctly in 10 s with a full decoder dump, then held the job for
+  // 17.5 more minutes. #30 fixed the other three gates and missed this one.
+  await closeQuietly(browser, server);
 }
 console.log(failed ? "\nSEEK GATE: FAIL" : "\nSEEK GATE: PASS");
 process.exit(failed ? 1 : 0);
