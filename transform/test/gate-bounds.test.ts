@@ -4,6 +4,7 @@ import { join } from "node:path";
 import {
   bounded, EVAL_MS, ENCODER_MS, EVAL_SLOTS, SEEK_MS, PRE_GATE_BUDGET_MS,
   worstCaseJobMs, attemptFloorMs, FLOOR_MARGIN, READY_MS, LAUNCH_MS, TEARDOWN_MS,
+  GATE_PROCESS_MS, GATE_ATTEMPTS, gateFloorMs, GC_RETRIES,
 } from "../../scripts/gate-bounds.mjs";
 import { ATTEMPTS, ATTEMPT_MS } from "../../scripts/gate-retry.mjs";
 import * as bounds from "../../scripts/gate-bounds.mjs";
@@ -44,6 +45,91 @@ describe("gate bounds — the .d.mts stays in step with the module", () => {
     for (const name of declared) {
       expect(bounds, `gate-bounds.d.mts declares ${name}, the module does not export it`)
         .toHaveProperty(name);
+    }
+  });
+});
+
+describe("every gate has a per-process bound, and the model knows all of them", () => {
+  // The structural fix gate-bounds.mjs asked for: give every gate a bound the
+  // way gate-retry gives the determinism gate ATTEMPT_MS, and the job's worst
+  // case stops being a MODEL of each gate's internals and becomes a SUM of
+  // declared bounds. A model has to be re-derived whenever a gate changes and
+  // silently rots when nobody does; a process bound is enforced by the runner.
+
+  test("every gate npm runs is routed through the bounded runner", () => {
+    // The drift this prevents: a new gate added to package.json that nobody
+    // bounds, discovered when it holds a CI job to its cap.
+    const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
+    const gateScripts = Object.entries(pkg.scripts as Record<string, string>)
+      .filter(([name]) => /^gate(:|$)/.test(name) && name !== "gate:once");
+    expect(gateScripts.length, "expected the four CI gates").toBeGreaterThanOrEqual(4);
+    for (const [name, cmd] of gateScripts) {
+      expect(cmd, `npm run ${name} must go through gate-run.mjs so it is bounded`)
+        .toMatch(/gate-run\.mjs|gate-retry\.mjs/);
+    }
+  });
+
+  test("every routed gate has a declared process bound", () => {
+    const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
+    const targets = Object.entries(pkg.scripts as Record<string, string>)
+      .filter(([name]) => /^gate(:|$)/.test(name) && name !== "gate:once")
+      .map(([, cmd]) => cmd.match(/scripts\/([a-z-]+\.mjs)(?!.*scripts\/)/)?.[1])
+      .filter((x): x is string => !!x && x !== "gate-run.mjs" && x !== "gate-retry.mjs");
+    for (const t of targets) {
+      expect(GATE_PROCESS_MS, `no process bound declared for scripts/${t}`).toHaveProperty(t);
+    }
+  });
+
+  test("the worst case is the SUM of declared bounds, not a model of internals", () => {
+    // Composition, not magnitude — the mistake #42 made and caught by mutation.
+    // Deleting any gate's term must move the total.
+    let expected = PRE_GATE_BUDGET_MS;
+    for (const [name, ms] of Object.entries(GATE_PROCESS_MS)) {
+      expected += ms * (GATE_ATTEMPTS[name] ?? 1);
+    }
+    expect(worstCaseJobMs()).toBe(expected);
+  });
+
+  // MAGNITUDE IS NOT COMPOSITION. Verified: deleting GC_RETRIES * READY_MS from
+  // export-gate's floor left all 20 tests green, because a 780 s bound clears
+  // the reduced floor comfortably. The bound's own slack hides the deletion —
+  // the exact failure #42 shipped and caught only by mutation. So the parts are
+  // named here, and dropping any of them fails.
+  test("each gate's floor ACCOUNTS FOR the waits that gate performs", () => {
+    const lt = LAUNCH_MS + 2 * TEARDOWN_MS;
+    const composed: Record<string, number> = {
+      "gate.mjs": lt + READY_MS + EVAL_MS,
+      "export-gate.mjs": lt + GC_RETRIES * READY_MS + 2 * EVAL_MS,
+      "identity-gate.mjs": lt + GC_RETRIES * READY_MS + EVAL_MS,
+      "seek-gate.mjs": lt + GC_RETRIES * READY_MS + SEEK_MS,
+    };
+    for (const [name, min] of Object.entries(composed)) {
+      expect(gateFloorMs(name),
+        `scripts/${name}'s floor must account for its launch, teardowns, ` +
+        `readiness waits and evaluate bounds`).toBeGreaterThanOrEqual(min);
+    }
+  });
+
+  // GC_RETRIES is arithmetic about someone else's loop, so it rots the moment
+  // that loop changes. Read it off the gates instead of trusting the constant —
+  // the same anti-drift check #42 put on READY_MS.
+  test("GC_RETRIES matches the retry loop the gates actually run", () => {
+    for (const f of ["seek-gate.mjs", "export-gate.mjs", "identity-gate.mjs"]) {
+      const src = readFileSync(join(root, "scripts", f), "utf8");
+      const m = src.match(/for \(let \w+ = 1; \w+ <= (\d+); \w+\+\+\)/);
+      expect(m, `scripts/${f} must have the GC retry loop GC_RETRIES models`).not.toBeNull();
+      expect(GC_RETRIES,
+        `scripts/${f} retries ${m?.[1]} times; GC_RETRIES says ${GC_RETRIES}`)
+        .toBeGreaterThanOrEqual(Number(m![1]));
+    }
+  });
+
+  test("each gate's bound clears what that gate legitimately costs", () => {
+    // Same rule ATTEMPT_MS follows: a bound below the floor fires before the
+    // gate can say anything useful, and the informative inner message loses.
+    for (const [name, ms] of Object.entries(GATE_PROCESS_MS)) {
+      expect(ms, `scripts/${name}'s process bound is below its own floor`)
+        .toBeGreaterThanOrEqual(gateFloorMs(name) * FLOOR_MARGIN);
     }
   });
 });

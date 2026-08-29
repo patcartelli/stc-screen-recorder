@@ -89,30 +89,74 @@ export const READY_MS = 60_000;
  * gate is retried.
  */
 export function worstCaseJobMs() {
-  const perGateOverhead = LAUNCH_MS + 2 * TEARDOWN_MS + READY_MS;
-  const determinism = ATTEMPTS * ATTEMPT_MS;          // self-bounded, overhead included
-  const exportGate = 2 * EVAL_MS + perGateOverhead;   // runs A and B
-  const identity = EVAL_MS + perGateOverhead;
-  const seek = SEEK_MS + perGateOverhead;
-  return PRE_GATE_BUDGET_MS + determinism + exportGate + identity + seek;
+  let total = PRE_GATE_BUDGET_MS;
+  for (const [script, ms] of Object.entries(GATE_PROCESS_MS)) {
+    total += ms * (GATE_ATTEMPTS[script] ?? 1);
+  }
+  return total;
 }
 
 /**
- * WHAT THIS MODEL DOES NOT COVER, stated rather than left to be discovered.
+ * How many times a gate re-enters its readiness wait.
  *
- * seek-gate, export-gate and identity-gate each retry their evaluate up to 3
- * times on Playwright's "garbage collected" error, and each retry re-enters the
- * 60 s readiness wait. The model counts ONE readiness wait per gate, not three.
- *
- * Counting all of them is not the answer: the honest maximum is ~80 minutes,
- * which is not a bound anyone would set — it is so loose it stops constraining
- * anything. The real fix is structural, and is deliberately NOT done here: give
- * every gate a per-process bound the way gate-retry gives the determinism gate
- * ATTEMPT_MS, and then each gate's internals stop needing to be re-derived by
- * hand. Until then the job cap's margin absorbs it, and this comment is the
- * record that it is absorbed rather than accounted for.
+ * seek-gate, export-gate and identity-gate retry their evaluate on Playwright's
+ * "garbage collected" error, and each retry goes back through the 60 s wait.
+ * gate.mjs has no such loop. Declared rather than absorbed: the previous model
+ * counted one wait per gate and said so in a comment, which is a caveat, not a
+ * bound.
  */
-export const UNMODELLED_GC_RETRY_PATH = true;
+export const GC_RETRIES = 3;
+
+/**
+ * What ONE run of each gate legitimately costs — its own inner bounds, summed
+ * along the longest path it can legally take.
+ *
+ * This is the only place a gate's internals appear. The job's worst case is a
+ * sum of PROCESS bounds (below), so internals inform whether each bound is
+ * generous enough and nothing else: get this slightly wrong and a bound fires
+ * early and says so, rather than a model silently under-counting.
+ */
+export function gateFloorMs(script) {
+  const launchAndTeardown = LAUNCH_MS + 2 * TEARDOWN_MS;
+  switch (script) {
+    // One evaluate, one readiness wait, no GC-retry loop. Kept identical to
+    // attemptFloorMs() — this is the same gate, and two floors for one script
+    // would be exactly the drift this file exists to stop.
+    case "gate.mjs":          return attemptFloorMs();
+    // Runs A and B: two bounded evaluates.
+    case "export-gate.mjs":   return launchAndTeardown + GC_RETRIES * READY_MS + 2 * EVAL_MS;
+    case "identity-gate.mjs": return launchAndTeardown + GC_RETRIES * READY_MS + EVAL_MS;
+    // Its own tighter, more informative bound instead of EVAL_MS.
+    case "seek-gate.mjs":     return launchAndTeardown + GC_RETRIES * READY_MS + SEEK_MS;
+    default: throw new Error(`no floor declared for scripts/${script}`);
+  }
+}
+
+/**
+ * The bound the RUNNER enforces on each gate process, and the whole of the
+ * job's worst case.
+ *
+ * Before this, only the determinism gate had one (ATTEMPT_MS via gate-retry);
+ * the other three ran unbounded and the model guessed at their internals. That
+ * guess had already gone wrong twice — once by omitting the retry entirely, and
+ * once by omitting the readiness wait — and on 2026-08-28 an unbounded seek
+ * gate held a CI job to its 30-minute cap after failing in 10 seconds.
+ *
+ * A process bound cannot be under-counted the way a model can: whatever the
+ * gate does inside, it cannot exceed this, so worstCaseJobMs() is a SUM rather
+ * than an estimate and the GC-retry path is covered rather than absorbed.
+ */
+export const GATE_PROCESS_MS = {
+  "gate.mjs": ATTEMPT_MS,                 // per attempt; retried, see GATE_ATTEMPTS
+  "export-gate.mjs": 780_000,
+  "identity-gate.mjs": 560_000,
+  "seek-gate.mjs": 450_000,
+};
+
+/** Only the determinism gate is retried; the rest run once. */
+export const GATE_ATTEMPTS = {
+  "gate.mjs": ATTEMPTS,
+};
 
 /** What one determinism-gate attempt can legitimately cost. ATTEMPT_MS must clear it. */
 export function attemptFloorMs() {

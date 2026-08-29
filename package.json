@@ -9,10 +9,10 @@
     "gate:once": "node scripts/gate.mjs",
     "app:build": "node app/build.mjs",
     "app:start": "npm run app:build && electron .",
-    "gate:export": "node scripts/export-gate.mjs",
+    "gate:export": "node scripts/gate-run.mjs scripts/export-gate.mjs",
     "test:capture": "vitest run --config vitest.grant.config.ts",
-    "gate:seek": "node scripts/seek-gate.mjs",
-    "gate:identity": "node scripts/identity-gate.mjs",
+    "gate:seek": "node scripts/gate-run.mjs scripts/seek-gate.mjs",
+    "gate:identity": "node scripts/gate-run.mjs scripts/identity-gate.mjs",
     "test:slow": "vitest run --config vitest.slow.config.ts",
     "merge": "node scripts/merge-when-green.mjs"
   },

@@ -590,3 +590,21 @@ reachable via KVC (`setValue(3, forKey: "captureResolution")`, verified in phase
   All four constraints were verified by watching them fail — `document` in main, `process` in the
   renderer, `require` in the transform, and the `composite()` arity drift — each confirmed to make
   `npm run typecheck` exit non-zero, then reverted.
+- **Every gate carries its own PROCESS bound, and the job's worst case is a SUM, not a model.**
+  Only the determinism gate had an outer bound (`ATTEMPT_MS` via `gate-retry`); the other three ran
+  unbounded while `worstCaseJobMs()` guessed at their internals. That guess went wrong twice — once
+  omitting the retry entirely, once the readiness wait — and on 2026-08-28 an unbounded seek gate
+  held a CI job to its cap for 17.5 minutes after failing correctly in 10 seconds. `gate-run.mjs`
+  now bounds each gate from `GATE_PROCESS_MS`, so the worst case cannot be under-counted the way a
+  model can, and the previously-absorbed GC-retry path is accounted for rather than named in a
+  comment. A gate with no declared bound is REFUSED, not silently defaulted.
+  The cap rose 30 → 45 → 55 → 65 as the model stopped lying, and that is not a regression: a wedged
+  gate now dies at its own 7.5-13 min bound instead of holding the job, so failures got faster while
+  the number went up. The cap is a backstop behind four tighter bounds.
+- **A bound's own slack will hide a missing term in its floor — assert COMPOSITION, not magnitude.**
+  Dropping `GC_RETRIES * READY_MS` from export-gate's floor left all 20 gate-bounds tests green,
+  because a 780 s bound clears the reduced floor comfortably. Same shape as #42's vacuous first
+  repair, and as a PiP test that passed with the compositor wiring removed because the display frame
+  filled that corner anyway. The fix in all three cases was a positive discriminator: name the parts
+  and require each, or compare against a control that differs ONLY by the thing under test. Five
+  mutations are watched failing in `gate-bounds.test.ts`, including that one.

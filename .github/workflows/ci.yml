@@ -19,12 +19,19 @@ jobs:
     # and the transform's sinks need a Chrome with H.264 (WebCodecs).
     runs-on: macos-15
     # Must clear scripts/gate-bounds.mjs's worstCaseJobMs() with margin, which
-    # transform/test/gate-bounds.test.ts asserts. It was 30 until #39 wrapped the
-    # determinism gate in a retry, and the model then also had to gain the 60 s
-    # readiness wait every gate does — worst case is 47 min. Minutes are free on
-    # a public repo and every wait inside the job is bounded, so this cap is a
-    # backstop, not an operating point: a healthy run is ~6 min.
-    timeout-minutes: 55
+    # transform/test/gate-bounds.test.ts asserts. 30 -> 45 -> 55 -> 65 as the
+    # model stopped under-counting: first the retry (#39), then the readiness
+    # wait, now the GC-retry path that was previously absorbed by margin and
+    # named in a comment.
+    #
+    # Rising is not a regression here. Every gate now carries its OWN process
+    # bound, so a wedged gate dies at 7.5-13 min instead of holding the job to
+    # this cap — the seek gate that held one for 17.5 minutes on 2026-08-28
+    # would now be killed at 7.5. This cap is a BACKSTOP behind four tighter
+    # bounds rather than the thing that catches a wedge, which is exactly why it
+    # can afford to state the worst case honestly instead of optimistically.
+    # Minutes are free on a public repo; a healthy run is ~6 min.
+    timeout-minutes: 65
 
     # A post-merge master run re-verifies a tree CI already approved as a PR
     # head, which is the largest remaining duplication. It is NOT skipped by
