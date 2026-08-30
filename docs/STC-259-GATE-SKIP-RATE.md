@@ -27,9 +27,18 @@ Over the last 23 completed runs, of which **10 could be measured**:
 | Export | 4 | 8 | 50% |
 | Identity | 4 | 8 | 50% |
 
-The other 13 runs are excluded, not counted as skips: GitHub ages out per-step
-log attribution and reports every line as `UNKNOWN STEP`, and a verdict cannot be
-scoped to a gate without it.
+The other 13 runs are excluded, not counted as skips: `gh run view --log`
+returned every line as `UNKNOWN STEP` for them, and a verdict cannot be scoped to
+a gate without step attribution.
+
+**When attribution is available is not understood, and an earlier version of this
+document got it backwards.** It claimed attribution "ages out within a day or
+two". Measured over 12 consecutive runs: every run younger than ~200 minutes had
+NO attribution, and every run between 212 and 319 minutes old had it. So it
+*appears* some hours after a run rather than ageing out — though some day-old
+runs lack it too, so age alone does not explain it and no mechanism has been
+confirmed. The practical consequence is the reverse of what was published: a run
+that just finished cannot be measured yet.
 
 **The four gates skip together.** In every run where one skipped, all four did;
 in every run where one passed, all four did. This is a property of the job, not
@@ -102,8 +111,8 @@ Two consequences:
 - **The boundary claim is retracted.** The earlier version pinned the last pass
   to `cb03ee9` and the first skip to `9df1e27` — the commit that introduced
   skipping — 43 minutes apart. That was derived from the same contaminated
-  method, and the runs needed to re-check it have since aged out of step
-  attribution. It cannot be confirmed and should not be repeated.
+  method, and the runs needed to re-check it come back with no step attribution,
+  so it cannot be re-measured. It cannot be confirmed and should not be repeated.
 
 What survives unchanged, because it was read directly from gate step logs rather
 than from the aggregate: the wedged-renderer signature, the retry being useless,
@@ -118,13 +127,14 @@ and the step timings above.
 3. **Do not add attempts to the other three gates.** Already rejected on
    arithmetic (118 min, needing a ~2 hour cap) — and since all four gates skip
    together, a retry could not help them either.
-4. **Re-run the measurement often, on fresh runs.** Step attribution ages out
-   within a day or two, so a rate computed later covers a shrinking window.
+4. **Wait a few hours before measuring a run.** A just-finished run comes back
+   with no step attribution and is silently unmeasurable; attribution appeared
+   at around 3.5 hours in every case measured. The earlier advice here said the
+   opposite — "measure fresh runs" — and was wrong.
 
 ## Method
 
 The script pulls the last N completed runs through `gh`, downloads each job log,
 slices it **by step**, and classifies each gate only by markers found inside its
-own step. Runs whose logs have aged out of step attribution are named and
-excluded rather than scored. It prints a warning when any gate crosses a 50%
-skip rate.
+own step. Runs with no step attribution are named and excluded rather than
+scored. It prints a warning when any gate crosses a 50% skip rate.

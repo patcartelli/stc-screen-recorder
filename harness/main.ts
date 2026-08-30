@@ -5,6 +5,7 @@ import { demuxTrack, type DemuxedVideo } from "@transform/demux";
 import { decodeAll } from "@transform/decode";
 import { composite } from "@transform/compositor";
 import type { Project, Session } from "@transform/types";
+import { parseProject } from "@transform/trim";
 import { Muxer, ArrayBufferTarget } from "mp4-muxer";
 import { withTimeout } from "@transform/timeout";
 
@@ -116,8 +117,17 @@ async function main() {
     fetch("/basic/frames.json").then((r) => r.json()) as Promise<number[]>,
     fetch("/basic/display.mp4").then((r) => r.arrayBuffer()),
   ]);
-  const project: Project = await fetch("/basic/project.json").then((r) => r.json());
+  // Through parseProject, not verbatim. Benign today only because
+  // fixtures/basic has no camera — the identical bypass in sink-identity.ts is
+  // what made every camera take render without a PiP. A fixture that later
+  // gains a camera must not have to rediscover that.
+  const projectRaw = await fetch("/basic/project.json").then((r) => r.json());
   const video = await demuxTrack(mp4, "display.mp4");
+  const project: Project = parseProject(
+    projectRaw, anchors.capture.width, anchors.capture.height,
+    video.framesNs[video.framesNs.length - 1] ?? 0,
+    anchors.camera?.present === true,
+  );
 
   const framesMatch =
     video.framesNs.length === framesJson.length &&

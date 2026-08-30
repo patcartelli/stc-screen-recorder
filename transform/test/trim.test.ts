@@ -1,9 +1,13 @@
 import { describe, test, expect } from "vitest";
+import { readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+import { withoutComments } from "./_source-text.js";
 import {
   availableFrames, clampTrim, defaultProject, estimateExportMs, exportWindow,
   isFullTake, minTrimNs, parseProject, projectForWrite, EXPORT_MS_PER_FRAME,
 } from "../src/trim.js";
 
+const root = join(__dirname, "..", "..");
 const FPS = 60;
 const NS = 1_000_000_000;
 const duration = 5 * NS;
@@ -108,5 +112,55 @@ describe("estimateExportMs", () => {
       pip: { enabled: false, corner: "bottom-right", widthPct: 0.125, marginPx: 32 },
     };
     expect(parseProject(raw, 640, 360, duration, true).pip!.enabled).toBe(false);
+  });
+});
+
+/**
+ * CLAUDE.md's standing rule, made enforceable: "callers pass the take's
+ * project.json THROUGH parseProject (or null). Assembling a project outside the
+ * one parser is how two answers happen. If you add a fourth caller, pass the
+ * raw document."
+ *
+ * A fourth caller was added anyway. harness/sink-identity.ts fetched the take's
+ * project and used it VERBATIM, falling back to a literal it assembled itself —
+ * a literal with no `pip`, because a hand-rolled object cannot know that
+ * parseProject turns the PiP on for a camera take. Every camera take without a
+ * project.json therefore rendered with no PiP, and `npm run gate:identity`
+ * failed on a real 5.6 MB camera track while CI stayed green, because CI ran
+ * that gate on a camera-LESS fixture.
+ *
+ * Four times is enough. This is the fifth caller's tripwire.
+ */
+describe("one parser decides a project (STC-232)", () => {
+  const SCOPE = ["harness", join("app", "src")];
+
+  const sources = () => SCOPE.flatMap((dir) =>
+    readdirSync(join(root, dir), { withFileTypes: true })
+      .filter((e) => e.isFile() && e.name.endsWith(".ts"))
+      .map((e) => ({
+        path: join(dir, e.name),
+        // Comments stripped: a guard that greps raw source is asserting
+        // something about the documentation. The first draft of the
+        // parseProject check below passed against a file with the call REMOVED,
+        // because the comment explaining the rule still said the word.
+        src: withoutComments(readFileSync(join(root, dir, e.name), "utf8")),
+      })));
+
+  test("every file that produces a Project routes it through parseProject", () => {
+    const offenders = sources()
+      .filter((f) => /:\s*Project\b/.test(f.src) && !f.src.includes("parseProject"))
+      .map((f) => f.path);
+    expect(offenders,
+      "a Project built outside parseProject misses the defaults it applies — " +
+      `above all pip.enabled for a camera take:\n${offenders.join("\n")}`).toEqual([]);
+  });
+
+  test("no file assembles a project literal of its own", () => {
+    // `cursor: { style:` is the tell: only a hand-assembled Project has it.
+    const offenders = sources()
+      .filter((f) => /cursor:\s*\{\s*style:/.test(f.src))
+      .map((f) => f.path);
+    expect(offenders,
+      `these assemble a project instead of parsing one:\n${offenders.join("\n")}`).toEqual([]);
   });
 });
