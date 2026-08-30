@@ -25,6 +25,8 @@ events → deterministic transform → CFR MP4 with cursor overlay.
 | `fixtures/` | hand-authored 5 s fixture session + deterministic display.mp4 generator |
 | `harness/` | vite-served browser harness hosting both sinks |
 | `scripts/gate.mjs` | increment-0 determinism gate (Playwright + real Chrome) |
+| `scripts/gate-skip-rate.mjs` | how often each gate actually RAN on CI — run it before trusting a green tick |
+| `docs/STC-259-GATE-SKIP-RATE.md` | the 100%-skip finding, its evidence, and what to do |
 | `tools/test-host/` | signed bundle that spawns the helper for capture tests; `--probe` reports TCC state. **CFBundleIdentifier is load-bearing** — the grant is keyed to it |
 | `fixtures/real-session/` | sidecars from a real recording (mp4 omitted, 9.4 MB) pinning click/drag semantics |
 | `*.grant.test.ts` | needs a Screen Recording grant — excluded from `npm test`, run via `npm run test:capture`. A separate file, not a skip: skips read as covered and rot |
@@ -610,6 +612,24 @@ reachable via KVC (`setValue(3, forKey: "captureResolution")`, verified in phase
   filled that corner anyway. The fix in all three cases was a positive discriminator: name the parts
   and require each, or compare against a control that differs ONLY by the thing under test. Five
   mutations are watched failing in `gate-bounds.test.ts`, including that one.
+- **THE DETERMINISM GATE HAS NOT RUN SINCE 2026-08-28 — 19 consecutive skips, 0 passes.** The
+  skip mechanism is working exactly as designed and is telling the truth; the truth is that the
+  determinism guarantee stopped being checked and nothing went red. Seek/export/identity sit at
+  33-40%. Measured 2026-08-30, full evidence in `docs/STC-259-GATE-SKIP-RATE.md`, re-derive with
+  `node scripts/gate-skip-rate.mjs`.
+  The boundary is exact and is the commit that ADDED skipping (`9df1e27`, 43 min after the last
+  pass) — which converted a visible ~50% failure into a silent 100% non-execution rather than
+  causing it. The signature is the OUTER bound (`in-page gate run did not return within 180000 ms`)
+  plus `browser.close()` hanging its full 30 s: a WEDGED renderer, not a slow one, so no in-page
+  JS timer can fire. That is Mode B, and it needs Chrome's GPU logs, not more instrumentation
+  inside the page.
+  **The retry is provably useless here** — all three attempts fail identically at the same bound,
+  and attempts 2 and 3 have never once succeeded where 1 failed. It costs 10.5 min per run to
+  learn what it knew after 3.5. Per this file's own rule, the answer is the decoder, not attempts.
+  NB the `decoder flush did not complete within 60000ms` lines in CI logs are mostly a FIXTURE
+  STRING in `transform/test/gate-retry.test.ts`, not a fault — reading them as the gate's reason
+  is a wrong turn already taken once.
+
 - **"Red means the code" only became true once ALL FOUR gates could say ENVIRONMENT.** #39 gave the
   determinism gate a machine label and the claim was made then; it was 1-of-4 true. The other three
   routed machine faults through `fail()`, so on 2026-08-29 a decoder that accepted 8 chunks and
