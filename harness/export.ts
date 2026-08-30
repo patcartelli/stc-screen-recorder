@@ -1,3 +1,4 @@
+import { mark } from "./mark.js";
 import { loadSession } from "@transform/session";
 import { exportSession as runExport, type ExportOptions } from "@transform/export";
 import { parseProject } from "@transform/trim";
@@ -30,13 +31,16 @@ import type { Project } from "@transform/types";
   const cameraMp4 = anchors.files?.camera
     ? await fetch(`${dir}/${anchors.files.camera}`).then((r) => r.arrayBuffer())
     : undefined;
+  mark("export: loadSession (demux + VideoDecoder.configure)");
   const session = await loadSession({ anchors, events, displayMp4, cameraMp4 });
   const durationNs = session.frames[session.frames.length - 1] ?? 0;
   const project: Project = parseProject(
     projectRaw, anchors.capture.width, anchors.capture.height, durationNs,
     anchors.camera?.present === true,
   );
+  mark("export: exportSession (decode, render, VideoEncoder.configure, encode)");
   const r = await runExport(session, project, { hash: true, ...opts });
+  mark("export: exportSession returned");
 
   let encodedBase64: string | undefined;
   if (opts.returnFile && r.encoded) {

@@ -1,3 +1,4 @@
+import { mark } from "./mark.js";
 import { render } from "@transform/render";
 import { tickTimeNs } from "@transform/time";
 import { demuxTrack, type DemuxedVideo } from "@transform/demux";
@@ -31,14 +32,17 @@ function makeCtx(w: number, h: number): OffscreenCanvasRenderingContext2D {
 async function runPreview(
   project: Project, session: Session, video: DemuxedVideo, tsNs: number[],
 ): Promise<string[]> {
+  mark("preview: decodeAll (VideoDecoder.configure is synchronous)");
   const bitmaps = await decodeAll(video);
   const { width, height } = project.output;
   const ctx = makeCtx(width, height);
   const hashes: string[] = [];
+  mark(`preview: hashing ${tsNs.length} sampled t (getImageData is synchronous)`);
   for (const t of tsNs) {
     const fs = render(project, session, t);
     composite(ctx, fs.frameIndex === null ? null : bitmaps[fs.frameIndex]!, null, fs, width, height);
     hashes.push(await sha256(ctx.getImageData(0, 0, width, height).data));
+    if (hashes.length % 50 === 0) mark(`preview: ${hashes.length}/${tsNs.length} hashed`);
   }
   bitmaps.forEach((b) => b.close());
   return hashes;
@@ -47,7 +51,9 @@ async function runPreview(
 /** Export sink: walks the 60 fps output grid, hashes pre-encode, then encodes. Fresh decode. */
 async function runExport(
   project: Project, session: Session, video: DemuxedVideo, encoderMs: number,
+  label: string,
 ): Promise<{ hashes: string[]; encodedBytes: number }> {
+  mark(`export[${label}]: decodeAll (VideoDecoder.configure is synchronous)`);
   const bitmaps = await decodeAll(video);
   const { width, height } = project.output;
   const ctx = makeCtx(width, height);
@@ -62,9 +68,15 @@ async function runExport(
     output: (chunk, meta) => muxer.addVideoChunk(chunk, meta),
     error: (e) => { throw e; },
   });
+  // THE top suspect for Mode B: configure() is synchronous, and CI reports its
+  // H.264 encoder as `paravirtualized:Apple Video Encoder`, a passthrough to a
+  // host shared with other tenants. STC-259 measured a first touch of that
+  // encoder blocking past 15 s from Swift.
+  mark(`export[${label}]: VideoEncoder.configure (synchronous)`);
   encoder.configure({ codec: "avc1.42001f", width, height, framerate: 60, bitrate: 2_000_000 });
 
   const hashes: string[] = [];
+  mark(`export[${label}]: encoding ${EXPORT_FRAMES} frames`);
   for (let k = 0; k < EXPORT_FRAMES; k++) {
     const t = exportTimeNs(k);
     const fs = render(project, session, t);
@@ -87,7 +99,9 @@ async function runExport(
       }
       await new Promise((r) => setTimeout(r, 1));
     }
+    if ((k + 1) % 50 === 0) mark(`export[${label}]: ${k + 1}/${EXPORT_FRAMES} frames`);
   }
+  mark(`export[${label}]: encoder.flush`);
   await withTimeout(encoder.flush(), encoderMs, "encoder flush (harness)");
   muxer.finalize();
   encoder.close();
@@ -133,9 +147,9 @@ async function main() {
     }
 
     say("export run A…");
-    const a = await runExport(project, session, video, encoderMs);
+    const a = await runExport(project, session, video, encoderMs, "A");
     say("export run B…");
-    const b = await runExport(project, session, video, encoderMs);
+    const b = await runExport(project, session, video, encoderMs, "B");
     say("preview run (shuffled order)…");
     const previewHash = await runPreview(project, session, video, sampledK.map(exportTimeNs));
     say("done");

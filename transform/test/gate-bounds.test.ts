@@ -175,6 +175,10 @@ describe("every gate has a per-process bound, and the model knows all of them", 
   });
 });
 
+/** Crude but sufficient here: prose must not be able to trip a code guard. */
+const withoutComments = (src: string) =>
+  src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/.*$/gm, "$1");
+
 describe("gate teardown is bounded in EVERY gate", () => {
   // Closing a browser whose renderer is wedged NEVER RETURNS, and the gates run
   // in `finally`. STC-259's 26-minute "stall" was exactly this: gate.mjs failed
@@ -206,6 +210,70 @@ describe("gate teardown is bounded in EVERY gate", () => {
       expect(src, `scripts/${f} must import closeQuietly from gate-bounds.mjs`)
         .toMatch(/closeQuietly/);
     }
+  });
+
+  // STC-259 Mode B: the renderer's main thread blocks, so every in-page bound —
+  // all of them JS timers — is dead in exactly the case it was written for, and
+  // these runs historically printed nothing at all. The page's checkpoints are
+  // collected out of process instead. A gate without this is a gate that can
+  // still stall silently.
+  test("every gate collects the page's checkpoints out of process", () => {
+    for (const f of GATES) {
+      const src = readFileSync(join(root, "scripts", f), "utf8");
+      expect(src, `scripts/${f} must call instrumentPage — a wedged renderer ` +
+        `cannot report from inside the page`).toMatch(/instrumentPage\(/);
+      expect(src, `scripts/${f} must dump the trail when it labels ENVIRONMENT`)
+        .toMatch(/trail\.dump\(\)/);
+    }
+  });
+
+  // seek-gate hand-rolled `Promise.race([evaluate, setTimeout(...)])`, which
+  // threw an UNTAGGED Error: isBoundFailure said no, and a Mode B wedge there
+  // was reported as FAIL: — reddening CI for a machine fault, in the one gate
+  // whose whole subject is that distinction. It also hardcoded 90_000 while
+  // gate-bounds declared SEEK_MS = 90_000 and fed that to the worst-case model.
+  test("no gate races a bare setTimeout against its evaluate", () => {
+    const offenders = GATES.filter((f) => {
+      const src = readFileSync(join(root, "scripts", f), "utf8");
+      return /Promise\.race\(\s*\[[\s\S]{0,400}?setTimeout/.test(src);
+    });
+    expect(offenders,
+      `a hand-rolled race throws an Error with no boundFired tag, so the gate ` +
+      `reports a machine fault as a code regression:\n${offenders.join("\n")}`).toEqual([]);
+  });
+
+  test("seek-gate uses the declared SEEK_MS, not a copy of it", () => {
+    const src = readFileSync(join(root, "scripts", "seek-gate.mjs"), "utf8");
+    expect(src, "seek-gate must import SEEK_MS from gate-bounds").toMatch(/SEEK_MS/);
+    // Comments stripped first. The first draft of this matched the raw source
+    // and failed on the comment EXPLAINING that the literal used to be there —
+    // a text guard tripping over prose, which is the same weakness that made a
+    // CI fixture string read as a real skip earlier in this ticket.
+    expect(withoutComments(src), "seek-gate must not hardcode its own bound")
+      .not.toMatch(/90_000|90000/);
+  });
+});
+
+describe("bounded()", () => {
+  // The lazy label exists so a caller can fold in state that only exists once
+  // the bound fires — how far a run got, which probe was last. seek-gate
+  // hand-rolled its own setTimeout to get that and lost the boundFired tag.
+  test("a thunk label is evaluated when the bound FIRES, not when it is set", async () => {
+    let probes = 0;
+    const p = new Promise(() => {});            // never settles
+    const timer = setInterval(() => { probes++; }, 1);
+    const err = await bounded(p, 30, () => `after ${probes} probes`)
+      .then(() => null, (e: Error) => e);
+    clearInterval(timer);
+    expect(err).not.toBeNull();
+    expect(err!.message).toMatch(/after [1-9]\d* probes did not return within 30 ms/);
+    expect((err as unknown as { boundFired?: boolean }).boundFired).toBe(true);
+  });
+
+  test("a plain string label still works", async () => {
+    const err = await bounded(new Promise(() => {}), 20, "the thing")
+      .then(() => null, (e: Error) => e);
+    expect(err!.message).toBe("the thing did not return within 20 ms");
   });
 });
 

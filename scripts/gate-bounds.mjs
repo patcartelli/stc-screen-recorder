@@ -122,6 +122,61 @@ export const READY_MS = 60_000;
  * Each gate pays its own launch and both teardown bounds; only the determinism
  * gate is retried.
  */
+/**
+ * Collects the page's own progress checkpoints, so a WEDGED renderer can still
+ * say where it stopped.
+ *
+ * Mode B is the failure where the renderer's main thread blocks: no in-page
+ * timer fires, no promise settles, `page.evaluate` never returns, and
+ * `browser.close()` then hangs its full teardown. Nothing readable from inside
+ * the page survives it — which is why every in-page bound is useless here and
+ * why these runs historically said nothing at all.
+ *
+ * A console message is the exception. It crosses to this process over CDP AS IT
+ * IS MADE, so a mark logged immediately before a blocking call is already here
+ * when that call wedges. The last line of the trail names the call.
+ *
+ * Arrival times are stamped by this process, not the page: a wedged renderer
+ * cannot be trusted to timestamp anything, and the gap before the silence is
+ * exactly the interesting number.
+ */
+export async function instrumentPage(page, { keep = 40 } = {}) {
+  // The wedge injection has to be installed BEFORE any page script runs, which
+  // is what addInitScript is for. Bundled with the trail so a gate cannot wire
+  // one without the other and end up with a fault nothing observes.
+  const fault = process.env.STC_GATE_FAULT ?? "";
+  if (fault.startsWith("wedge:")) {
+    await page.addInitScript((at) => { window.__wedgeAt = at; }, fault.slice("wedge:".length));
+  }
+  return attachCheckpointTrail(page, { keep });
+}
+
+export function attachCheckpointTrail(page, { keep = 40 } = {}) {
+  const t0 = Date.now();
+  const trail = [];
+  page.on("console", (m) => {
+    const text = m.text();
+    if (!text.startsWith("[gate-mark")) return;
+    trail.push(`+${String(Date.now() - t0).padStart(7)} ms  ${text}`);
+    if (trail.length > keep) trail.shift();
+  });
+  return {
+    get length() { return trail.length; },
+    dump(write = (s) => console.error(s)) {
+      if (!trail.length) {
+        write("--- NO in-page checkpoints arrived ---");
+        write("    The page never reached its first mark, so the wedge is before");
+        write("    runGate's first statement — page load, module eval, or the");
+        write("    readiness probe itself.");
+        return;
+      }
+      write(`--- last ${trail.length} in-page checkpoints before the bound fired ---`);
+      for (const l of trail) write("  " + l);
+      write("    ^ the wedge is in whatever follows the LAST line.");
+    },
+  };
+}
+
 export function worstCaseJobMs({ attempts = GATE_ATTEMPTS } = {}) {
   let total = PRE_GATE_BUDGET_MS;
   for (const [script, ms] of Object.entries(GATE_PROCESS_MS)) {
@@ -212,7 +267,14 @@ export function bounded(promise, ms, what) {
     promise,
     new Promise((_, reject) => {
       timer = setTimeout(() => {
-        const e = new Error(`${what} did not return within ${ms} ms`);
+        // `what` may be a thunk, evaluated HERE rather than at call time, so a
+        // caller can fold in state that only exists once the bound fires — how
+        // far a run had got, which probe was last. seek-gate hand-rolled its own
+        // setTimeout to get that, and paid for it: the error it threw carried no
+        // `boundFired` tag, so a Mode B wedge there reported FAIL: and reddened
+        // CI for a machine fault.
+        const label = typeof what === "function" ? what() : what;
+        const e = new Error(`${label} did not return within ${ms} ms`);
         // TAGGED, so a gate can tell "my bound fired" from "I found a wrong
         // answer" by asking the error rather than by matching its text. A gate
         // with one catch-all had no other option and gate.mjs matches strings

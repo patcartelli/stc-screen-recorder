@@ -33,10 +33,28 @@ export declare function worstCaseJobMs(
 ): number;
 export declare function attemptFloorMs(): number;
 
-export declare function bounded<T>(promise: PromiseLike<T>, ms: number, what: string): Promise<T>;
+/**
+ * `what` may be a thunk, evaluated when the bound FIRES rather than when it is
+ * set, so a caller can fold in state that only exists at that moment.
+ */
+export declare function bounded<T>(
+  promise: PromiseLike<T>,
+  ms: number,
+  what: string | (() => string),
+): Promise<T>;
 export declare function isBoundFailure(e: unknown): boolean;
 
 export declare function closeQuietly(
   browser: { close(): Promise<unknown> } | undefined,
   server: { close(): Promise<unknown> } | undefined,
 ): Promise<void>;
+
+export declare function attachCheckpointTrail(
+  page: unknown,
+  opts?: { keep?: number },
+): { readonly length: number; dump(write?: (s: string) => void): void };
+
+export declare function instrumentPage(
+  page: unknown,
+  opts?: { keep?: number },
+): Promise<{ readonly length: number; dump(write?: (s: string) => void): void }>;
