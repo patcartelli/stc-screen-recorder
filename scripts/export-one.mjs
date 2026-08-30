@@ -50,32 +50,23 @@ try {
   await page.waitForFunction(() => window.__exportReady === true, { timeout: 60_000 });
   await page.reload({ waitUntil: "domcontentloaded" });
   await page.waitForFunction(() => window.__exportReady === true, { timeout: 60_000 });
-  // The take's OWN project.json, merged over the defaults — same as
-  // export-gate.mjs. Hardcoding a project here meant this script silently
-  // dropped trim AND the PiP: it exported a camera take with pip absent, so
-  // render() returned pip: null and the clip produced for a human to verify
-  // had no PiP in it at all. The script that makes the artifact for
-  // watch-and-confirm is the last place that can afford to describe a
-  // different project than the take's.
-  let project = {
-    version: 1,
-    output: { fps: 60, width: anchors.capture.width, height: anchors.capture.height },
-    cursor: { style: "default", scale: 1 },
-  };
+  // Pass the take's project.json THROUGH; the page decides the defaults with
+  // parseProject, which is the same function the app uses. Assembling a project
+  // here is what made a camera take export with no PiP while the app previewed
+  // the same take with one.
   const projectPath = join(sessionDir, "project.json");
-  if (existsSync(projectPath)) {
-    const onDisk = JSON.parse(readFileSync(projectPath, "utf8"));
-    project = { ...project, ...onDisk,
-                output: { ...project.output, ...(onDisk.output ?? {}) } };
-    console.log(`project.json found: pip=${JSON.stringify(onDisk.pip ?? null)} ` +
-                `trim=${JSON.stringify(onDisk.trim ?? null)}`);
-  } else {
-    console.log("no project.json in this take — exporting with defaults (no pip, no trim)");
-  }
+  const projectRaw = existsSync(projectPath)
+    ? JSON.parse(readFileSync(projectPath, "utf8"))
+    : null;
+  console.log(projectRaw
+    ? `project.json found: pip=${JSON.stringify(projectRaw.pip ?? null)} trim=${JSON.stringify(projectRaw.trim ?? null)}`
+    : `no project.json — the page will apply defaults (PiP on for a camera take)`);
+  const project = projectRaw;
+
   const frames = Math.round(seconds * 60);
   const fromFrame = Math.round(fromSeconds * 60);
   console.log(`exporting ${seconds}s from t=${fromSeconds}s (${frames} frames) ` +
-              `at ${project.output.width}x${project.output.height}…`);
+              `at ${anchors.capture.width}x${anchors.capture.height}…`);
   const r = await page.evaluate(([p, f, ff]) =>
     window.exportSession("/session", p, { maxFrames: f, fromFrame: ff, encode: true, returnFile: true }),
     [project, frames, fromFrame]);

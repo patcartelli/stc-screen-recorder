@@ -1,12 +1,23 @@
 import { loadSession } from "@transform/session";
 import { exportSession as runExport, type ExportOptions } from "@transform/export";
+import { parseProject } from "@transform/trim";
 import type { Project } from "@transform/types";
 
 /**
  * Thin browser wrapper: fetch a session, then call the ONE export
  * implementation the app also uses.
  */
-(window as any).exportSession = async (dir: string, project: Project, opts: ExportOptions & { returnFile?: boolean } = {}) => {
+/**
+ * `projectRaw` is the take's project.json as read from disk, or null when it
+ * has none — NOT a project object assembled by the caller.
+ *
+ * The defaults have to be decided in ONE place. When the caller synthesised its
+ * own, a take with no project.json exported with `pip` absent while the app
+ * previewed the same take WITH a PiP, because parseProject defaults it on for a
+ * camera take and the caller's hand-rolled object did not. Same take, two
+ * answers, and the CLI's was the wrong one.
+ */
+(window as any).exportSession = async (dir: string, projectRaw: unknown, opts: ExportOptions & { returnFile?: boolean } = {}) => {
   const [anchors, events, displayMp4] = await Promise.all([
     fetch(`${dir}/anchors.json`).then((r) => r.json()),
     fetch(`${dir}/events.json`).then((r) => r.json()),
@@ -20,6 +31,11 @@ import type { Project } from "@transform/types";
     ? await fetch(`${dir}/${anchors.files.camera}`).then((r) => r.arrayBuffer())
     : undefined;
   const session = await loadSession({ anchors, events, displayMp4, cameraMp4 });
+  const durationNs = session.frames[session.frames.length - 1] ?? 0;
+  const project: Project = parseProject(
+    projectRaw, anchors.capture.width, anchors.capture.height, durationNs,
+    anchors.camera?.present === true,
+  );
   const r = await runExport(session, project, { hash: true, ...opts });
 
   let encodedBase64: string | undefined;
