@@ -1,6 +1,7 @@
 import { describe, test, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { withoutComments } from "./_source-text.js";
 import {
   bounded, EVAL_MS, ENCODER_MS, EVAL_SLOTS, SEEK_MS, PRE_GATE_BUDGET_MS,
   worstCaseJobMs, attemptFloorMs, FLOOR_MARGIN, READY_MS, LAUNCH_MS, TEARDOWN_MS,
@@ -174,10 +175,6 @@ describe("every gate has a per-process bound, and the model knows all of them", 
     }
   });
 });
-
-/** Crude but sufficient here: prose must not be able to trip a code guard. */
-const withoutComments = (src: string) =>
-  src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/.*$/gm, "$1");
 
 describe("gate teardown is bounded in EVERY gate", () => {
   // Closing a browser whose renderer is wedged NEVER RETURNS, and the gates run

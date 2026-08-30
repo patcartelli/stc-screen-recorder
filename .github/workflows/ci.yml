@@ -103,7 +103,22 @@ jobs:
           mkdir -p "$TAKE"
           cp fixtures/basic/anchors.json fixtures/basic/events.json fixtures/basic/display.mp4 "$TAKE/"
           npm run gate:export -- "$TAKE"
-          npm run gate:identity -- "$TAKE"
+          # The identity gate runs on the CAMERA fixture, not the camera-less
+          # one. It is a strict superset — every sink-identity assertion still
+          # runs, plus the PiP ones — so this costs no extra job budget and is
+          # the only place PiP correctness is gated in CI at all.
+          #
+          # project.json is deliberately NOT copied. A take recorded by the app
+          # has none until it is edited, so the gate must exercise the path
+          # where the project is DEFAULTED from the anchors. That path was
+          # broken: harness/sink-identity.ts assembled a project literal with no
+          # `pip`, and every camera take without a project.json rendered without
+          # a PiP. The camera-less fixture could never have caught it.
+          CAM="$(mktemp -d)/2026-01-01_00-00-00"
+          mkdir -p "$CAM"
+          cp fixtures/pip/anchors.json fixtures/pip/events.json \
+             fixtures/pip/display.mp4 fixtures/pip/camera.mp4 "$CAM/"
+          npm run gate:identity -- "$CAM"
 
       # The helper has crashed three times on CI and each time produced only a
       # signal number (STC-254). The stack trace lives in the OS crash report,

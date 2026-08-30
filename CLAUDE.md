@@ -536,6 +536,20 @@ reachable via KVC (`setValue(3, forKey: "captureResolution")`, verified in phase
   `project.json` — fixed, but the lesson is that the verification path needs verifying too.
   STILL NOT MEASURED: the camera-to-display sync NUMBER. "Looks in sync" is an eye's tolerance,
   not a millisecond figure; `scratch/` has `avsync.cjs` for producing one, and increment 5 owns it.
+- **The fourth caller assembled a project outside `parseProject`, exactly as predicted — and CI
+  could not see it.** `harness/sink-identity.ts` used a fetched `project.json` VERBATIM and fell
+  back to a literal it built itself, with no `pip`. A hand-rolled object cannot know that
+  `parseProject` turns the PiP on for a camera take (from its `hasCamera` argument), so every
+  camera take with no `project.json` rendered without a PiP and `npm run gate:identity` failed on
+  a real 5.6 MB camera track. `harness/main.ts` had the same bypass, benign only because
+  `fixtures/basic` has no camera.
+  **CI ran the identity gate on the camera-LESS fixture**, which is why nothing caught it. It now
+  runs on `fixtures/pip` (224 KB, committed, a real camera track) with `project.json` deliberately
+  NOT copied — a take recorded by the app has none until it is edited, so that is the path that
+  must be exercised. Proven to discriminate: the same fixture take FAILS on the old code and
+  passes on the new. It is a strict superset of the camera-less run, so it costs no job budget.
+  `transform/test/trim.test.ts` is now the fifth caller's tripwire.
+
 - **A gate with its OWN loader does not prove the app can open anything.** The
   PiP determinism gate passed on a real camera take while the Electron app
   could not open one at all: `harness/sink-identity.ts` supplied `camera.mp4`
@@ -638,9 +652,13 @@ reachable via KVC (`setValue(3, forKey: "captureResolution")`, verified in phase
   including runs where the gate passed in nine seconds. The same document had already warned that
   `decoder flush did not complete within 60000ms` is a FIXTURE STRING and not a fault; documenting
   a trap is not immunity to it. `gh run view --log` emits `job<TAB>step<TAB>message`, so slice by
-  the step column. And GitHub AGES OUT step attribution within a day or two (`UNKNOWN STEP` for
-  every line) — those runs are unmeasurable and must be named and excluded, never folded into the
-  denominator. A boundary claim built on the broken method (last pass `cb03ee9`, first skip
+  the step column. Step attribution is often ABSENT (`UNKNOWN STEP` for every
+  line) — those runs are unmeasurable and must be named and excluded, never folded into the
+  denominator. When it is available is NOT understood: measured over 12 runs, everything younger
+  than ~200 min had none and everything between 212 and 319 min had it, so it appears hours after
+  a run rather than ageing out — but some day-old runs lack it too. A first version of this note
+  said it "ages out within a day or two" and advised measuring FRESH runs, which is exactly
+  backwards: a just-finished run cannot be measured at all. Wait a few hours. A boundary claim built on the broken method (last pass `cb03ee9`, first skip
   `9df1e27`) had to be RETRACTED, because the runs needed to re-check it had already aged out.
 
 - **"Red means the code" only became true once ALL FOUR gates could say ENVIRONMENT.** #39 gave the

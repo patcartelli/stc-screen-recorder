@@ -6,6 +6,7 @@ import { ForwardFrameSource } from "@transform/frame-source";
 import { SeekingFrameSource } from "@transform/seeking-frame-source";
 import { composite } from "@transform/compositor";
 import type { Project } from "@transform/types";
+import { parseProject } from "@transform/trim";
 
 /**
  * The increment-3 claim, isolated: preview and export must produce the SAME
@@ -39,18 +40,29 @@ async function hashCanvas(ctx: OffscreenCanvasRenderingContext2D, w: number, h: 
     mark("identity: loadSession (demux + VideoDecoder.configure)");
     const session = await loadSession({ anchors, events, displayMp4: mp4, cameraMp4 });
 
-    // The take's OWN project.json, never a synthesised one. A CLI gate that
-    // hardcoded a project instead of reading the take's is what made test:slow
-    // report a hash mismatch between two correct implementations once trim
-    // existed. The fallback covers only a take that has no project at all.
-    const fetched = await fetch(`${dir}/project.json`)
+    // The take's OWN document, passed THROUGH parseProject — never used
+    // verbatim, and never replaced by a literal assembled here.
+    //
+    // Both halves of the old code were wrong in the same way. A fetched project
+    // went straight to render() without validation or defaulting; a take with
+    // no project.json got the literal below, which has no `pip`. So every
+    // camera take without a project.json rendered with no PiP and this gate
+    // failed with "a camera track loaded but render() gave no PiP on any
+    // sampled frame" — on a real 5.6 MB camera track.
+    //
+    // parseProject is what turns the PiP on for a camera take, from its
+    // `hasCamera` argument. A hand-rolled object cannot know to do that, which
+    // is the whole reason CLAUDE.md's rule is "pass the raw document": this was
+    // the fourth caller to assemble one outside the single parser, and the
+    // fourth time it produced two different answers.
+    const projectRaw = await fetch(`${dir}/project.json`)
       .then((r) => (r.ok ? r.json() : null))
       .catch(() => null);
-    const project: Project = fetched ?? {
-      version: 1,
-      output: { fps: 60, width: anchors.capture.width, height: anchors.capture.height },
-      cursor: { style: "default", scale: 1 },
-    };
+    const durationNs = session.frames[session.frames.length - 1] ?? 0;
+    const project: Project = parseProject(
+      projectRaw, anchors.capture.width, anchors.capture.height, durationNs,
+      anchors.camera?.present === true,
+    );
 
     const { width, height } = project.output;
     const mkCtx = () => new OffscreenCanvas(width, height)
