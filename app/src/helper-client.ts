@@ -13,6 +13,18 @@ import type { Readable } from "node:stream";
  * satisfy a pending request.
  */
 
+/**
+ * How long a request waits for its answer before the client gives up.
+ *
+ * Named rather than left a literal because it is the OUTERMOST link in the stop
+ * chain: the helper's own teardown backstops (CaptureSession.stopTimeoutSeconds
+ * and CameraCapture.stopTimeoutSeconds) must both answer inside it, or the app
+ * is left holding a recording it cannot end — which is exactly what a CI runner
+ * reported as `request "stop" (seq 2) timed out after 30000ms`.
+ * `helper/test/stop-bounds.test.ts` asserts the chain.
+ */
+export const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
+
 export interface HelperLine {
   ev: string;
   seq?: number;
@@ -55,7 +67,7 @@ export class HelperClient {
   private readyWaiters: ((l: HelperLine) => void)[] = [];
 
   private constructor(private readonly proc: ChildProcess, opts: SpawnOptions) {
-    this.defaultTimeoutMs = opts.defaultTimeoutMs ?? 30_000;
+    this.defaultTimeoutMs = opts.defaultTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
 
     // fd3 = reliable. Responses and lifecycle both arrive here; a line with a
     // seq answers a request, a line without one is an unsolicited event.
