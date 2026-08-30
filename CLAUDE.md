@@ -454,6 +454,14 @@ reachable via KVC (`setValue(3, forKey: "captureResolution")`, verified in phase
   stub `gh` on PATH and watches all four outcomes, including both directions of wrongness.
   When writing such a test: `execFileSync` returns stdout ONLY, so an assertion on a message
   written to stderr fails for the wrong reason. Use `spawnSync` and read both streams.
+  **It also read the head SHA exactly once, before the poll loop.** Push during the wait and the
+  poller kept matching runs against a commit that was no longer the head — found that commit's
+  green run, and merged. Hit for real on 2026-08-30 (PR #51) when a doc fix was pushed in the same
+  breath as the merge; GitHub's branch protection refused it, which is luck, because this script
+  exists FOR repos with no required check and that is exactly where nothing else would catch it.
+  A verifier that can merge something other than what it verified is not a verifier. The head is
+  now re-read every poll (fail fast, and do not wait out a full CI timeout on a dead SHA) and the
+  merge itself passes `--match-head-commit`, which closes the remaining gap server-side.
 
 - **The 26-minute "gate stall" was TEARDOWN, not the gate — and not the encoder.** Root-caused from
   the logs of run 33108160534: the gate did not hang. It FAILED correctly 66 s in with

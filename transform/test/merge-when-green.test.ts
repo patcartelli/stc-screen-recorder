@@ -1,6 +1,6 @@
 import { describe, test, expect } from "vitest";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, chmodSync } from "node:fs";
+import { mkdtempSync, writeFileSync, chmodSync, existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -23,18 +23,32 @@ const root = join(__dirname, "..", "..");
 const SCRIPT = join(root, "scripts", "merge-when-green.mjs");
 
 /** A stub `gh` whose behaviour per subcommand is baked in by the test. */
-function stubGh(opts: { mergeExit: number; mergeStderr?: string; stateAfterMerge: string; deleteExit?: number }) {
+function stubGh(opts: {
+  mergeExit: number; mergeStderr?: string; stateAfterMerge: string; deleteExit?: number;
+  /** Head SHA returned from the SECOND `pr view` on, simulating a push mid-wait. */
+  headMovesTo?: string;
+}) {
   const dir = mkdtempSync(join(tmpdir(), "gh-stub-"));
   const flag = join(dir, "merged");
+  const seen = join(dir, "views");
+  const argvLog = join(dir, "merge-argv");
+  const HEAD = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
+  // The head moves only after the first view, so the script gets one clean read
+  // (as it would in life) and then finds the ground shifted under it.
+  const headExpr = opts.headMovesTo
+    ? `if [ -f ${seen} ]; then H=${opts.headMovesTo}; else touch ${seen}; H=${HEAD}; fi`
+    : `H=${HEAD}`;
   writeFileSync(join(dir, "gh"), `#!/bin/sh
 case "$1 $2" in
   "pr view")
+    ${headExpr}
     if [ -f ${flag} ]; then S=${opts.stateAfterMerge}; else S=OPEN; fi
-    echo "{\\"headRefOid\\":\\"deadbeefdeadbeefdeadbeefdeadbeefdeadbeef\\",\\"state\\":\\"$S\\",\\"mergeable\\":\\"MERGEABLE\\",\\"title\\":\\"t\\",\\"headRefName\\":\\"feature\\",\\"mergedAt\\":\\"2026-01-01T00:00:00Z\\"}" ;;
+    echo "{\\"headRefOid\\":\\"$H\\",\\"state\\":\\"$S\\",\\"mergeable\\":\\"MERGEABLE\\",\\"title\\":\\"t\\",\\"headRefName\\":\\"feature\\",\\"mergedAt\\":\\"2026-01-01T00:00:00Z\\"}" ;;
   "run list")
     echo '[{"databaseId":1,"headSha":"deadbeefdeadbeefdeadbeefdeadbeefdeadbeef","status":"completed","conclusion":"success"}]' ;;
   "pr merge")
     touch ${flag}
+    echo "$@" > ${argvLog}
     echo "${opts.mergeStderr ?? ""}" >&2
     exit ${opts.mergeExit} ;;
   "api "*|"api")
@@ -45,6 +59,11 @@ exit 0
   chmodSync(join(dir, "gh"), 0o755);
   return dir;
 }
+
+/** What the script actually asked `gh pr merge` to do. */
+const mergeArgv = (stubDir: string) =>
+  existsSync(join(stubDir, "merge-argv"))
+    ? readFileSync(join(stubDir, "merge-argv"), "utf8").trim() : "";
 
 function run(stubDir: string) {
   // spawnSync, not execFileSync: execFileSync returns stdout ONLY, so a message
@@ -92,5 +111,40 @@ describe("merge-when-green exit code", () => {
   test("a clean merge exits 0", () => {
     const r = run(stubGh({ mergeExit: 0, stateAfterMerge: "MERGED" }));
     expect(r.code, r.out).toBe(0);
+  });
+
+  /**
+   * The hazard that reached production on 2026-08-30. headRefOid was read ONCE
+   * before the poll loop, so a push during the wait left the poller matching
+   * runs against a commit that was no longer the head — it found that commit's
+   * green run and merged. GitHub's branch protection refused it that time, but
+   * this script's whole reason to exist is repos with no required check, which
+   * is exactly where nothing else would have caught it.
+   */
+  test("a head that moves mid-wait is refused, and NOTHING is merged", () => {
+    const stub = stubGh({
+      mergeExit: 0, stateAfterMerge: "MERGED",
+      headMovesTo: "1111111111111111111111111111111111111111",
+    });
+    const r = run(stub);
+    expect(r.code, r.out).toBe(1);
+    expect(r.out).toMatch(/head moved while waiting/);
+    expect(r.out).toMatch(/deadbeef -> 11111111/);
+    // The load-bearing assertion: it must not have merged. A message about the
+    // head moving, followed by a merge, would be worse than saying nothing.
+    expect(mergeArgv(stub), "gh pr merge must never have been called").toBe("");
+  });
+
+  /**
+   * The poll-loop check closes the window to one iteration; this closes the gap
+   * between that check and the merge call itself, server-side. Asserted on the
+   * real argv because "we pass the flag" is exactly the kind of claim that rots.
+   */
+  test("the merge is pinned to the SHA whose CI was seen green", () => {
+    const stub = stubGh({ mergeExit: 0, stateAfterMerge: "MERGED" });
+    const r = run(stub);
+    expect(r.code, r.out).toBe(0);
+    expect(mergeArgv(stub)).toMatch(
+      /--match-head-commit deadbeefdeadbeefdeadbeefdeadbeefdeadbeef/);
   });
 });

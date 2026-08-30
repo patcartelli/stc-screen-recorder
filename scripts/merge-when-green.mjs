@@ -11,6 +11,14 @@
  * This polls the run for the PR's head SHA and refuses to merge anything that
  * is not green.
  *
+ * The SHA is re-checked every poll and again at the merge itself. It used to be
+ * read ONCE, before the loop, so a push during the wait left the poller matching
+ * runs against a commit that was no longer the head: it found that commit's
+ * green run and merged. Here, GitHub's branch protection refused it — but this
+ * script exists for repos with NO required check (see above), which is exactly
+ * where nothing else would have caught it. A verifier that can merge something
+ * other than what it verified is not a verifier.
+ *
  * Usage: node scripts/merge-when-green.mjs <pr-number> [--squash|--merge|--rebase]
  */
 import { execFileSync } from "node:child_process";
@@ -99,6 +107,18 @@ for (;;) {
   // up by failing to look far enough is the same shape as succeeding by finding
   // nothing to do. The client-side headSha check stays as a belt-and-braces
   // guard on the server's filter.
+  // Re-read the head EVERY poll. A push during the wait invalidates everything
+  // below it: the green run we are waiting for describes a commit that is no
+  // longer what a merge would land. Failing fast also beats waiting out the
+  // full CI timeout against a SHA nothing will ever build again.
+  const nowHead = JSON.parse(gh("pr", "view", pr, "--json", "headRefOid")).headRefOid;
+  if (nowHead !== headRefOid) {
+    console.error(`\nthe PR head moved while waiting: ${headRefOid.slice(0, 8)} -> ${nowHead.slice(0, 8)}`);
+    console.error("  the CI result being waited on no longer describes what would merge.");
+    console.error(`  re-run: npm run merge -- ${pr}`);
+    process.exit(1);
+  }
+
   const runs = JSON.parse(gh("run", "list", "--commit", headRefOid, "--limit", "20",
     "--json", "databaseId,headSha,status,conclusion"));
   const run = runs.find((r) => r.headSha === headRefOid);
@@ -138,7 +158,11 @@ for (;;) {
 function merge() {
   let mergeError = null;
   try {
-    const out = gh("pr", "merge", pr, method);
+    // --match-head-commit is the ATOMIC half. The check in the poll loop closes
+    // the window down to one iteration; this closes it completely, server-side,
+    // for the gap between that check and this call. GitHub refuses the merge if
+    // the head is not this exact commit — the one whose CI was observed green.
+    const out = gh("pr", "merge", pr, method, "--match-head-commit", headRefOid);
     if (out) console.log(out);
   } catch (e) {
     mergeError = e;
