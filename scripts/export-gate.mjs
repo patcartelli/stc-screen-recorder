@@ -83,23 +83,23 @@ try {
   await page.reload({ waitUntil: "domcontentloaded" });
   await page.waitForFunction(() => window.__exportReady === true, { timeout: 60_000 });
 
-  // Read the take's OWN project.json when it has one, exactly as the app does.
+  // The take's OWN project.json, passed THROUGH untouched — the page decides
+  // defaults with parseProject, the same function the app uses.
+  //
   // Hardcoding a default here was harmless while nothing in a project could
-  // change the output — but trim can. With a trimmed project on disk the app
-  // exported a clip while this side exported the whole take, and the identity
-  // gate compared two different things and called it a mismatch.
-  let project = {
-    version: 2,
-    output: { fps: 60, width: anchors.capture.width, height: anchors.capture.height },
-    cursor: { style: "default", scale: 1 },
-  };
+  // change the output, and then trim arrived: with a trimmed project on disk
+  // the app exported a clip while this side exported the whole take, and the
+  // identity gate compared two different things and called it a mismatch. The
+  // PiP repeated it — a camera take with no project.json previewed WITH a PiP
+  // and exported without one. Assembling a project outside the one parser is
+  // how those two answers happen.
   const projectPath = join(sessionDir, "project.json");
-  if (existsSync(projectPath)) {
-    const onDisk = JSON.parse(readFileSync(projectPath, "utf8"));
-    project = { ...project, ...onDisk,
-                output: { ...project.output, ...(onDisk.output ?? {}) } };
-    console.log(`project.json found: trim=${JSON.stringify(onDisk.trim ?? null)}`);
-  }
+  const project = existsSync(projectPath)
+    ? JSON.parse(readFileSync(projectPath, "utf8"))
+    : null;
+  console.log(project
+    ? `project.json found: pip=${JSON.stringify(project.pip ?? null)} trim=${JSON.stringify(project.trim ?? null)}`
+    : "no project.json — the page applies defaults (PiP on for a camera take)");
 
   // Vite may still reload once while pre-bundling; retry rather than fail.
   const withRetry = async (fn) => {
@@ -111,6 +111,7 @@ try {
       }
     }
   };
+
   // Bounds the evaluate, NOT the retry loop: a retry that re-enters an
   // unbounded wait is not bounded, it is three unbounded waits.
   const runOne = (mf) => withRetry(() => bounded(page.evaluate(
