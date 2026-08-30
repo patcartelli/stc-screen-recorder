@@ -293,9 +293,21 @@ describe("gate bounds — clearance against the CI job timeout", () => {
   });
 
   test("the retry is part of the worst case, not sitting outside it", () => {
-    // Guards the specific regression: a model that ignores ATTEMPTS would not
-    // move when the retry count does.
-    expect(worstCaseJobMs()).toBeGreaterThanOrEqual(ATTEMPTS * ATTEMPT_MS);
+    // Guards the specific regression: a model that ignores GATE_ATTEMPTS would
+    // not move when the retry count does.
+    //
+    // Asserted by VARYING the count, not by multiplying the current one. The
+    // previous form was `worstCaseJobMs() >= ATTEMPTS * ATTEMPT_MS`, which was
+    // a real guard at ATTEMPTS = 3 and became vacuous the moment it dropped to
+    // 1 on 2026-08-30: a model that deleted the term entirely computes
+    // `ms * 1` and satisfies it. Third time this repo has shipped a guard that
+    // its own slack could absorb.
+    const at = (n: number) =>
+      worstCaseJobMs({ attempts: { ...GATE_ATTEMPTS, "gate.mjs": n } });
+    expect(at(3) - at(1), "the model must move when the retry count moves")
+      .toBe(2 * ATTEMPT_MS);
+    // ...and the model must read the production constant, not a copy of it.
+    expect(worstCaseJobMs()).toBe(at(ATTEMPTS));
   });
 
   test("every bounded evaluate in the CI gates is accounted for", () => {

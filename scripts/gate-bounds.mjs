@@ -39,7 +39,26 @@
  * 600_000 in #39, which made ATTEMPTS x 10 min = the entire job cap for this
  * gate alone.
  */
-export const ATTEMPTS = 3;
+/**
+ * How many times the determinism gate is attempted before it is called a SKIP.
+ *
+ * ONE, deliberately, since 2026-08-30. It was 3, and measurement says the extra
+ * two are pure cost: across 19 consecutive CI runs the gate skipped EVERY time,
+ * all three attempts failing identically at the same bound, and attempts 2 and 3
+ * never once succeeded where attempt 1 failed. That is 7 minutes of CI per run
+ * spent re-learning what attempt 1 already reported.
+ *
+ * A retry is for a fault that is genuinely per-attempt. This one is not: the
+ * signature is a WEDGED RENDERER (the outer EVAL_MS bound fires and
+ * `browser.close()` then hangs its full TEARDOWN_MS), which a fresh attempt in
+ * the same job inherits. See docs/STC-259-GATE-SKIP-RATE.md.
+ *
+ * Restoring it is a one-line change and the retry loop stays fully tested at
+ * whatever value this holds — but do not restore it without re-measuring, or the
+ * 7 minutes come back for the same nothing. The number to check first is
+ * `node scripts/gate-skip-rate.mjs`.
+ */
+export const ATTEMPTS = 1;
 export const ATTEMPT_MS = 420_000;
 
 /** Per-evaluate bound. Override for experiments; CI uses the default. */
@@ -103,10 +122,10 @@ export const READY_MS = 60_000;
  * Each gate pays its own launch and both teardown bounds; only the determinism
  * gate is retried.
  */
-export function worstCaseJobMs() {
+export function worstCaseJobMs({ attempts = GATE_ATTEMPTS } = {}) {
   let total = PRE_GATE_BUDGET_MS;
   for (const [script, ms] of Object.entries(GATE_PROCESS_MS)) {
-    total += ms * (GATE_ATTEMPTS[script] ?? 1);
+    total += ms * (attempts[script] ?? 1);
   }
   return total;
 }

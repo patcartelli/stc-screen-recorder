@@ -69,7 +69,7 @@ belonging to a different commit).
 |---|---|---|
 | STC-232 | **PHASE 3 COMPLETE 2026-08-30** — increments 1-5 done. Recorded from the app with the camera toggle on, previewed with no hand-written project.json, sync measured at 65 ms | nothing |
 | STC-232 4b | **done and VISUALLY CONFIRMED 2026-08-28** — both sinks draw the PiP, gate proves it, app opens camera takes, and a human watched a real 4K take. Increment 5 is unblocked | nothing; increment 5 is next |
-| STC-259 | **DONE** — steps 1-3. Both encoder queries bounded at 15 s, the harness's first append bounded, a deadline watchdog behind all of them, and the product answered: it does not need one (see the trap below) | nothing |
+| STC-259 | **DONE** — steps 1-3. Both encoder queries bounded at 15 s, the harness's first append bounded, a deadline watchdog behind all of them, and the product answered: it does not need one (see the trap below). The determinism gate's retry is now **ATTEMPTS = 1** — measured useless, see below | the wedged renderer itself (Mode B) |
 | STC-249 | lossy ring under REAL capture load — the semantics are tested, the live scenario is not | a recording with a stalled stats consumer |
 | STC-254 | **done** — append/teardown race fixed (part 2), SIGTRAP crash handler closed (part 3). Master CI green again | nothing; watch that master stays green |
 | STC-232 | phase 3: camera PiP — recommended first, it avoids §2a's CoreAudio wedge entirely | a scope decision |
@@ -624,8 +624,15 @@ reachable via KVC (`setValue(3, forKey: "captureResolution")`, verified in phase
   JS timer can fire. That is Mode B, and it needs Chrome's GPU logs, not more instrumentation
   inside the page.
   **The retry is provably useless here** — all three attempts fail identically at the same bound,
-  and attempts 2 and 3 have never once succeeded where 1 failed. It costs 10.5 min per run to
-  learn what it knew after 3.5. Per this file's own rule, the answer is the decoder, not attempts.
+  and attempts 2 and 3 have never once succeeded where 1 failed. It cost 10.5 min per run to
+  learn what it knew after 3.5, so **`ATTEMPTS` is 1 since 2026-08-30** (worst-case job 58.8 ->
+  44.8 min). That is a mitigation; the gate still is not running, and per this file's own rule the
+  answer is the decoder, not attempts.
+  Dropping that constant quietly guts two guards, both rewritten to survive it: `gate-bounds`'s
+  `worstCase >= ATTEMPTS * ATTEMPT_MS` is satisfied at 1 by a model that deleted the term (PROVEN
+  — the old form was put back against a mutated model and passed), and `gate-retry`'s
+  `toBe(ATTEMPTS)` becomes indistinguishable from the retry loop having been deleted. Assert that
+  the model MOVES with the count, and drive the loop with an explicit count.
   NB the `decoder flush did not complete within 60000ms` lines in CI logs are mostly a FIXTURE
   STRING in `transform/test/gate-retry.test.ts`, not a fault — reading them as the gate's reason
   is a wrong turn already taken once.
