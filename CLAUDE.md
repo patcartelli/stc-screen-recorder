@@ -612,30 +612,36 @@ reachable via KVC (`setValue(3, forKey: "captureResolution")`, verified in phase
   filled that corner anyway. The fix in all three cases was a positive discriminator: name the parts
   and require each, or compare against a control that differs ONLY by the thing under test. Five
   mutations are watched failing in `gate-bounds.test.ts`, including that one.
-- **THE DETERMINISM GATE HAS NOT RUN SINCE 2026-08-28 — 19 consecutive skips, 0 passes.** The
-  skip mechanism is working exactly as designed and is telling the truth; the truth is that the
-  determinism guarantee stopped being checked and nothing went red. Seek/export/identity sit at
-  33-40%. Measured 2026-08-30, full evidence in `docs/STC-259-GATE-SKIP-RATE.md`, re-derive with
-  `node scripts/gate-skip-rate.mjs`.
-  The boundary is exact and is the commit that ADDED skipping (`9df1e27`, 43 min after the last
-  pass) — which converted a visible ~50% failure into a silent 100% non-execution rather than
-  causing it. The signature is the OUTER bound (`in-page gate run did not return within 180000 ms`)
-  plus `browser.close()` hanging its full 30 s: a WEDGED renderer, not a slow one, so no in-page
-  JS timer can fire. That is Mode B, and it needs Chrome's GPU logs, not more instrumentation
-  inside the page.
-  **The retry is provably useless here** — all three attempts fail identically at the same bound,
-  and attempts 2 and 3 have never once succeeded where 1 failed. It cost 10.5 min per run to
-  learn what it knew after 3.5, so **`ATTEMPTS` is 1 since 2026-08-30** (worst-case job 58.8 ->
-  44.8 min). That is a mitigation; the gate still is not running, and per this file's own rule the
-  answer is the decoder, not attempts.
-  Dropping that constant quietly guts two guards, both rewritten to survive it: `gate-bounds`'s
-  `worstCase >= ATTEMPTS * ATTEMPT_MS` is satisfied at 1 by a model that deleted the term (PROVEN
-  — the old form was put back against a mutated model and passed), and `gate-retry`'s
+- **The gates skip on roughly 60% of CI runs, ALL FOUR TOGETHER, and that is the number to
+  watch.** Measured 2026-08-30 over the 10 runs whose logs still carry per-step attribution;
+  `docs/STC-259-GATE-SKIP-RATE.md`, re-derive with `node scripts/gate-skip-rate.mjs`. In every run
+  where one gate skipped all four did, and where one passed all four did — it is a property of the
+  JOB (can this machine service a video pipeline right now), not of any gate.
+  Healthy, the determinism gate clears A, B and C in **9 s** and the whole job takes 2.7 min.
+  Wedged, that one step used to burn **641 s**. The signature is the OUTER bound (`in-page gate run
+  did not return within 180000 ms`) plus `browser.close()` hanging its full 30 s: a WEDGED
+  renderer, not a slow one, so no in-page JS timer can fire. Mode B — Chrome's GPU logs, not more
+  instrumentation inside the page.
+  **The retry bought nothing** — all three attempts failed identically at the same bound and 2 and
+  3 never succeeded where 1 failed, so `ATTEMPTS` is **1** since 2026-08-30 (worst case 58.8 ->
+  44.8 min). Dropping that constant quietly guts two guards, both rewritten to survive it:
+  `worstCase >= ATTEMPTS * ATTEMPT_MS` is satisfied at 1 by a model that deleted the term (PROVEN —
+  the old form was put back against a mutated model and passed), and `gate-retry`'s
   `toBe(ATTEMPTS)` becomes indistinguishable from the retry loop having been deleted. Assert that
-  the model MOVES with the count, and drive the loop with an explicit count.
-  NB the `decoder flush did not complete within 60000ms` lines in CI logs are mostly a FIXTURE
-  STRING in `transform/test/gate-retry.test.ts`, not a fault — reading them as the gate's reason
-  is a wrong turn already taken once.
+  the model MOVES with the count; drive the loop with an explicit count.
+
+- **A CI log is not one text — scope every verdict to its STEP.** This finding was first published
+  as "the determinism gate has not run in 19 consecutive runs, 100% skip". That was WRONG. The
+  script searched the whole-job log for `Determinism gate DID NOT RUN`, and
+  `transform/test/gate-retry.test.ts` prints that line verbatim into the **Test** step because it
+  exercises `announceSkip` for real — so every run that ran the unit tests read as a skipped gate,
+  including runs where the gate passed in nine seconds. The same document had already warned that
+  `decoder flush did not complete within 60000ms` is a FIXTURE STRING and not a fault; documenting
+  a trap is not immunity to it. `gh run view --log` emits `job<TAB>step<TAB>message`, so slice by
+  the step column. And GitHub AGES OUT step attribution within a day or two (`UNKNOWN STEP` for
+  every line) — those runs are unmeasurable and must be named and excluded, never folded into the
+  denominator. A boundary claim built on the broken method (last pass `cb03ee9`, first skip
+  `9df1e27`) had to be RETRACTED, because the runs needed to re-check it had already aged out.
 
 - **"Red means the code" only became true once ALL FOUR gates could say ENVIRONMENT.** #39 gave the
   determinism gate a machine label and the claim was made then; it was 1-of-4 true. The other three
