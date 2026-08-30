@@ -75,9 +75,13 @@ costs 180 s of bound plus 30 s of teardown, so the determinism gate burns
 
 Per STC-259's own rule — *retry logic must key on the failure being the MACHINE's*
 — a retry whose second and third attempts are known to be perfectly correlated
-with the first is not absorbing a transient. Dropping `ATTEMPTS` to 1 for this
-gate would reclaim 7 minutes per run and lose no information. That is a
-mitigation, not a fix.
+with the first is not absorbing a transient.
+
+**Done 2026-08-30: `ATTEMPTS` is now 1.** Worst-case job dropped 58.8 → 44.8 min.
+That is a mitigation, not a fix — the gate still is not running. Restoring the
+retry is one line and the loop stays tested at any value, but re-measure with
+`scripts/gate-skip-rate.mjs` first or the 7 minutes come back for the same
+nothing.
 
 ## Two things I got wrong, recorded so they are not repeated
 
@@ -103,8 +107,10 @@ script keys on each gate's own `PASS`/`FAIL`/`DID NOT RUN` markers instead.
 1. **Diagnose Mode B out of process.** In-page instrumentation cannot see this by
    construction. Chrome's own GPU logging is the avenue — `--enable-logging
    --v=1`, and `chrome://gpu` state captured before the wedge.
-2. **Consider `ATTEMPTS = 1` for the determinism gate** until the wedge is
-   understood. The retry is provably not helping and costs 7 min per run.
+2. ~~Consider `ATTEMPTS = 1` for the determinism gate.~~ **Done 2026-08-30.**
+   Care was needed: the constant was load-bearing in two assertions that both go
+   vacuous at 1, and the `worstCaseJobMs` guard was *proven* to rot by putting
+   the old form back against a mutated model and watching it pass.
 3. **Do not add attempts to the other three gates.** `CLAUDE.md` already
    rejected that on arithmetic (118 min, needing a ~2 hour cap).
 4. **Run `node scripts/gate-skip-rate.mjs` before trusting a green CI run** on

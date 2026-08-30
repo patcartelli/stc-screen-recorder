@@ -624,8 +624,15 @@ reachable via KVC (`setValue(3, forKey: "captureResolution")`, verified in phase
   JS timer can fire. That is Mode B, and it needs Chrome's GPU logs, not more instrumentation
   inside the page.
   **The retry is provably useless here** — all three attempts fail identically at the same bound,
-  and attempts 2 and 3 have never once succeeded where 1 failed. It costs 10.5 min per run to
-  learn what it knew after 3.5. Per this file's own rule, the answer is the decoder, not attempts.
+  and attempts 2 and 3 have never once succeeded where 1 failed. It cost 10.5 min per run to
+  learn what it knew after 3.5, so **`ATTEMPTS` is 1 since 2026-08-30** (worst-case job 58.8 ->
+  44.8 min). That is a mitigation; the gate still is not running, and per this file's own rule the
+  answer is the decoder, not attempts.
+  Dropping that constant quietly guts two guards, both rewritten to survive it: `gate-bounds`'s
+  `worstCase >= ATTEMPTS * ATTEMPT_MS` is satisfied at 1 by a model that deleted the term (PROVEN
+  — the old form was put back against a mutated model and passed), and `gate-retry`'s
+  `toBe(ATTEMPTS)` becomes indistinguishable from the retry loop having been deleted. Assert that
+  the model MOVES with the count, and drive the loop with an explicit count.
   NB the `decoder flush did not complete within 60000ms` lines in CI logs are mostly a FIXTURE
   STRING in `transform/test/gate-retry.test.ts`, not a fault — reading them as the gate's reason
   is a wrong turn already taken once.
