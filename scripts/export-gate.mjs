@@ -10,7 +10,7 @@
  */
 import { createServer } from "vite";
 import { chromium } from "playwright";
-import { bounded, closeQuietly, EVAL_MS, isBoundFailure } from "./gate-bounds.mjs";
+import { bounded, closeQuietly, EVAL_MS, isBoundFailure, instrumentPage } from "./gate-bounds.mjs";
 import { readFileSync, existsSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
@@ -64,6 +64,9 @@ await server.listen(5200);
 
 const browser = await chromium.launch({ channel: "chrome", headless: true });
 const page = await browser.newPage();
+// STC-259 Mode B: a blocked renderer kills every in-page bound, so the page's
+// checkpoints are collected out here. Also installs the wedge fault injection.
+const trail = await instrumentPage(page);
 const errors = [];
 page.on("console", (m) => { if (m.type() === "error") errors.push(m.text()); });
 page.on("pageerror", (e) => errors.push(String(e)));
@@ -75,7 +78,14 @@ const fail = (m) => { failed = true; console.error("FAIL:", m); };
  * Both fail the run; only the LABEL differs, and gate-retry keys on it —
  * ENVIRONMENT is skippable, FAIL: never is.
  */
-const environment = (m) => { failed = true; console.error("ENVIRONMENT:", m); };
+const environment = (m) => {
+  failed = true;
+  console.error("ENVIRONMENT:", m);
+  // Every ENVIRONMENT path dumps the trail, rather than the catch site doing it
+  // — seek-gate reaches this from its own stuckOnFirstSeek branch too, and a
+  // diagnosis wired per call site is one that gets forgotten at the next one.
+  trail.dump();
+};
 
 try {
   await page.goto("http://localhost:5200/export.html");

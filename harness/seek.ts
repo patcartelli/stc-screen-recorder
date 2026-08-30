@@ -1,4 +1,5 @@
 import { demuxTrack } from "@transform/demux";
+import { mark } from "./mark.js";
 import { SeekingFrameSource } from "@transform/seeking-frame-source";
 
 /**
@@ -31,11 +32,13 @@ function readFrameIndex(ctx: OffscreenCanvasRenderingContext2D): number {
 const gateBody = async (mp4Url: string) => {
   const buf = await fetch(mp4Url).then((r) => r.arrayBuffer());
   const video = await demuxTrack(buf, mp4Url);
+  mark("seek: new SeekingFrameSource (VideoDecoder.configure is synchronous)");
   const source = new SeekingFrameSource(video);
   const n = video.chunks.length;
   const ctx = new OffscreenCanvas(video.codedWidth, video.codedHeight)
     .getContext("2d", { alpha: false, willReadFrequently: true }) as OffscreenCanvasRenderingContext2D;
 
+  mark("seek: first frameAt(0)");
   // Prove the very first seek completes before running a hundred more.
   const first = await Promise.race([
     source.frameAt(0).then(() => "ok"),
@@ -45,7 +48,7 @@ const gateBody = async (mp4Url: string) => {
 
   const failures: string[] = [];
   const check = async (want: number, label: string, expect = want) => {
-    console.log(`SEEKGATE probe ${label} -> ${want}`);
+    mark(`seek: probe ${label} -> ${want} (drawImage + getImageData are synchronous)`);
     const frame = await source.frameAt(want);
     if (!frame) { failures.push(`${label}: seek(${want}) returned null`); return; }
     ctx.drawImage(frame as unknown as CanvasImageSource, 0, 0);

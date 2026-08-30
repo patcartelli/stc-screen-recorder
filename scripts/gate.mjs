@@ -9,13 +9,22 @@
 // are not contractually deterministic; the gate lives before the encoder.
 import { createServer } from "vite";
 import { chromium } from "playwright";
-import { bounded, closeQuietly, EVAL_MS, ENCODER_MS } from "./gate-bounds.mjs";
+import {
+  bounded, closeQuietly, instrumentPage, EVAL_MS, ENCODER_MS,
+} from "./gate-bounds.mjs";
 
 const server = await createServer({ configFile: "harness/vite.config.ts" });
 await server.listen(5199);
 
 const browser = await chromium.launch({ channel: "chrome", headless: true });
 const page = await browser.newPage();
+
+// Mode B: the renderer's main thread blocks, so nothing inside the page can
+// report and every in-page bound is dead. The page's checkpoints are collected
+// out here instead, where a wedge cannot reach them. This also installs the
+// STC_GATE_FAULT=wedge:<checkpoint> injection that makes the path reachable.
+const trail = await instrumentPage(page);
+
 const consoleErrors = [];
 page.on("console", (m) => { if (m.type() === "error") consoleErrors.push(m.text()); });
 page.on("pageerror", (e) => consoleErrors.push(String(e)));
@@ -39,6 +48,9 @@ const BOUND_FIRED = [
 const environment = (msg) => {
   failed = true;
   console.error("ENVIRONMENT:", msg);
+  // Here, not at the catch site: a diagnosis wired per call site is one that
+  // gets forgotten at the next one.
+  trail.dump();
 };
 
 try {

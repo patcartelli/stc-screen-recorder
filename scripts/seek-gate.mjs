@@ -5,7 +5,9 @@
 import { createServer } from "vite";
 import { chromium } from "playwright";
 import { readFileSync } from "node:fs";
-import { closeQuietly, isBoundFailure } from "./gate-bounds.mjs";
+import {
+  bounded, closeQuietly, isBoundFailure, instrumentPage, SEEK_MS,
+} from "./gate-bounds.mjs";
 import { classifyDecoderStall } from "./decoder-stall.mjs";
 
 const server = await createServer({
@@ -25,6 +27,9 @@ const server = await createServer({
 await server.listen(5204);
 const browser = await chromium.launch({ channel: "chrome", headless: true });
 const page = await browser.newPage();
+// STC-259 Mode B: a blocked renderer kills every in-page bound, so the page's
+// checkpoints are collected out here. Also installs the wedge fault injection.
+const trail = await instrumentPage(page);
 const errors = [];
 page.on("pageerror", (e) => errors.push(String(e)));
 page.on("crash", () => errors.push("RENDERER CRASHED"));
@@ -45,7 +50,14 @@ const fail = (m) => { failed = true; console.error("FAIL:", m); };
  * a decoder that accepted chunks and emitted none reddened PRs wearing the code
  * label, twice in one night on CI run 33228579869.
  */
-const environment = (m) => { failed = true; console.error("ENVIRONMENT:", m); };
+const environment = (m) => {
+  failed = true;
+  console.error("ENVIRONMENT:", m);
+  // Every ENVIRONMENT path dumps the trail, rather than the catch site doing it
+  // — seek-gate reaches this from its own stuckOnFirstSeek branch too, and a
+  // diagnosis wired per call site is one that gets forgotten at the next one.
+  trail.dump();
+};
 try {
   // Vite pre-bundles dependencies on first load and RELOADS the page when it
   // does, which destroys any in-flight evaluate ("resulting promise was garbage
@@ -58,11 +70,18 @@ try {
   let r;
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
-      r = await Promise.race([
+      // `bounded`, not a hand-rolled race, and SEEK_MS, not a copy of it.
+      // The hand-rolled version threw an untagged Error, so isBoundFailure said
+      // no and a Mode B wedge here was reported as FAIL: — reddening CI for a
+      // machine fault, in the one gate whose whole subject is that distinction.
+      // It also hardcoded 90_000 while gate-bounds declared SEEK_MS = 90_000
+      // and fed THAT to the worst-case model: two copies of one bound, related
+      // by nothing.
+      r = await bounded(
         page.evaluate(() => window.runSeekGate("/fixture.mp4")),
-        new Promise((_, rej) => setTimeout(() => rej(new Error(
-          `timed out; last probe: ${probes[probes.length - 1] ?? "none"} (after ${probes.length} probes)`)), 90_000)),
-      ]);
+        SEEK_MS,
+        () => `the in-page seek gate run (last probe: ${probes[probes.length - 1] ?? "none"}, ` +
+              `after ${probes.length} probes)`);
       break;
     } catch (e) {
       if (attempt === 3 || !String(e).includes("garbage collected")) throw e;

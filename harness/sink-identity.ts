@@ -1,5 +1,6 @@
 import { render } from "@transform/render";
 import { tickTimeNs, frameIndexAt } from "@transform/time";
+import { mark } from "./mark.js";
 import { loadSession } from "@transform/session";
 import { ForwardFrameSource } from "@transform/frame-source";
 import { SeekingFrameSource } from "@transform/seeking-frame-source";
@@ -35,6 +36,7 @@ async function hashCanvas(ctx: OffscreenCanvasRenderingContext2D, w: number, h: 
       ? await fetch(`${dir}/${anchors.files.camera}`).then((r) => r.arrayBuffer())
       : undefined;
 
+    mark("identity: loadSession (demux + VideoDecoder.configure)");
     const session = await loadSession({ anchors, events, displayMp4: mp4, cameraMp4 });
 
     // The take's OWN project.json, never a synthesised one. A CLI gate that
@@ -106,6 +108,7 @@ async function hashCanvas(ctx: OffscreenCanvasRenderingContext2D, w: number, h: 
     fwdCam?.close();
 
     const prevCtx = mkCtx();
+    mark("identity: new SeekingFrameSource (VideoDecoder.configure is synchronous)");
     const seek = new SeekingFrameSource(session.video);
     const seekCam = session.cameraVideo ? new SeekingFrameSource(session.cameraVideo) : null;
     const mismatches: string[] = [];
