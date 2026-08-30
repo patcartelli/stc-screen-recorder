@@ -111,8 +111,8 @@ Two consequences:
 - **The boundary claim is retracted.** The earlier version pinned the last pass
   to `cb03ee9` and the first skip to `9df1e27` — the commit that introduced
   skipping — 43 minutes apart. That was derived from the same contaminated
-  method, and the runs needed to re-check it have since aged out of step
-  attribution. It cannot be confirmed and should not be repeated.
+  method, and the runs needed to re-check it come back with no step attribution,
+  so it cannot be re-measured. It cannot be confirmed and should not be repeated.
 
 What survives unchanged, because it was read directly from gate step logs rather
 than from the aggregate: the wedged-renderer signature, the retry being useless,
