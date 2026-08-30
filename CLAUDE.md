@@ -69,7 +69,7 @@ belonging to a different commit).
 |---|---|---|
 | STC-232 | **PHASE 3 COMPLETE 2026-08-30** — increments 1-5 done. Recorded from the app with the camera toggle on, previewed with no hand-written project.json, sync measured at 65 ms | nothing |
 | STC-232 4b | **done and VISUALLY CONFIRMED 2026-08-28** — both sinks draw the PiP, gate proves it, app opens camera takes, and a human watched a real 4K take. Increment 5 is unblocked | nothing; increment 5 is next |
-| STC-259 | **DONE** — steps 1-3. Both encoder queries bounded at 15 s, the harness's first append bounded, a deadline watchdog behind all of them, and the product answered: it does not need one (see the trap below) | nothing |
+| STC-259 | **DONE** — steps 1-3. Both encoder queries bounded at 15 s, the harness's first append bounded, a deadline watchdog behind all of them, and the product answered: it does not need one (see the trap below). The determinism gate's retry is now **ATTEMPTS = 1** — measured useless, see below | the wedged renderer itself (Mode B) |
 | STC-249 | lossy ring under REAL capture load — the semantics are tested, the live scenario is not | a recording with a stalled stats consumer |
 | STC-254 | **done** — append/teardown race fixed (part 2), SIGTRAP crash handler closed (part 3). Master CI green again | nothing; watch that master stays green |
 | STC-232 | phase 3: camera PiP — recommended first, it avoids §2a's CoreAudio wedge entirely | a scope decision |

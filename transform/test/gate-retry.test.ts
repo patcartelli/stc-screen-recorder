@@ -65,10 +65,25 @@ describe("gate retry — the runner, driven end to end", () => {
 
   test("the machine declining is retried to the limit, then SKIPPED, exit 0", async () => {
     const log = attemptLog();
-    const code = await runWithRetry(process.execPath, stub(ENV_LINE, 1), { attemptLog: log });
+    // Driven with an EXPLICIT count rather than the production ATTEMPTS, which
+    // has been 1 since 2026-08-30. `toBe(ATTEMPTS)` would then assert exactly
+    // what "a passing gate runs once" already asserts, and would be satisfied
+    // by the retry loop having been deleted. The mechanism has to stay covered
+    // so restoring the retry is a one-line change rather than archaeology.
+    const code = await runWithRetry(
+      process.execPath, stub(ENV_LINE, 1), { attemptLog: log, attempts: 3 });
     // 0 because a skip is announced, not failed — the annotation is the record.
     expect(code).toBe(0);
-    expect(attempts(log), "every attempt must be counted").toBe(ATTEMPTS);
+    expect(attempts(log), "every attempt must be counted").toBe(3);
+  });
+
+  test("the determinism gate asks for ONE attempt, and that is a measurement", () => {
+    // 19 consecutive skips, all three attempts failing identically at the same
+    // bound, attempts 2 and 3 never once succeeding where 1 failed — 7 min of
+    // CI per run for nothing (docs/STC-259-GATE-SKIP-RATE.md). Changing this
+    // back should mean somebody re-measured with scripts/gate-skip-rate.mjs,
+    // not that it drifted.
+    expect(ATTEMPTS).toBe(1);
   });
 
   test("a real regression is NOT retried and fails", async () => {

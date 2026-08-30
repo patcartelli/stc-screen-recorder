@@ -23,7 +23,14 @@ export declare const GC_RETRIES: number;
 export declare const GATE_PROCESS_MS: Record<string, number>;
 export declare const GATE_ATTEMPTS: Record<string, number>;
 export declare function gateFloorMs(script: string): number;
-export declare function worstCaseJobMs(): number;
+/**
+ * `attempts` overrides GATE_ATTEMPTS so the clearance test can assert the model
+ * MOVES with the retry count instead of multiplying whatever the count happens
+ * to be — a distinction that stopped being academic when ATTEMPTS dropped to 1.
+ */
+export declare function worstCaseJobMs(
+  opts?: { attempts?: Record<string, number> },
+): number;
 export declare function attemptFloorMs(): number;
 
 export declare function bounded<T>(promise: PromiseLike<T>, ms: number, what: string): Promise<T>;
