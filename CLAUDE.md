@@ -14,6 +14,7 @@ events → deterministic transform → CFR MP4 with cursor overlay.
 | `helper/src/Watchers.swift` | display/device watchers |
 | `helper/src/main.swift` | App lifecycle, command dispatch |
 | `helper/build.sh` | builds and signs; `SIGN_ID="..." ./build.sh` to override |
+| `helper/test/stop-bounds.test.ts` | the stop chain: camera backstop < display backstop < the client's request timeout |
 | `helper/test/ipc.test.ts` | black-box IPC tests — spawn the binary, drive stdin, assert on fd3/stdout |
 | `app/src/helper-client.ts` | promise-based client for the two-channel protocol (fd3 + lossy stdout) |
 | `app/src/supervisor.ts` | keeps the helper alive; makes crashes and lost recordings legible |
@@ -66,7 +67,7 @@ belonging to a different commit).
 |---|---|---|
 | STC-232 | **PHASE 3 COMPLETE 2026-08-30** — increments 1-5 done. Recorded from the app with the camera toggle on, previewed with no hand-written project.json, sync measured at 65 ms | nothing |
 | STC-232 4b | **done and VISUALLY CONFIRMED 2026-08-28** — both sinks draw the PiP, gate proves it, app opens camera takes, and a human watched a real 4K take. Increment 5 is unblocked | nothing; increment 5 is next |
-| STC-259 | **cause confirmed and contained** — both encoder queries bounded at 15 s, run retried 3x, then a loud SKIP. Measured on CI both ways on one commit | steps 2 and 3: the harness's first `AVAssetWriter` append is still unbounded, and whether `CameraCapture.swift`/`Capture.swift` need the same is still open |
+| STC-259 | **DONE** — steps 1-3. Both encoder queries bounded at 15 s, the harness's first append bounded, a deadline watchdog behind all of them, and the product answered: it does not need one (see the trap below) | nothing |
 | STC-249 | lossy ring under REAL capture load — the semantics are tested, the live scenario is not | a recording with a stalled stats consumer |
 | STC-254 | **done** — append/teardown race fixed (part 2), SIGTRAP crash handler closed (part 3). Master CI green again | nothing; watch that master stays green |
 | STC-232 | phase 3: camera PiP — recommended first, it avoids §2a's CoreAudio wedge entirely | a scope decision |
@@ -634,6 +635,52 @@ reachable via KVC (`setValue(3, forKey: "captureResolution")`, verified in phase
   cycle the moment every gate got a bound. ESM resolves that cycle by hanging on the top-level
   await and exiting 13, not by failing clearly. One direction: the runner depends on the bounds,
   the bounds depend on nothing.
+- **You cannot bound an append in the product, and STC-259 step 3's answer is that you must not
+  try.** The ticket asked whether `Capture.swift` and `CameraCapture.swift` need the append bound
+  the writer-gate harness now has. They do not, and the reason is structural rather than a
+  judgement call: `WriterGate.append` holds its lock ACROSS the append — that IS the STC-254 fix —
+  so a bound there would have to abandon a thread still holding that lock, and
+  `closeAndMarkFinished()` would go on blocking forever exactly as before. Nothing is bought at
+  the append; the wedge reaches the lock whatever the append does. The containing bound belongs
+  one layer out, at teardown, and both files already had one (`CaptureSession.stopTimeoutSeconds`
+  20 s, `CameraCapture.stopTimeoutSeconds` 10 s, each answering exactly once). A wedged first
+  append therefore costs a take its finalised mp4 and answers `<reason>-timeout` with a
+  `stopWarning`; it cannot leave the app holding a recording it is unable to end. The appends also
+  run OUTSIDE both objects' own `lock`, so `stats()`, `track()` and `writeSidecars()` still work
+  while one is wedged — the timeout path can still produce a complete answer.
+  What was actually missing was not a bound but a comparison: those two numbers and the client's
+  30 s `DEFAULT_REQUEST_TIMEOUT_MS` are three constants in two languages, and the only thing
+  relating them was a comment. `start` got a clearance test after STC-258 bit; `stop` never did.
+  `helper/test/stop-bounds.test.ts` asserts the chain, and the camera-shorter-than-display
+  ordering is load-bearing, not incidental: `CaptureSession.stop()` waits on a DispatchGroup the
+  camera teardown is entered into, so reversing them makes the display side report
+  `<reason>-timeout` for a camera that was about to answer cleanly — a diagnostic that lies.
+
+- **A harness gets a DEADLINE handed down by its runner, not a sum of its own bounds.** Adding the
+  append bound would have made the writer-gate harness's worst case 15+15+15 = exactly
+  HARNESS_RUN_MS, which is the "inner bound set equal to the outer one" trap already in this file.
+  A summed model was the alternative and it rots — it had already rotted twice for the gates. So
+  `_swift-harness.ts` now hands every harness `STC_HARNESS_DEADLINE_MS` (= `runMs` minus a
+  5 s exit margin), `bounded()` CLAMPS each wait to the budget remaining, and a watchdog thread
+  fires at the deadline naming the last checkpoint reached. The runner's mute "did not finish
+  within" kill — the shape of all five STC-259 sightings — is now unreachable in principle rather
+  than by arithmetic. The harness REFUSES to run without being handed the value, and that refusal
+  deliberately does not say `ENVIRONMENT:`, so a wiring mistake cannot be retried three times and
+  announced as a skip.
+  **The race loop's 120 appends stay inline and individually unbounded, on purpose.** The race is
+  between the appending thread and the teardown thread; wrapping the append would insert a third
+  thread and a dispatch of unknown latency between them — the one edit that could quietly stop
+  this harness reproducing STC-254 while still passing every assertion. The watchdog covers them
+  instead. Verified by mutation, not by argument: with the lock-across-append removed, the harness
+  still dies SIGSEGV in race iteration 0, three runs out of three.
+  **`HARNESS_RUN_MS - deadline >= HARNESS_EXIT_MARGIN_MS` is a TAUTOLOGY** while the deadline is
+  defined as that subtraction — it stays green with the margin set to zero, at which point the
+  harness's explanation always loses the race. Same shape as #42's vacuous repair and the PiP test
+  that passed with the compositor removed. The falsifiable version compares the margin against
+  what it must COVER: 26 ms of measured overshoot (runner-observed process lifetime minus the
+  deadline handed in — spawn, Swift runtime init, print and `_exit`; worst of 8 runs) times a
+  stated 20x CI allowance. Five mutations watched failing before any of this was believed.
+
 - **The camera-to-display sync number is 65 ms, and `scratch/avsync.cjs` is NOT how you get it.**
   That script measures camera-to-MIC from a clap and needs a `mic.wav` this project does not
   produce; a handoff pointed at it for this measurement and was wrong. The camera faces the user,

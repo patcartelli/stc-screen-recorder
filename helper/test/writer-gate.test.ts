@@ -2,7 +2,12 @@ import { describe, test, expect } from "vitest";
 import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { runSwiftHarness, HARNESS_RUN_MS } from "./_swift-harness.js";
+import {
+  runSwiftHarness,
+  HARNESS_RUN_MS,
+  HARNESS_DEADLINE_MS,
+  HARNESS_EXIT_MARGIN_MS,
+} from "./_swift-harness.js";
 
 /**
  * The harness said the MACHINE declined, not that WriterGate regressed.
@@ -36,7 +41,44 @@ function announceSkip(detail: string) {
 }
 
 
+const SOURCES = [
+  "helper/src/WriterGate.swift",
+  "helper/test/writer-gate/main.swift",
+];
+
+/**
+ * The runner's observed process lifetime MINUS the deadline that process was
+ * handed: spawn, Swift runtime init, and the watchdog's print and `_exit`.
+ * Worst of 8 runs on this machine, 2026-08-31. This is the quantity
+ * HARNESS_EXIT_MARGIN_MS exists to cover.
+ */
+const MEASURED_OVERSHOOT_MS = 26;
+
+/**
+ * CI's runner is a contended VM and process spawn is exactly what it is slow
+ * at. Unlike the number above this one is an ALLOWANCE, not a measurement, and
+ * it is the only unverified term here.
+ */
+const CI_HEADROOM = 20;
+
 describe("writer gate (STC-254)", () => {
+  // The margin has to be checked against what it COVERS, not against itself.
+  //
+  // The in-run assertion below — `HARNESS_RUN_MS - deadline >= margin` — is a
+  // tautology as long as the deadline is DEFINED as that subtraction: it stays
+  // green with the margin set to zero, at which point the harness's deadline
+  // and the runner's kill coincide and the harness's explanation always loses
+  // the race. That is "a bound's own slack hides a missing term in its floor"
+  // in its purest form, and this repo has now shipped it three times. This is
+  // the assertion that makes the magnitude falsifiable.
+  test("the exit margin covers the overshoot it exists to cover", () => {
+    expect(HARNESS_EXIT_MARGIN_MS).toBeGreaterThanOrEqual(
+      MEASURED_OVERSHOOT_MS * CI_HEADROOM,
+    );
+    // Strictly inside the kill, never merely equal to it.
+    expect(HARNESS_DEADLINE_MS).toBeLessThan(HARNESS_RUN_MS);
+  });
+
   // A first append racing teardown used to kill the helper outright — SIGSEGV
   // on CI, twice, inside AVFoundation's lazy compressor creation. The harness
   // dies by signal when it regresses, so execFileSync throwing IS the failure.
@@ -45,10 +87,7 @@ describe("writer gate (STC-254)", () => {
     try {
       out = await runSwiftHarness({
         label: "writer-gate",
-        sources: [
-          "helper/src/WriterGate.swift",
-          "helper/test/writer-gate/main.swift",
-        ],
+        sources: SOURCES,
         // STC-259, observed for real on run 33102859258: VTCopyVideoEncoderList
         // blocked past 15 s on a contended runner with nothing injected. The
         // refusal is per-process, so another attempt may get an encoder. Only
@@ -65,14 +104,113 @@ describe("writer gate (STC-254)", () => {
     }
     expect(out, out).toContain("ALL PASS");
 
-    // The harness's bound on an encoder query must stay clear of the runner's
-    // bound on the whole harness. Set them near each other and the runner wins
-    // the race, the harness's explanation is never printed, and the run reads
-    // as an unexplained stall — which is what all five STC-259 sightings were.
-    // Checked against the real values rather than kept in step by hand.
-    const bound = out.match(/encoder query bound (\d+) ms/);
-    expect(bound, out).not.toBeNull();
-    expect(Number(bound![1]) * 2).toBeLessThanOrEqual(HARNESS_RUN_MS);
+    // Every bound the harness holds is echoed on stdout and checked here
+    // against the runner's own, rather than kept in step by hand. The chain
+    // that has to hold, innermost first:
+    //
+    //   each specific bound  <=  the harness's deadline  <=  the runner's kill
+    //                                                        minus room to print
+    //
+    // Break any link and the harness dies mute, which is what all five STC-259
+    // sightings looked like from outside. Asserted as a COMPOSITION — each term
+    // named and required — because a bound's own slack will otherwise hide a
+    // missing one, which has already happened twice in this repo.
+    const echoed = (label: string) => {
+      const m = out.match(new RegExp(`${label} (\\d+) ms`));
+      expect(m, `the harness must echo its ${label}\n${out}`).not.toBeNull();
+      return Number(m![1]);
+    };
+
+    // The handoff is WIRED: this number reached the harness from the runner
+    // rather than being one the harness chose for itself.
+    const deadline = echoed("harness deadline");
+    expect(deadline, out).toBe(HARNESS_DEADLINE_MS);
+    // ...and it leaves the harness room to print its explanation and exit
+    // before the runner kills it.
+    expect(HARNESS_RUN_MS - deadline, out).toBeGreaterThanOrEqual(HARNESS_EXIT_MARGIN_MS);
+
+    // Each specific bound has to be able to fire BEFORE the generic watchdog,
+    // or the message naming WHICH call wedged is unreachable and every stall
+    // reports the same shrug.
+    for (const label of ["encoder query bound", "first append bound"]) {
+      expect(echoed(label), `${label} must be able to fire before the deadline\n${out}`)
+        .toBeLessThanOrEqual(deadline);
+    }
+  });
+
+  // STC-259 step 2. The last first touch of the encoder this harness left
+  // unbounded, and the one both original STC-254 crash reports pointed at: an
+  // AVAssetWriter creates its video compressor lazily on the FIRST append, and
+  // where no encoder can be had it does not fail, it blocks. Before this bound
+  // a run wedged there printed "phase 2: live-gate append" and then nothing,
+  // until the runner killed it 45 s later with no idea why.
+  test("a hung FIRST APPEND fails as ENVIRONMENT, not as a WriterGate regression", async () => {
+    const err = await runSwiftHarness({
+      label: "writer-gate-append-hang",
+      sources: SOURCES,
+      // Fires in a second and a half rather than the production fifteen. The
+      // production value's clearance is checked above, against the runner's.
+      env: { STC_WG_FAULT: "first-append-hang", STC_WG_APPEND_BOUND_MS: "1500" },
+    }).then(() => null, (e: Error) => e);
+
+    expect(err, "a wedged first append must not be reported as a pass").not.toBeNull();
+    const msg = err!.message;
+
+    // THE assertion, same as for the encoder queries: our bound has to win the
+    // race against the runner's, or its message never reaches anyone.
+    expect(msg, msg).not.toContain("did not finish within");
+    expect(msg, msg).toContain("ENVIRONMENT:");
+    // Names the call, not merely the phase. "Something in phase 2" is the
+    // vagueness this bound exists to replace.
+    expect(msg, msg).toMatch(/first AVAssetWriter append/);
+    expect(msg, msg).not.toMatch(/died by signal/);
+  });
+
+  // The race loop's 120 appends are deliberately inline and individually
+  // unbounded: the race under test is between the appending thread and the
+  // teardown thread, and wrapping the append would insert a third thread and a
+  // dispatch of unknown latency between them — the one edit that could quietly
+  // stop this harness reproducing STC-254 while still passing. The deadline
+  // watchdog covers them instead, and a watchdog that cannot say WHERE it fired
+  // reports exactly the nothing the runner's kill already reports.
+  //
+  // 3 s against the 124 ms this harness takes to reach the race loop on this
+  // machine — a measured ratio, not a picked number.
+  test("a stall with no specific bound is caught by the deadline, and named", async () => {
+    const err = await runSwiftHarness({
+      label: "writer-gate-deadline",
+      sources: SOURCES,
+      env: { STC_WG_FAULT: "race-append-hang", STC_HARNESS_DEADLINE_MS: "3000" },
+    }).then(() => null, (e: Error) => e);
+
+    expect(err, "a wedged race-loop append must not be reported as a pass").not.toBeNull();
+    const msg = err!.message;
+
+    expect(msg, msg).not.toContain("did not finish within");
+    expect(msg, msg).toContain("ENVIRONMENT:");
+    expect(msg, msg).not.toMatch(/died by signal/);
+    // Named. If this ever fails the message carries the real checkpoint, which
+    // is the whole feature working.
+    expect(msg, msg).toMatch(/race iteration \d+ of \d+/);
+  });
+
+  // A bound a process picks for itself is a bound nobody compares against the
+  // one that will actually kill it, so an unset deadline is refused outright
+  // rather than defaulted — the same rule `gate-run.mjs` applies to the gates.
+  //
+  // And the refusal must NOT read as the machine declining: retrying a wiring
+  // mistake three times and announcing a skip is precisely how a gate stops
+  // running without anyone noticing.
+  test("the harness refuses to run without being handed its deadline", async () => {
+    const err = await runSwiftHarness({
+      label: "writer-gate-no-deadline",
+      sources: SOURCES,
+      env: { STC_HARNESS_DEADLINE_MS: "" },
+    }).then(() => null, (e: Error) => e);
+
+    expect(err, "an unwired bound must not read as a pass").not.toBeNull();
+    expect(err!.message, err!.message).toMatch(/will not run without knowing/);
+    expect(isEnvironmentFailure(err!.message), err!.message).toBe(false);
   });
 
   // STC-259. Five CI sightings, and the fifth discriminated: "harness started"
@@ -89,10 +227,7 @@ describe("writer gate (STC-254)", () => {
   test("a hung encoder query fails as ENVIRONMENT, not as a WriterGate regression", async () => {
     const err = await runSwiftHarness({
       label: "writer-gate-hang",
-      sources: [
-        "helper/src/WriterGate.swift",
-        "helper/test/writer-gate/main.swift",
-      ],
+      sources: SOURCES,
       // Short bound so this costs a second rather than the production fifteen.
       // What is under test is that the bound fires and says so; the production
       // value's clearance is checked above, against the runner's own.
@@ -124,7 +259,7 @@ describe("writer gate (STC-254)", () => {
       "writer-gate: harness exited 2.\nstdout tail:\nencoder query bound 15000 ms\n" +
       "ENVIRONMENT: the encoder query VTCopyVideoEncoderList did not answer within 15000 ms\n" +
       "This is the machine declining to provide what the harness needs, NOT a\n" +
-      "WriterGate regression. The race assertions never ran.\n";
+      "WriterGate regression. The race assertions did not complete.\n";
 
     test("a wedged encoder is the machine declining", () => {
       expect(isEnvironmentFailure(envFailure)).toBe(true);
@@ -162,10 +297,7 @@ describe("writer gate (STC-254)", () => {
     const log = join(mkdtempSync(join(tmpdir(), "stc-wg-retry-")), "attempts");
     const err = await runSwiftHarness({
       label: "writer-gate-retry",
-      sources: [
-        "helper/src/WriterGate.swift",
-        "helper/test/writer-gate/main.swift",
-      ],
+      sources: SOURCES,
       env: {
         STC_WG_FAULT: "encoder-query-hang",
         STC_WG_ENCODER_BOUND_MS: "300",

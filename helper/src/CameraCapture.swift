@@ -219,6 +219,16 @@ final class CameraCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
 
     /// Stops and reports what was captured. Answers exactly once, and is bounded:
     /// neither stopRunning nor finishWriting promises to call back.
+    /// How long the camera teardown gets before `stop` answers anyway.
+    ///
+    /// Strictly SHORTER than `CaptureSession.stopTimeoutSeconds`, and that
+    /// ordering is load-bearing rather than incidental: CaptureSession.stop()
+    /// waits on a DispatchGroup this teardown is entered into, so if this
+    /// backstop were the later one the display side would give up first and
+    /// answer `<reason>-timeout` with a stopWarning for a camera that was about
+    /// to report normally. Asserted in helper/test/stop-bounds.test.ts.
+    static let stopTimeoutSeconds: Double = 10
+
     func stop(completion: @escaping (CameraTrack?) -> Void) {
         let answered = NSLock()
         var done = false
@@ -230,7 +240,9 @@ final class CameraCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
             completion(track)
         }
 
-        DispatchQueue.global().asyncAfter(deadline: .now() + 10) { finish(self.track()) }
+        DispatchQueue.global().asyncAfter(deadline: .now() + Self.stopTimeoutSeconds) {
+            finish(self.track())
+        }
 
         session?.stopRunning()
         gate.closeAndMarkFinished()

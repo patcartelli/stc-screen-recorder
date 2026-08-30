@@ -14,6 +14,27 @@ const root = join(__dirname, "..", "..");
 export const HARNESS_RUN_MS = 45_000;
 
 /**
+ * Reserved between a harness's OWN deadline and this runner's kill.
+ *
+ * The runner's kill is mute by construction — it reports "did not finish
+ * within", which is the unexplained stall all five STC-259 sightings were. A
+ * harness that watches its own deadline can name what it was doing instead, but
+ * only if it is given room to print and exit first. This is that room, and it
+ * also absorbs the spawn: the runner's timer starts before the child's clock
+ * does, so the child's budget must end strictly earlier than the runner's.
+ */
+export const HARNESS_EXIT_MARGIN_MS = 5_000;
+
+/**
+ * The deadline handed to the harness process for the default `runMs`.
+ *
+ * Derived, never kept in step by hand — `runBounded`'s caller computes the same
+ * subtraction from whatever `runMs` is actually in force, so overriding one
+ * cannot leave the other stale.
+ */
+export const HARNESS_DEADLINE_MS = HARNESS_RUN_MS - HARNESS_EXIT_MARGIN_MS;
+
+/**
  * Compiles a Swift source set into a throwaway binary, runs it, and returns
  * stdout.
  *
@@ -90,7 +111,15 @@ export async function runSwiftHarness(opts: {
   let last: Error | undefined;
   for (let i = 1; i <= attempts; i++) {
     try {
-      return await runBounded(bin, [], `${label}: harness`, runMs, env);
+      return await runBounded(bin, [], `${label}: harness`, runMs, {
+        // Handed down, not guessed at by the harness: a bound a process picks
+        // for itself is a bound nobody compares against the one that will
+        // actually kill it. Derived from the runMs in force so an override of
+        // one cannot leave the other stale. A test's own env wins, so a fault
+        // case can fire this in seconds instead of forty.
+        STC_HARNESS_DEADLINE_MS: String(runMs - HARNESS_EXIT_MARGIN_MS),
+        ...env,
+      });
     } catch (e) {
       last = e as Error;
       const retryable = retryRun !== undefined && retryRun.when(last.message);

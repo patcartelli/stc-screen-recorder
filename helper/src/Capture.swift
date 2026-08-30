@@ -73,6 +73,23 @@ final class CaptureSession: NSObject, SCStreamOutput, SCStreamDelegate {
     /// backstop instead of observing it.
     static let startTimeoutSeconds: Double = 15
 
+    /// How long teardown gets before `stop` answers anyway.
+    ///
+    /// STC-259 step 3 asked whether the append needs a bound of its own, the
+    /// way the writer-gate harness now bounds its first one. It does not, and
+    /// one could not be built there: `WriterGate` holds its lock ACROSS the
+    /// append precisely so teardown cannot race it (that is the STC-254 fix),
+    /// so abandoning a wedged append would leave that lock held forever and
+    /// `closeAndMarkFinished()` below would still never return. The wedge
+    /// reaches the lock whatever the append does. THIS is the bound that
+    /// contains it — a wedged first append costs a take its finalised mp4 and
+    /// answers `<reason>-timeout` with a `stopWarning`, but it cannot leave the
+    /// parent holding a recording it is unable to end.
+    ///
+    /// Read by `helper/test/stop-bounds.test.ts`, which asserts the whole chain
+    /// this sits in. Growing it means growing the client's request timeout too.
+    static let stopTimeoutSeconds: Double = 20
+
     private let startLock = NSLock()
 
     private var tap: CFMachPort?
@@ -512,11 +529,13 @@ final class CaptureSession: NSObject, SCStreamOutput, SCStreamDelegate {
         // HIGH 2 — bound arithmetic. The client (app/src/helper-client.ts,
         // HelperClient's defaultTimeoutMs) gives every request, `stop`
         // included, a flat 30 s timeout. This backstop bounds the
-        // display-teardown path at 20 s (unchanged from before the camera
-        // existed): stream.stopCapture -> gate.closeAndMarkFinished ->
-        // writer.finishWriting. CameraCapture.stop() carries its own 10 s
-        // backstop around session.stopRunning() -> gate.closeAndMarkFinished
-        // -> writer.finishWriting and answers exactly once.
+        // display-teardown path at `stopTimeoutSeconds` (unchanged from before
+        // the camera existed): stream.stopCapture -> gate.closeAndMarkFinished
+        // -> writer.finishWriting. CameraCapture.stop() carries its own,
+        // shorter, backstop around session.stopRunning() ->
+        // gate.closeAndMarkFinished -> writer.finishWriting and answers exactly
+        // once. Both numbers and the client's are asserted as one chain in
+        // helper/test/stop-bounds.test.ts rather than kept in step by comment.
         //
         // Both teardowns are entered into the DispatchGroup below before
         // either is awaited, and `cam.stop` is dispatched onto a background
@@ -535,7 +554,7 @@ final class CaptureSession: NSObject, SCStreamOutput, SCStreamDelegate {
         // worst case stays max(20 s, 10 s) = 20 s, comfortably under the
         // client's 30 s bound — and unlike the two backstops racing on
         // shared main-queue time, they now race on entirely separate queues.
-        DispatchQueue.global().asyncAfter(deadline: .now() + 20) {
+        DispatchQueue.global().asyncAfter(deadline: .now() + Self.stopTimeoutSeconds) {
             finishUp("\(reason)-timeout")
         }
 
