@@ -237,3 +237,24 @@ earlier handoff pointed at it for this measurement; that pointer was wrong.
   flashes: luma swing 4.5 against a threshold of 20, so it reports NO FLASH
   instead of correlating two noise floors. It also refuses when the correlation
   peak does not clear unrelated lags by 0.15.
+
+## Phase 3 (camera PiP) complete — 2026-08-30
+
+The full loop, on real hardware, recorded from the app rather than a test host:
+
+| | |
+|---|---|
+| recorded from the app, camera toggle on | `FaceTime HD Camera`, 30 fps, `present: true` |
+| previews its PiP with NO project.json | verified against a pip-disabled control |
+| camera-to-display sync | **65 ms** (r=0.895), floor 33.4 ms |
+| PiP watched and confirmed by eye | 2026-08-28 |
+
+The take carried no `project.json` — nothing writes one at record time — so the
+PiP appearing at all is `defaultProject`'s camera-aware default doing its job.
+That path is what made every app-recorded camera take show an invisible PiP
+before increment 5.
+
+The PiP check is a positive discriminator, not "the corner has pixels": the same
+take with `pip.enabled: false` must differ in that rectangle. The display frame
+fills that corner either way, so the naive check passes with the compositor
+wiring removed — it did, once.

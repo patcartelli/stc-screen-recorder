@@ -64,6 +64,7 @@ belonging to a different commit).
 
 | ticket | what | needs |
 |---|---|---|
+| STC-232 | **PHASE 3 COMPLETE 2026-08-30** — increments 1-5 done. Recorded from the app with the camera toggle on, previewed with no hand-written project.json, sync measured at 65 ms | nothing |
 | STC-232 4b | **done and VISUALLY CONFIRMED 2026-08-28** — both sinks draw the PiP, gate proves it, app opens camera takes, and a human watched a real 4K take. Increment 5 is unblocked | nothing; increment 5 is next |
 | STC-259 | **cause confirmed and contained** — both encoder queries bounded at 15 s, run retried 3x, then a loud SKIP. Measured on CI both ways on one commit | steps 2 and 3: the harness's first `AVAssetWriter` append is still unbounded, and whether `CameraCapture.swift`/`Capture.swift` need the same is still open |
 | STC-249 | lossy ring under REAL capture load — the semantics are tested, the live scenario is not | a recording with a stalled stats consumer |
@@ -648,3 +649,13 @@ reachable via KVC (`setValue(3, forKey: "captureResolution")`, verified in phase
   transition shifts every later pair. Cross-correlation survives different frame rates, different
   brightness scales and an extra transition, and it reports how far its peak stands above
   unrelated lags so a weak answer can be refused instead of printed.
+- **Screen Recording TCC for the DEV app depends on how it was launched, and I got this wrong.**
+  Driving Electron from Playwright, capture is denied and no entry ever appears in System Settings:
+  the responsible process is the launching shell, not `Electron.app`, so there is nothing for the
+  user to grant. Launched normally with `npm run app:start`, macOS attributes the request to
+  Electron, prompts, and the grant sticks — verified 2026-08-30 by recording a real camera take
+  from the app. I told the user granting Electron "wouldn't reliably help"; that was true of the
+  automated path only and wrong as stated.
+  The dev `Electron.app` is ad-hoc signed (`TeamIdentifier=not set`), so per the signing trap above
+  the grant is fragile across reinstalls. `tools/test-host` remains the stable-identity bundle for
+  permission work.
