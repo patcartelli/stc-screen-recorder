@@ -69,10 +69,11 @@ belonging to a different commit).
 |---|---|---|
 | STC-232 | **PHASE 3 COMPLETE 2026-08-30** — increments 1-5 done. Recorded from the app with the camera toggle on, previewed with no hand-written project.json, sync measured at 65 ms | nothing |
 | STC-232 4b | **done and VISUALLY CONFIRMED 2026-08-28** — both sinks draw the PiP, gate proves it, app opens camera takes, and a human watched a real 4K take. Increment 5 is unblocked | nothing; increment 5 is next |
-| STC-259 | **DONE** — steps 1-3. Both encoder queries bounded at 15 s, the harness's first append bounded, a deadline watchdog behind all of them, and the product answered: it does not need one (see the trap below). The determinism gate's retry is now **ATTEMPTS = 1** — measured useless, see below | the wedged renderer itself (Mode B) |
+| STC-259 | **DONE** — steps 1-3, plus Mode B diagnosed and mitigated. Both encoder queries bounded at 15 s, the harness's first append bounded behind a deadline watchdog, and the product answered: it does not need one. `ATTEMPTS = 1` (measured useless). The wedge was localised to the decoder's synchronous `configure()` by the checkpoint trail, and the gates now ask for `prefer-software` | **one check**: `node scripts/gate-skip-rate.mjs 20` in a day or two — whether that mitigation worked is UNVERIFIED, and two green runs against an already-green baseline is not evidence |
 | STC-249 | **DONE** — both halves. Channel independence is mutation-proven without a grant (`ring-overflow.slow.test.ts`); the capture-side half RAN on real hardware 2026-08-31 and passed (`lossy-under-capture.grant.test.ts`) | nothing |
 | STC-254 | **done** — append/teardown race fixed (part 2), SIGTRAP crash handler closed (part 3). Master CI green again | nothing; watch that master stays green |
-| STC-232 | phase 3: camera PiP — recommended first, it avoids §2a's CoreAudio wedge entirely | a scope decision |
+| STC-287 | **done** — the camera's lifecycle is no longer invisible: device name while recording, a visible reason when it fails, and each take states when its PiP starts or that the camera recorded nothing. The ~1.4 s gap itself is inherent and deliberate | nothing |
+| STC-286 | **tail is REPORTED, not fixed** — a camera that opens and writes zero frames now says so (STC-287's work). Why it happens is open; `anchors.camera.device` discriminates the lid from a wrong device pick | a clamshell recording on real hardware |
 | STC-247 | multi-display capture | a second display |
 | STC-251/252 | preview memory ceiling (~15 min at 4K); Node 20 actions deprecation | — |
 
@@ -680,6 +681,17 @@ reachable via KVC (`setValue(3, forKey: "captureResolution")`, verified in phase
   unchecked tree, found while fixing the first two), and `paths` maps `@transform/*` because tsc
   cannot read vite's or esbuild's aliases.
   Verified by re-adding the `composite()` parameter and watching tsc fail on those exact lines.
+
+- **`scripts/*.d.mts` are HAND-WRITTEN and nothing compared them to the `.mjs`.** `allowJs` is off,
+  so tsc reads the declaration and never looks at the implementation — the two can disagree while
+  all three passes stay green. It bit twice in one day: `worstCaseJobMs` gained a parameter and
+  `bounded` gained a thunk label, and both stale declarations produced errors. Those errored the
+  SAFE way. The dangerous direction is the opposite — a declaration promising MORE than the code
+  delivers (a renamed export, a `function` that became a constant) typechecks clean at every call
+  site and fails at RUNTIME, in a script that only runs on CI or by hand.
+  `transform/test/declaration-drift.test.ts` imports each module for real and checks the declared
+  surface exists. It cannot check parameter types; it catches the failure that actually reaches
+  runtime. All five scripts are import-safe — two are main-guarded precisely so they can be.
 
 - **Typechecking is THREE passes — `npx tsc --noEmit` runs only the first.** Use
   `npm run typecheck`, which is what CI runs. `tsconfig.json` is the coverage pass (every .ts file,
