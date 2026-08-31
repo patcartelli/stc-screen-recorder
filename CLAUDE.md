@@ -229,6 +229,24 @@ reachable via KVC (`setValue(3, forKey: "captureResolution")`, verified in phase
   whether a stalled consumer throttles the capture graph, and it needs a Screen Recording grant, so
   it has only ever reached its SKIP-GRANT branch. Written is not tested.
 
+- **`test:slow` runs in CI now, and the reason it never could was a Desktop dependency.**
+  `app/test/export-identity.slow.test.ts` reached into `~/Desktop/stc` for a take and threw when
+  it found none, so the one check that catches a UI-vs-CLI export divergence ran nowhere
+  automatically — and it has caught two real ones. CLAUDE.md already recorded four E2E files being
+  moved off the Desktop for exactly this; this file was missed because it is not in `npm test` and
+  nobody was watching it. It uses `fixtures/basic` now (171 s -> 81 s), with
+  `STC_EXPORT_IDENTITY_TAKE=real|<path>` to restore the heavier check by hand.
+  The step is bounded as ONE process (`SLOW_TESTS_MS`, 12 min) the way each gate is, counted in
+  `worstCaseJobMs` (56.8 min against a 65 min cap), and three guards assert the chain: ci.yml's
+  step bound equals the declared constant, the model MOVES when the term is deleted, and a slow
+  test's own `testTimeout` stays under the step's bound. That last one was missing and the config
+  allowed **30 minutes per test** — three tests could have claimed 90 inside a 12-minute step and
+  a 65-minute job, and a hung one would have died anonymously at the cap.
+  `vitest.slow.config.ts` was also UNSCOPED (`**/*.slow.test.ts`), so it globbed
+  `.claude/worktrees/` — the same defect fixed in `vitest.grant.config.ts` on 2026-08-27, one file
+  over. It is not cosmetic: it made a mutation test lie, reporting "2 failed | 2 passed" where the
+  passes were other checkouts. Scoped, the same mutation fails 2 of 2.
+
 - **Stats on stdout can block capture** — all stats writes must go through a bounded ring buffer
   on a dedicated writer thread with non-blocking fd; no capture callback may touch the pipe.
   *(`LossyChannel` does this. When capture lands, emit stats with `IO.stat`, never `IO.send`.)*

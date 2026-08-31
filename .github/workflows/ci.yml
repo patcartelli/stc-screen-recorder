@@ -86,6 +86,21 @@ jobs:
 
       # Real Chrome, not bundled Chromium: the bundled build lacks H.264, and
       # every sink in this project is H.264 end to end.
+      # test:slow is the cross-implementation check — a UI export and a CLI
+      # export of the same take must agree byte-for-byte before the encoder. It
+      # has caught two real divergences (the trim/project defect, and the
+      # project-defaults one) and until now it ran nowhere automatically,
+      # because it reached into ~/Desktop/stc for a take and threw when CI had
+      # none. It uses the committed fixture now.
+      #
+      # Before the gates on purpose: a correctness divergence should surface in
+      # ~2 min rather than after 20 minutes of video pipeline. The bound is
+      # SLOW_TESTS_MS in scripts/gate-bounds.mjs, which the worst-case model
+      # counts and gate-bounds.test.ts asserts against this number.
+      - name: Cross-implementation export identity (test:slow)
+        timeout-minutes: 12
+        run: npm run test:slow
+
       - name: Install Chrome
         run: npx playwright install chrome
 
