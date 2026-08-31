@@ -105,6 +105,21 @@ export const SEEK_MS = 90_000;
  */
 export const SLOW_TESTS_MS = 720_000;
 
+/**
+ * The decoder the GATES ask for. Software, because the hardware path is what
+ * wedges them: the checkpoint trail from run 33384105552 put all four gates at
+ * their first decoder call, and three then blocked so hard their own in-page
+ * timers could not fire — the synchronous `VideoDecoder.configure()`. CI's
+ * video hardware is paravirtualized, the same class of device STC-259 measured
+ * blocking on first touch from Swift.
+ *
+ * This DOES move the pre-encode hash (10a05a33… -> bc03e397… on
+ * fixtures/basic), which is fine and is not what the gates check: they compare
+ * preview against export and export against export, always inside one browser
+ * with one preference, never against a stored constant.
+ */
+export const GATE_DECODER_PREFERENCE = "prefer-software";
+
 /** What the job spends before the gates — build, typecheck, tests: ~6 min on CI, rounded up. */
 export const PRE_GATE_BUDGET_MS = 8 * 60_000;
 /** Vite server plus a Chrome launch, per gate. NOT the page reaching __ready. */
@@ -163,6 +178,11 @@ export async function instrumentPage(page, { keep = 40 } = {}) {
   if (fault.startsWith("wedge:")) {
     await page.addInitScript((at) => { window.__wedgeAt = at; }, fault.slice("wedge:".length));
   }
+  // STC-259: which decoder the gates ask for, handed to the page rather than
+  // chosen inside it. Every gate gets it here so a new one cannot forget, and
+  // the app never receives it — it keeps hardware decode on real hardware,
+  // which is where it matters and where nothing has ever wedged.
+  await page.addInitScript((p) => { window.__decoderPreference = p; }, GATE_DECODER_PREFERENCE);
   return attachCheckpointTrail(page, { keep });
 }
 
