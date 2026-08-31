@@ -127,14 +127,23 @@ and the step timings above.
 3. **Do not add attempts to the other three gates.** Already rejected on
    arithmetic (118 min, needing a ~2 hour cap) — and since all four gates skip
    together, a retry could not help them either.
-4. **Wait a few hours before measuring a run.** A just-finished run comes back
-   with no step attribution and is silently unmeasurable; attribution appeared
-   at around 3.5 hours in every case measured. The earlier advice here said the
-   opposite — "measure fresh runs" — and was wrong.
+4. **A fresh run is measurable for three of the four gates.** Seek, export and
+   identity print markers that no test emits, so they can be read off an
+   unattributed log; determinism cannot, because `gate-retry.test.ts` prints its
+   markers verbatim, and reading that fixture as a live skip is how this
+   document was published wrong. Wait a few hours if you need determinism too —
+   attribution appeared at around 3.5 hours in every case measured. (Earlier
+   advice here said "measure fresh runs", then "you cannot measure fresh runs";
+   both were too broad.)
 
 ## Method
 
 The script pulls the last N completed runs through `gh`, downloads each job log,
-slices it **by step**, and classifies each gate only by markers found inside its
-own step. Runs with no step attribution are named and excluded rather than
-scored. It prints a warning when any gate crosses a 50% skip rate.
+and — where GitHub has attributed the log to steps — classifies each gate only
+by markers found inside its own step. Without attribution it falls back to the
+whole log for the three gates whose markers no test prints, and reports
+determinism as `n/a`; `n/a` is excluded from the rates, never counted as a skip.
+`transform/test/gate-skip-rate.test.ts` asserts that safe set against the test
+tree, so a test that started printing one of those markers fails there instead
+of silently corrupting the measurement. It prints a warning when any gate
+crosses a 50% skip rate.
