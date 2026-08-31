@@ -2,6 +2,7 @@
 interface Take {
   dir: string; name: string; durationMs: number;
   width: number; height: number; events: number; bytes: number; label?: string;
+  camera?: { present: boolean; device?: string; pipStartsAfterMs: number };
 }
 declare const recorder: {
   getSettings: () => Promise<{ camera: boolean }>;
@@ -81,6 +82,10 @@ recordBtn.addEventListener("click", async () => {
         setState("idle");
       } else {
         recording = true;
+        // Reset per take, and say "opening…" rather than "—": the camera opens
+        // off the critical path, so there IS a window where it is neither
+        // absent nor live, and that window is the whole complaint (STC-287).
+        setCamera(cameraBox.checked ? "opening…" : "off");
       // The device is opened at start and closed at stop, so the setting must
       // not appear changeable mid-take — it would misdescribe the recording.
       cameraBox.disabled = true;
@@ -140,9 +145,54 @@ recorder.on("helper:recording-lost", (i) => {
   alertUser(`The recorder quit while recording — that take was not saved.\n${i.dir ?? ""}`);
 });
 
+/**
+ * STC-287: the camera's whole lifecycle used to be invisible.
+ *
+ * It opens off the critical path (Capture.swift, deliberately — startRunning()
+ * blocks and must not delay every `started` reply), so it goes live roughly a
+ * second after recording begins. Measured across five real takes, the PiP is
+ * absent for 1.26–1.39 s of playback.
+ *
+ * The helper has always announced this — `camera-started` with the device name,
+ * and warnings for every failure. Nothing listened. So a user who ticked Camera
+ * got no confirmation it worked, no notice when it did NOT, and a PiP that
+ * appeared a beat late and read as a glitch. The gap is inherent; being unable
+ * to tell a working camera from a broken one was not.
+ */
+function setCamera(text: string): void { $("camera-state").textContent = text; }
+
+recorder.on("helper:camera-started", (l) => {
+  setCamera(String(l.device ?? "live"));
+});
+
 recorder.on("helper:respawned", () => setState("recovered — helper restarted"));
 recorder.on("helper:gave-up", () => { recordBtn.disabled = true; alertUser("The recorder keeps failing to start. Restart the app."); });
-recorder.on("helper:warning", (l) => { if (l.code === "display-change-during-recording") alertUser("Display configuration changed — the recording was stopped."); });
+/**
+ * Camera failures the user must actually see. Every one of these was already
+ * being emitted and silently dropped: the handler below matched exactly one
+ * code and ignored the rest, so a camera that could not open, or that opened
+ * and delivered nothing, looked identical to one that worked.
+ */
+const CAMERA_FAULTS: Record<string, string> = {
+  "camera-failed": "The camera could not be opened, so this take has no picture-in-picture.",
+  "virtual-camera-only":
+    "Only a virtual camera was available. It was not used, so this take has no " +
+    "picture-in-picture — connect a real camera and record again.",
+  "device-disconnected": "A capture device was disconnected during the recording.",
+};
+
+recorder.on("helper:warning", (l) => {
+  if (l.code === "display-change-during-recording") {
+    alertUser("Display configuration changed — the recording was stopped.");
+    return;
+  }
+  const camera = CAMERA_FAULTS[String(l.code)];
+  if (!camera) return;
+  // Both: the row is the at-a-glance state, the alert is the thing that cannot
+  // be missed. A silent failure is what this whole change exists to remove.
+  setCamera(`failed — ${l.code}`);
+  alertUser(l.detail ? `${camera}\n\n${l.detail}` : camera);
+});
 
 const fmtDuration = (ms: number) => {
   const total = Math.round(ms / 1000);
@@ -469,7 +519,25 @@ async function refreshTakes(): Promise<void> {
     meta.className = "meta";
     meta.textContent = `${fmtDuration(t.durationMs)} · ${t.width}×${t.height} · ` +
                        `${t.events} events · ${fmtSize(t.bytes)}`;
-    left.append(title, meta);
+    // STC-287. A camera take whose PiP arrives a beat late looks broken, and a
+    // camera that recorded NOTHING looked identical to no camera at all. Both
+    // are now stated on the take itself, where someone wondering "did the
+    // camera work?" is actually looking.
+    if (t.camera) {
+      const cam = document.createElement("div");
+      cam.className = "meta";
+      if (!t.camera.present) {
+        cam.textContent = "Camera: recorded no frames — this take has no picture-in-picture";
+      } else {
+        const who = t.camera.device ?? "camera";
+        cam.textContent = t.camera.pipStartsAfterMs > 0
+          ? `Camera: ${who} · picture-in-picture starts ${(t.camera.pipStartsAfterMs / 1000).toFixed(1)}s in`
+          : `Camera: ${who}`;
+      }
+      left.append(title, meta, cam);
+    } else {
+      left.append(title, meta);
+    }
     const openBtn = document.createElement("button");
     openBtn.textContent = "Preview";
     openBtn.addEventListener("click", () => void openPreview(t));

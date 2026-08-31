@@ -388,6 +388,23 @@ reachable via KVC (`setValue(3, forKey: "captureResolution")`, verified in phase
   every signal is named explicitly; the old `default: "SIGABRT"` would have mislabelled anything
   added to the loop, and a diagnostic that lies is worse than one that admits ignorance.
   `helper/test/crash-signals.test.ts` signals the real binary and asserts the stderr line.
+- **The camera's whole lifecycle was invisible to the user (STC-287).** The complaint was "the PiP
+  pops in ~1.9 s, so it reads as if the camera didn't work". Two corrections. The visible blank
+  corner is the gap against the FIRST DISPLAY FRAME, not against session zero — the display track
+  starts late too, so it is **1.26-1.39 s** measured across five real takes, not 1.9. And the
+  pop-in is only the symptom people noticed: the helper had always emitted `camera-started` (with
+  the device name), `camera-failed` and `virtual-camera-only`, and **the app subscribed to none of
+  them**. `renderer.ts`'s warning handler matched exactly one code and dropped the rest, so a
+  camera that could not open looked identical to one that worked, and a camera that opened and
+  wrote zero frames (the clamshell case, STC-286's tail) looked identical to no camera at all.
+  The gap itself is NOT a bug to fix: the camera opens off the critical path on purpose
+  (`startRunning()` blocks and must not delay every `started` reply), and holding a future camera
+  frame to fill the corner would violate the settled frame-selection rule. So the fix states the
+  three facts instead — opening / live-and-named / failed-with-a-reason while recording, and on
+  each take either when the PiP starts or that the camera recorded nothing.
+  `_fake-helper.mjs` emits the camera events AFTER `started`, deliberately: a stand-in that
+  announced the camera inside `started` could not reproduce the window being complained about.
+
 - **The Camera pane only lists apps that have already REQUESTED access** — there is no
   add button, so a bundle that merely *reads* `AVCaptureDevice.authorizationStatus` never
   appears there and can never be granted. Reading status is not enough to become grantable;

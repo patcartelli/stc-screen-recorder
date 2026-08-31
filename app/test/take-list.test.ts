@@ -228,3 +228,77 @@ describe("take labels", () => {
     await expect(setTakeLabel(env(), "/etc", "nope")).rejects.toThrow(/outside/i);
   });
 });
+
+/**
+ * STC-287. A user who ticks Camera gets no confirmation it worked, no notice
+ * when it does not, and a PiP that arrives a beat late — which reads as "the
+ * camera didn't work". The camera opens off the critical path deliberately
+ * (Capture.swift: startRunning() blocks and must not delay every `started`
+ * reply), so the gap is inherent and the fix is to STATE it. Measured across
+ * five real takes, the PiP is absent for 1.26-1.39 s of playback.
+ *
+ * Three states, and they must never collapse into one: no camera asked for, a
+ * camera that worked, and a camera that opened and recorded nothing.
+ */
+describe("listTakes — what the camera actually did (STC-287)", () => {
+  const withCamera = (camera: unknown) => ({
+    version: 2,
+    timebase: { numer: 125, denom: 3 },
+    t0Ns: "1000",
+    display: { id: 1, pointWidth: 1920, pointHeight: 1080, pixelWidth: 3840, pixelHeight: 2160,
+               backingScale: 2, originX: 0, originY: 0 },
+    capture: { width: 3840, height: 2160, codec: "h264", firstFrameNs: 490_000_000 },
+    camera,
+    files: { display: "display.mp4" },
+    stop: { t: 20_000_000_000, reason: "user" },
+  });
+
+  test("no camera block at all means no camera was asked for", async () => {
+    makeTake("2026-01-01_00-00-00");
+    const { takes } = await listTakes(env());
+    expect(takes[0]!.camera).toBeUndefined();
+  });
+
+  test("a working camera reports the device and the gap the viewer will see", async () => {
+    // Real numbers from 2026-08-30_09-48-47: the picture starts at 0.49 s and
+    // the camera's first frame lands at 1.88 s.
+    makeTake("2026-01-01_00-00-01", { anchors: withCamera({
+      present: true, device: "FaceTime HD Camera", width: 1280, height: 720,
+      firstFramePtsNs: 1_880_000_000, lastFramePtsNs: 7_416_000_000, frameIntervalNs: 33_350_000,
+    }) });
+    const { takes } = await listTakes(env());
+    expect(takes[0]!.camera).toEqual({
+      present: true, device: "FaceTime HD Camera", pipStartsAfterMs: 1390,
+    });
+  });
+
+  // The gap is measured against the PICTURE, not against session zero. The
+  // display track starts late too (0.49 s here), and quoting the camera's
+  // absolute PTS would overstate the blank corner by half a second — the
+  // handoff called this a "1.9 s pop-in" for exactly that reason.
+  test("the gap is measured from the first display frame, not from t=0", async () => {
+    makeTake("2026-01-01_00-00-02", { anchors: withCamera({
+      present: true, device: "cam", firstFramePtsNs: 1_880_000_000,
+    }) });
+    const { takes } = await listTakes(env());
+    expect(takes[0]!.camera!.pipStartsAfterMs).toBe(1390);   // not 1880
+  });
+
+  // THE silent failure, and the reason this is not merely cosmetic: the camera
+  // opened, wrote nothing, and the take was indistinguishable from one recorded
+  // with no camera at all. Observed for real with the laptop in clamshell.
+  test("a camera that recorded nothing is reported, not treated as absent", async () => {
+    makeTake("2026-01-01_00-00-03", { anchors: withCamera({ present: false }) });
+    const { takes } = await listTakes(env());
+    expect(takes[0]!.camera, "a present:false block must not be dropped").toBeDefined();
+    expect(takes[0]!.camera!.present).toBe(false);
+  });
+
+  test("a camera whose first frame precedes the picture never reports a negative gap", async () => {
+    makeTake("2026-01-01_00-00-04", { anchors: withCamera({
+      present: true, device: "cam", firstFramePtsNs: 1_000_000,
+    }) });
+    const { takes } = await listTakes(env());
+    expect(takes[0]!.camera!.pipStartsAfterMs).toBe(0);
+  });
+});

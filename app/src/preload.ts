@@ -26,7 +26,7 @@ contextBridge.exposeInMainWorld("recorder", {
   on: (event: string, cb: (payload: any) => void) => {
     const channels = ["helper:ready", "helper:stats", "helper:respawned",
                       "helper:gave-up", "helper:recording-lost", "helper:recording-ended",
-                      "helper:warning"];
+                      "helper:warning", "helper:camera-started"];
     if (!channels.includes(event)) throw new Error(`unknown channel: ${event}`);
     const listener = (_e: unknown, payload: any) => cb(payload);
     ipcRenderer.on(event, listener);
