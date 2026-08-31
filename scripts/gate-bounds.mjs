@@ -90,6 +90,21 @@ export const TEARDOWN_MS = 30_000;
 export const EVAL_SLOTS = 4;
 /** seek-gate keeps its own tighter, more informative bound (it names the last probe). */
 export const SEEK_MS = 90_000;
+/**
+ * The whole `npm run test:slow` step, bounded as ONE process the way each gate
+ * is — not as a sum of per-test timeouts, which is the model that rots.
+ *
+ * 81 s on this machine against the committed fixture (it was 171 s while it
+ * still reached for a real 4K take on the Desktop, which is also why it could
+ * never run on CI). 12 min is ~9x that: an allowance for a contended runner,
+ * not a calibration.
+ *
+ * The step's `timeout-minutes` in ci.yml must equal this, and
+ * gate-bounds.test.ts asserts it rather than trusting the two to be kept in
+ * step by hand.
+ */
+export const SLOW_TESTS_MS = 720_000;
+
 /** What the job spends before the gates — build, typecheck, tests: ~6 min on CI, rounded up. */
 export const PRE_GATE_BUDGET_MS = 8 * 60_000;
 /** Vite server plus a Chrome launch, per gate. NOT the page reaching __ready. */
@@ -178,7 +193,9 @@ export function attachCheckpointTrail(page, { keep = 40 } = {}) {
 }
 
 export function worstCaseJobMs({ attempts = GATE_ATTEMPTS } = {}) {
-  let total = PRE_GATE_BUDGET_MS;
+  // PRE_GATE_BUDGET_MS covers build, typecheck and `npm test`; the slow suite
+  // is a separate step with its own process bound, so it is a separate term.
+  let total = PRE_GATE_BUDGET_MS + SLOW_TESTS_MS;
   for (const [script, ms] of Object.entries(GATE_PROCESS_MS)) {
     total += ms * (attempts[script] ?? 1);
   }

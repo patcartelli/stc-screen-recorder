@@ -12,6 +12,7 @@ export declare const ENCODER_MS: number;
 export declare const TEARDOWN_MS: number;
 export declare const EVAL_SLOTS: number;
 export declare const SEEK_MS: number;
+export declare const SLOW_TESTS_MS: number;
 export declare const PRE_GATE_BUDGET_MS: number;
 export declare const LAUNCH_MS: number;
 export declare const READY_MS: number;

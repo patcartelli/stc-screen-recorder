@@ -9,10 +9,13 @@ import { describe, test, expect, afterEach } from "vitest";
 import { _electron as electron, type ElectronApplication } from "playwright";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, cpSync, existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { makeTakeFolder } from "./_take-fixture.js";
+import { SOFTWARE_RENDER_ARGS } from "../../scripts/render-backend.mjs";
 import { tmpdir, homedir } from "node:os";
 import { join } from "node:path";
 
 const root = join(__dirname, "..", "..");
+
 let app: ElectronApplication | undefined;
 afterEach(async () => { await app?.close().catch(() => {}); app = undefined; });
 
@@ -24,16 +27,54 @@ function realTake(): string | undefined {
     .sort().pop();
 }
 
-async function launchWithTake() {
-  const src = realTake();
-  if (!src) throw new Error("no real recording to export — record one first (~/Desktop/stc)");
+/**
+ * The committed fixture by DEFAULT, a real take only when asked for.
+ *
+ * This file used to reach into ~/Desktop/stc unconditionally and throw when it
+ * found nothing — so it could never run on CI, which is a large part of why
+ * `npm run test:slow` was never wired in. CLAUDE.md records four E2E files
+ * being moved off the Desktop for exactly this reason; this one was missed,
+ * because it is not in `npm test` and nobody was watching it.
+ *
+ * What this test checks is that the UI runs THE export rather than a second
+ * implementation that resembles it. A 90-frame 640x360 fixture proves that as
+ * well as a 4K take and in a fraction of the time; the gates are where 4K
+ * behaviour is exercised. `STC_EXPORT_IDENTITY_TAKE=real` (or a path) restores
+ * the old behaviour for a human who wants the heavier check.
+ */
+function takeFolder(): { dir: string; takeDir: string } {
+  const want = process.env.STC_EXPORT_IDENTITY_TAKE;
+  if (!want) return makeTakeFolder();
+  const src = want === "real" ? realTake() : want;
+  if (!src || !existsSync(src)) {
+    throw new Error(
+      `STC_EXPORT_IDENTITY_TAKE=${want} but no such take exists. Unset it to use ` +
+      "the committed fixture, or record one into ~/Desktop/stc.");
+  }
   const dir = mkdtempSync(join(tmpdir(), "stc-export-e2e-"));
   const takeDir = join(dir, "2026-08-24_10-00-00");
   cpSync(src, takeDir, { recursive: true });
+  return { dir, takeDir };
+}
+
+async function launchWithTake() {
+  const { dir, takeDir } = takeFolder();
   // The bundle is built once in vitest.global-setup.ts. Building it here
   // raced every other suite doing the same on app/dist/ — see that file.
+  // Both engines pinned to the SAME rasterization backend. The pre-encode hash
+  // depends on it — measured on the fixture, GPU gives 10a05a33… and
+  // swiftshader bc03e397…, same code and same project — because composite()
+  // draws to a canvas and the pixels are Chromium's to produce.
+  //
+  // Unpinned, this test compares Electron's Chromium against Playwright's
+  // Chrome and asserts they rasterize identically, which is not a property this
+  // codebase controls. It passed locally only because both happened to take the
+  // same path; on its first CI run Electron went software, Chrome went GPU, and
+  // it failed with exactly those two hashes. Software is the pin because it is
+  // the backend both environments can always provide.
   app = await electron.launch({
-    args: [root], cwd: root, env: { ...process.env, STC_RECORDINGS_DIR: dir },
+    args: [root, ...SOFTWARE_RENDER_ARGS], cwd: root,
+    env: { ...process.env, STC_RECORDINGS_DIR: dir },
   });
   const win = await app.firstWindow();
   await win.waitForLoadState("domcontentloaded");
@@ -55,10 +96,13 @@ describe("export identity across implementations", () => {
     // Same take through the CLI path. Identical hashes prove the UI is running
     // THE export, not a second implementation that happens to look similar.
     const out = execFileSync("node", [join(root, "scripts", "export-gate.mjs"), takeDir],
-      { cwd: root, encoding: "utf8", timeout: 800_000 });
+      { cwd: root, encoding: "utf8", timeout: 400_000,
+        // The other half of the pin. Comparing hashes across two engines is
+        // only meaningful when both rasterize the same way.
+        env: { ...process.env, STC_FORCE_SOFTWARE_RENDER: "1" } });
     const cliHash = out.match(/hash A: ([0-9a-f]{64})/)?.[1];
 
     expect(cliHash, `no hash in CLI output:\n${out}`).toBeDefined();
     expect(uiHash).toBe(cliHash);
-  }, 1_800_000);
+  }, 480_000);
 });

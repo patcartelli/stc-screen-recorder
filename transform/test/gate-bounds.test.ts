@@ -5,7 +5,7 @@ import { withoutComments } from "./_source-text.js";
 import {
   bounded, EVAL_MS, ENCODER_MS, EVAL_SLOTS, SEEK_MS, PRE_GATE_BUDGET_MS,
   worstCaseJobMs, attemptFloorMs, FLOOR_MARGIN, READY_MS, LAUNCH_MS, TEARDOWN_MS,
-  GATE_PROCESS_MS, GATE_ATTEMPTS, gateFloorMs, GC_RETRIES,
+  GATE_PROCESS_MS, GATE_ATTEMPTS, gateFloorMs, GC_RETRIES, SLOW_TESTS_MS,
 } from "../../scripts/gate-bounds.mjs";
 import { ATTEMPTS, ATTEMPT_MS } from "../../scripts/gate-retry.mjs";
 import * as bounds from "../../scripts/gate-bounds.mjs";
@@ -125,7 +125,7 @@ describe("every gate has a per-process bound, and the model knows all of them", 
   test("the worst case is the SUM of declared bounds, not a model of internals", () => {
     // Composition, not magnitude — the mistake #42 made and caught by mutation.
     // Deleting any gate's term must move the total.
-    let expected = PRE_GATE_BUDGET_MS;
+    let expected = PRE_GATE_BUDGET_MS + SLOW_TESTS_MS;
     for (const [name, ms] of Object.entries(GATE_PROCESS_MS)) {
       expected += ms * (GATE_ATTEMPTS[name] ?? 1);
     }
@@ -281,8 +281,12 @@ describe("gate bounds — clearance against the CI job timeout", () => {
     // timeout — which reports as "cancelled" — wins with no explanation.
     // writer-gate already made exactly that mistake once.
     const ci = readFileSync(join(root, ".github", "workflows", "ci.yml"), "utf8");
-    const m = ci.match(/^\s*timeout-minutes:\s*(\d+)\s*$/m);
-    expect(m, "ci.yml must declare timeout-minutes for this clearance to mean anything").not.toBeNull();
+    // FOUR spaces: the JOB's cap. Steps declare their own timeout-minutes at
+    // eight, and `\s*` would read whichever came first in the file — a clearance
+    // computed against a step's bound would be silently meaningless.
+    const m = ci.match(/^ {4}timeout-minutes:\s*(\d+)\s*$/m);
+    expect(m, "ci.yml must declare a job-level timeout-minutes for this clearance to mean anything")
+      .not.toBeNull();
 
     const jobCapMs = Number(m![1]) * 60_000;
     // The model lives with the constants and accounts for the RETRY. The old
@@ -295,6 +299,33 @@ describe("gate bounds — clearance against the CI job timeout", () => {
     // Not a token margin: the gates must be able to time out and still leave
     // room to print why and upload the artifacts.
     expect(marginMs).toBeGreaterThanOrEqual(5 * 60_000);
+  });
+
+  // test:slow is bounded as one process, like each gate, and that number is
+  // counted in the worst case. If ci.yml and gate-bounds disagree, the model is
+  // describing a job that is not the one running — which is how the worst case
+  // came to say 21.5 min while one gate could take 30.
+  test("the slow-test step's bound is the one the model counts", () => {
+    const ci = readFileSync(join(root, ".github", "workflows", "ci.yml"), "utf8");
+    const m = ci.match(/^ {8}timeout-minutes:\s*(\d+)\s*$/m);
+    expect(m, "the test:slow step must declare its own timeout-minutes").not.toBeNull();
+    expect(Number(m![1]) * 60_000,
+      "ci.yml's test:slow step and SLOW_TESTS_MS disagree").toBe(SLOW_TESTS_MS);
+  });
+
+  // The inner bound must be able to fire before the outer one, or its message
+  // is unreachable — the rule this repo applies to every other pair of bounds,
+  // and one that was NOT being checked here: the slow config allowed 30 min per
+  // test, which three tests could turn into 90, against a 12 min step and a
+  // 65 min job. A hung slow test would have died anonymously at the step's cap
+  // instead of vitest naming which test hung.
+  test("a slow test's own timeout stays under the step's bound", () => {
+    const cfg = readFileSync(join(root, "vitest.slow.config.ts"), "utf8");
+    const m = withoutComments(cfg).match(/testTimeout:\s*([\d_]+)/);
+    expect(m, "vitest.slow.config.ts must declare a testTimeout").not.toBeNull();
+    const perTest = Number((m![1] ?? "").replace(/_/g, ""));
+    expect(perTest, `a slow test may run ${perTest}ms inside a ${SLOW_TESTS_MS}ms step`)
+      .toBeLessThan(SLOW_TESTS_MS);
   });
 
   test("the in-page encoder bound stays under the per-evaluate bound", () => {
@@ -352,7 +383,7 @@ describe("gate bounds — clearance against the CI job timeout", () => {
     const nonRetriedGates = 3;                       // export, identity, seek
     const perGateOverhead = LAUNCH_MS + 2 * TEARDOWN_MS + READY_MS;
     expect(worstCaseJobMs()).toBeGreaterThanOrEqual(
-      PRE_GATE_BUDGET_MS + ATTEMPTS * ATTEMPT_MS
+      PRE_GATE_BUDGET_MS + SLOW_TESTS_MS + ATTEMPTS * ATTEMPT_MS
       + 2 * EVAL_MS + EVAL_MS + SEEK_MS
       + nonRetriedGates * perGateOverhead);
   });
