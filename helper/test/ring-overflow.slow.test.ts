@@ -128,4 +128,69 @@ describe("lossy channel — end-to-end overflow", () => {
     expect(long!.dropped).toBeGreaterThan(short!.dropped);
     expect(long!.survived).toBeLessThan(short!.survived * 1.5 + 300);
   }, 180_000);
+
+  /**
+   * The other half of the two-channel claim, and the half nothing tested.
+   *
+   * The design says stdout is lossy so it can never back-pressure anything,
+   * while stdin+fd3 stays reliable. The test above proves the lossy side drops
+   * rather than blocks; this proves the RELIABLE side is still usable at the
+   * same moment — that the two channels are genuinely independent and not
+   * merely described that way.
+   *
+   * It matters because the failure it rules out is silent and total: if a
+   * stalled stdout could wedge command handling, a parent whose UI stopped
+   * reading stats would find it could no longer stop the recording either, and
+   * the take would be unfinishable. Measured on this machine, fd3 answered a
+   * `status` in 24 ms while stdout was stalled and actively dropping.
+   *
+   * STC-249. The capture-side half of the claim — that a stalled consumer does
+   * not throttle the capture graph — needs a Screen Recording grant and lives
+   * in helper/test/lossy-under-capture.grant.test.ts.
+   */
+  test("the reliable channel still answers while the lossy one is stalled and dropping", async () => {
+    const h = spawnHelper({ drainStdout: false, statsIntervalMs: 1 });
+    await waitFor(() => find(h.fd3, "ready"));
+
+    // Stall until the ring is DEMONSTRABLY overflowing. Without that this
+    // asserts only that fd3 works, which it does at any moment — the question
+    // is whether it works while stdout is blocked, so stdout has to be blocked.
+    // Escalated rather than fixed, for the same kernel-pipe reason as above.
+    let stall = 2000;
+    let dropping = false;
+    for (let attempt = 0; attempt < 5 && !dropping; attempt++, stall *= 2) {
+      const probe = spawnHelper({ drainStdout: false, statsIntervalMs: 1 });
+      await waitFor(() => find(probe.fd3, "ready"));
+      await sleep(stall);
+      probe.drainStdout();
+      dropping = !!(await waitFor(() => find(probe.out, "stats-dropped"), 20_000, "drops")
+        .catch(() => undefined));
+      probe.kill();
+    }
+    expect(dropping, "never got the lossy channel into a dropping state — nothing was tested")
+      .toBe(true);
+
+    await sleep(stall);                       // the real subject, still undrained
+
+    const t0 = Date.now();
+    h.send({ cmd: "status", seq: 7 });
+    const reply = await waitFor(() => h.fd3.find((l) => l.seq === 7), 15_000,
+      "a status reply while stdout is stalled");
+    const answeredMs = Date.now() - t0;
+
+    expect(reply.ev).toBe("status");
+    // Promptly, not eventually. "It answered within the test timeout" would
+    // also be true of a helper that answered only once stdout drained.
+    expect(answeredMs, `fd3 took ${answeredMs}ms to answer while stdout was stalled`)
+      .toBeLessThan(5000);
+
+    // And the stall really was still in force: stdout had never been drained on
+    // THIS helper, so the reply above cannot have been unblocked by a reader.
+    h.drainStdout();
+    const note = await waitFor(() => find(h.out, "stats-dropped"), 20_000, "drop notice")
+      .catch(() => undefined);
+    expect(note, "this helper never overflowed, so its stdout was not actually stalled")
+      .toBeDefined();
+    h.kill();
+  }, 180_000);
 });
