@@ -66,6 +66,32 @@ final class CameraCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
     private var deltas: [Int64] = []
     private var appended = 0
 
+    /// Set by `stop()` so the liveness watchdog below cannot warn about a take
+    /// that has already ended.
+    private var stopped = false
+
+    /// How long a camera may be RUNNING with zero frames before the user is
+    /// told (STC-286).
+    ///
+    /// A camera that opens and then delivers nothing is the failure that looked
+    /// exactly like success: `startRunning()` returns, the device reports itself
+    /// started with a name, `camera.mp4` is created — and `captureOutput` is
+    /// never called. Confirmed on real hardware 2026-08-31 with the laptop in
+    /// clamshell: `camera-started device: "FaceTime HD Camera"`, a 0-byte
+    /// camera.mp4, and `anchors.camera.present: false`. Not a failed open, and
+    /// not the wrong device: `pickCamera` correctly chose the built-in over a
+    /// virtual device and a Continuity camera.
+    ///
+    /// It is not only clamshell. A covered lens, a device grabbed by another
+    /// app, or a Continuity camera that wanders off all look identical.
+    ///
+    /// Three seconds because frames follow `startRunning()` almost immediately
+    /// — the ~1.4 s a viewer sees before the PiP appears is the OPEN, which has
+    /// already happened by the time this is armed. Long enough not to race a
+    /// slow first frame, short enough that the user learns during the take
+    /// rather than after it.
+    static let noFramesWarningSeconds: Double = 3
+
     static let width = 1280
     static let height = 720
 
@@ -142,7 +168,39 @@ final class CameraCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
 
         session = s
         s.startRunning()
+        armNoFramesWatchdog()
         return .success(deviceName)
+    }
+
+    /// Warns if the camera is running but has delivered nothing (STC-286).
+    ///
+    /// A one-shot timer on a background queue: it must not sit on the open
+    /// queue, and it must never touch the capture callback's path. It reads the
+    /// same `appended` counter the frames increment, under the same lock.
+    ///
+    /// IO.send, not IO.stat. The lossy channel exists so stats cannot
+    /// back-pressure capture; a warning that decides whether the user trusts a
+    /// take is not a stat and must not be droppable — the same reasoning as
+    /// `virtual-camera-only` above.
+    private func armNoFramesWatchdog() {
+        let device = { self.lock.lock(); defer { self.lock.unlock() }; return self.deviceName }()
+        DispatchQueue.global().asyncAfter(deadline: .now() + Self.noFramesWarningSeconds) { [weak self] in
+            guard let self else { return }
+            self.lock.lock()
+            let seen = self.appended
+            let ended = self.stopped
+            self.lock.unlock()
+            // Nothing to say about a take that already stopped, or one whose
+            // camera is working.
+            guard !ended, seen == 0 else { return }
+            IO.send("warning", ["code": "camera-no-frames",
+                                "device": device,
+                                "detail": "the camera opened but has not delivered a frame after "
+                                        + "\(Int(Self.noFramesWarningSeconds))s; this take will "
+                                        + "have no picture-in-picture. A closed laptop lid, a "
+                                        + "covered lens, or another app holding the camera all "
+                                        + "look like this"])
+        }
     }
 
     private func setupWriter() throws {
@@ -230,6 +288,7 @@ final class CameraCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
     static let stopTimeoutSeconds: Double = 10
 
     func stop(completion: @escaping (CameraTrack?) -> Void) {
+        lock.lock(); stopped = true; lock.unlock()
         let answered = NSLock()
         var done = false
         let finish: (CameraTrack?) -> Void = { track in
