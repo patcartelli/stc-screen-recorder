@@ -61,7 +61,17 @@ process.stdin.on("data", (chunk) => {
         // later — success and failure both. That ordering is the whole subject:
         // a stand-in that announced the camera inside `started` could not
         // reproduce the window the user complains about.
-        if (process.env.STC_FAKE_CAMERA === "fail") {
+        if (process.env.STC_FAKE_CAMERA === "noframes") {
+          // The real shape: started FIRST, with a device name, and only later
+          // the admission that nothing is arriving. A stand-in that skipped the
+          // camera-started could not reproduce the window where the app
+          // confidently displays a working camera.
+          setTimeout(() => send("camera-started", { device: "FaceTime HD Camera" }), 40);
+          setTimeout(() => send("warning", {
+            code: "camera-no-frames", device: "FaceTime HD Camera",
+            detail: "fake: opened but delivered nothing",
+          }), 120);
+        } else if (process.env.STC_FAKE_CAMERA === "fail") {
           setTimeout(() => send("warning", {
             code: "camera-failed", detail: "fake: the device could not be opened",
           }), 40);

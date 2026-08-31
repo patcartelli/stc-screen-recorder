@@ -211,6 +211,34 @@ describe("the camera says what it is doing (STC-287)", () => {
       .toContain("picture-in-picture");
   }, 60_000);
 
+  /**
+   * STC-286, confirmed on real hardware 2026-08-31 in clamshell: the camera
+   * opens, reports `camera-started` with "FaceTime HD Camera", writes a 0-byte
+   * camera.mp4 and delivers not one frame. Not a failed open — `pickCamera`
+   * chose correctly over a virtual device and a Continuity camera — and not a
+   * permission problem.
+   *
+   * Before this the app showed the device name for the whole take, which was
+   * accurate and actively misleading: it said the camera was working while it
+   * delivered nothing, and only admitted otherwise in the library afterwards.
+   */
+  test("a camera that opens and then sends nothing stops claiming it works", async () => {
+    const win = await launch({ ...dirs(), camera: "noframes" });
+    await win.waitForSelector("#camera");
+    if (!(await win.isChecked("#camera"))) await win.click("#camera");
+    await win.click("#record");
+
+    // It really does say the device name first — that is the window the user
+    // sees, and asserting the end state alone would not prove it was replaced.
+    await expect.poll(() => win.textContent("#camera-state"), { timeout: 20_000 })
+      .toContain("FaceTime HD Camera");
+    // ...and then stops saying it.
+    await expect.poll(() => win.textContent("#camera-state"), { timeout: 20_000 })
+      .toContain("no frames");
+    await expect.poll(() => win.textContent("#alert"), { timeout: 20_000 })
+      .toContain("not sending any frames");
+  }, 60_000);
+
   test("a take whose camera recorded nothing says so in the library", async () => {
     // anchors.camera.present is false — the clamshell case, where the device
     // opens and delivers zero frames. It used to be indistinguishable from a

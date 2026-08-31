@@ -73,7 +73,7 @@ belonging to a different commit).
 | STC-249 | **DONE** — both halves. Channel independence is mutation-proven without a grant (`ring-overflow.slow.test.ts`); the capture-side half RAN on real hardware 2026-08-31 and passed (`lossy-under-capture.grant.test.ts`) | nothing |
 | STC-254 | **done** — append/teardown race fixed (part 2), SIGTRAP crash handler closed (part 3). Master CI green again | nothing; watch that master stays green |
 | STC-287 | **done** — the camera's lifecycle is no longer invisible: device name while recording, a visible reason when it fails, and each take states when its PiP starts or that the camera recorded nothing. The ~1.4 s gap itself is inherent and deliberate | nothing |
-| STC-286 | **tail is REPORTED, not fixed** — a camera that opens and writes zero frames now says so (STC-287's work). Why it happens is open; `anchors.camera.device` discriminates the lid from a wrong device pick | a clamshell recording on real hardware |
+| STC-286 | **cause found 2026-08-31, and now reported DURING the take.** In clamshell the built-in camera OPENS — `camera-started device: "FaceTime HD Camera"` — then delivers nothing: 0-byte camera.mp4, `present: false`. Not a failed open and not a wrong pick (`pickCamera` chose correctly over a virtual device and Continuity). A 3 s liveness watchdog warns while recording | the CONTROL arm: confirm it does NOT fire with the lid open |
 | STC-247 | multi-display capture | a second display |
 | STC-251/252 | preview memory ceiling (~15 min at 4K); Node 20 actions deprecation | — |
 
@@ -404,6 +404,26 @@ reachable via KVC (`setValue(3, forKey: "captureResolution")`, verified in phase
   every signal is named explicitly; the old `default: "SIGABRT"` would have mislabelled anything
   added to the loop, and a diagnostic that lies is worse than one that admits ignorance.
   `helper/test/crash-signals.test.ts` signals the real binary and asserts the stderr line.
+- **A camera that OPENS and then delivers nothing is the failure that looks like success
+  (STC-286).** Confirmed on real hardware 2026-08-31, laptop in clamshell on an external display:
+  `camera-started` fires with `device: "FaceTime HD Camera"`, `camera.mp4` is created at 0 bytes,
+  `captureOutput` is never called once, and `anchors.camera` ends `{present: false}` with NO device
+  name — `track()` returns nil on zero frames and takes `deviceName` with it, which is why the
+  test-host transcript was needed to identify the device at all.
+  It is NOT a failed open, NOT a permission problem, and NOT the wrong device: `pickCamera` chose
+  the built-in over an Elgato virtual camera and a Continuity iPhone, so #44's `transportType`
+  ranking is holding. `startRunning()` simply returns on a camera that will never produce a frame.
+  STC-287's work made this look WORSE before it made it better: the app showed the device name for
+  the whole take — accurate, and actively misleading — and only admitted the truth in the library
+  afterwards. `CameraCapture.noFramesWarningSeconds` (3 s, armed after `startRunning`) now warns
+  while the take is still running. Three seconds because frames follow `startRunning` almost
+  immediately: the ~1.4 s a viewer waits for the PiP is the OPEN, already done by then.
+  Clamshell is only the reproducible case — a covered lens, another app holding the device, or a
+  Continuity camera wandering off all look identical, and all are now reported.
+  **The false-positive direction is UNTESTED by automation.** Nothing in the suite can produce a
+  camera delivering frames, so nothing proves the watchdog stays quiet for a healthy one. That arm
+  is a hardware check: the same probe with the lid OPEN.
+
 - **The camera's whole lifecycle was invisible to the user (STC-287).** The complaint was "the PiP
   pops in ~1.9 s, so it reads as if the camera didn't work". Two corrections. The visible blank
   corner is the gap against the FIRST DISPLAY FRAME, not against session zero — the display track

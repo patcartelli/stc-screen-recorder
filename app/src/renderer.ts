@@ -179,6 +179,15 @@ const CAMERA_FAULTS: Record<string, string> = {
     "Only a virtual camera was available. It was not used, so this take has no " +
     "picture-in-picture — connect a real camera and record again.",
   "device-disconnected": "A capture device was disconnected during the recording.",
+  // STC-286. The one that looked exactly like success: the camera opens,
+  // reports its name, and delivers nothing. Confirmed in clamshell on real
+  // hardware — camera-started with "FaceTime HD Camera", then a 0-byte
+  // camera.mp4. Until this warning existed the app showed the device name for
+  // the whole take and only admitted the truth afterwards, in the library.
+  "camera-no-frames":
+    "The camera opened but is not sending any frames, so this take will have no " +
+    "picture-in-picture. A closed laptop lid, a covered lens, or another app using " +
+    "the camera all look like this.",
 };
 
 recorder.on("helper:warning", (l) => {
@@ -190,7 +199,9 @@ recorder.on("helper:warning", (l) => {
   if (!camera) return;
   // Both: the row is the at-a-glance state, the alert is the thing that cannot
   // be missed. A silent failure is what this whole change exists to remove.
-  setCamera(`failed — ${l.code}`);
+  // "no frames" is not the same as "failed to open", and the row said the
+  // device name right up until this fired. Name the state, not just the code.
+  setCamera(l.code === "camera-no-frames" ? "no frames" : `failed — ${l.code}`);
   alertUser(l.detail ? `${camera}\n\n${l.detail}` : camera);
 });
 
