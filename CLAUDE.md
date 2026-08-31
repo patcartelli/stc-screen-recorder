@@ -70,7 +70,7 @@ belonging to a different commit).
 | STC-232 | **PHASE 3 COMPLETE 2026-08-30** — increments 1-5 done. Recorded from the app with the camera toggle on, previewed with no hand-written project.json, sync measured at 65 ms | nothing |
 | STC-232 4b | **done and VISUALLY CONFIRMED 2026-08-28** — both sinks draw the PiP, gate proves it, app opens camera takes, and a human watched a real 4K take. Increment 5 is unblocked | nothing; increment 5 is next |
 | STC-259 | **DONE** — steps 1-3. Both encoder queries bounded at 15 s, the harness's first append bounded, a deadline watchdog behind all of them, and the product answered: it does not need one (see the trap below). The determinism gate's retry is now **ATTEMPTS = 1** — measured useless, see below | the wedged renderer itself (Mode B) |
-| STC-249 | lossy ring under REAL capture load — the semantics are tested, the live scenario is not | a recording with a stalled stats consumer |
+| STC-249 | **half done** — channel independence under a stalled, dropping consumer is now tested and mutation-proven (`ring-overflow.slow.test.ts`, no grant). The capture-side half is written but **has never run**: `lossy-under-capture.grant.test.ts` needs a Screen Recording grant | someone to run `npm run test:capture` on a granted machine |
 | STC-254 | **done** — append/teardown race fixed (part 2), SIGTRAP crash handler closed (part 3). Master CI green again | nothing; watch that master stays green |
 | STC-232 | phase 3: camera PiP — recommended first, it avoids §2a's CoreAudio wedge entirely | a scope decision |
 | STC-247 | multi-display capture | a second display |
@@ -213,6 +213,22 @@ reachable via KVC (`setValue(3, forKey: "captureResolution")`, verified in phase
 
 - **Byte-identical MP4 is not the gate** — muxer timestamps and encoder state differ between
   runs. Hash pre-encode RGBA buffers, not container output.
+- **The two channels are independent, and that is now MEASURED, not just described (STC-249).**
+  A stalled stdout — stalled hard enough that the ring is actively dropping — does not stop fd3
+  answering: 24 ms for a `status` on this machine. The failure that rules out is silent and total,
+  because a parent whose UI stopped reading stats would find it could no longer stop the recording
+  either, and the take would be unfinishable.
+  Proven by MUTATION, which is the only way this claim means anything: move `cond.unlock()` in
+  `LossyChannel.writeLoop` to AFTER the writes — the lock held across I/O, exactly the
+  back-pressure bug the design forbids — and both tests in `ring-overflow.slow.test.ts` fail.
+  Getting the lossy channel into a dropping state is escalated, never a fixed stall: measured idle
+  here, 2000 ms dropped NOTHING, 4000 ms dropped 1051, 8000 ms dropped 5038. The kernel's pipe
+  buffer decides, and CI's is bigger — a fixed stall calibrated here is the portability bug that
+  file already hit on its first CI run.
+  **The capture-side half is NOT verified.** `helper/test/lossy-under-capture.grant.test.ts` asks
+  whether a stalled consumer throttles the capture graph, and it needs a Screen Recording grant, so
+  it has only ever reached its SKIP-GRANT branch. Written is not tested.
+
 - **Stats on stdout can block capture** — all stats writes must go through a bounded ring buffer
   on a dedicated writer thread with non-blocking fd; no capture callback may touch the pipe.
   *(`LossyChannel` does this. When capture lands, emit stats with `IO.stat`, never `IO.send`.)*
