@@ -9,6 +9,7 @@ events → deterministic transform → CFR MP4 with cursor overlay.
 |---|---|
 | `PHASE-1.md` | current phase plan — read this first |
 | `docs/PHASE-0-FINDINGS.md` | spike results; all settled decisions sourced here |
+| `docs/HANDOFF-2026-08-31.md` | what moved on 2026-08-31, what was got wrong, and the one open question |
 | `helper/src/` | Swift helper (increment 1, in progress) |
 | `helper/src/Protocol.swift` | JSON-line IPC + Clock |
 | `helper/src/Watchers.swift` | display/device watchers |
