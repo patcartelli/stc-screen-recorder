@@ -97,9 +97,21 @@ jobs:
       # ~2 min rather than after 20 minutes of video pipeline. The bound is
       # SLOW_TESTS_MS in scripts/gate-bounds.mjs, which the worst-case model
       # counts and gate-bounds.test.ts asserts against this number.
+      # NAMED, not the whole suite. helper/test/ring-overflow.slow.test.ts is
+      # machine-dependent BY CONSTRUCTION — how long a consumer must stall
+      # before the kernel's pipe overflows is the kernel's business, so it
+      # escalates 2s, 4s, 8s… until drops appear. Its own file comment already
+      # recorded that it "timed out on CI at 180 s", which is exactly why it
+      # lived outside CI; #54 then put the whole suite in and dragged it along.
+      # It passed three runs and timed out on the fourth, which is worse than
+      # failing consistently: it reddens PRs at random.
+      #
+      # So CI runs the check it was actually added for, and the pipe-dependent
+      # one stays a local command. That is a real gap and is stated as one in
+      # docs/STC-259-GATE-SKIP-RATE.md rather than hidden behind a green tick.
       - name: Cross-implementation export identity (test:slow)
         timeout-minutes: 12
-        run: npm run test:slow
+        run: npm run test:slow -- app/test/export-identity.slow.test.ts
 
       - name: Install Chrome
         run: npx playwright install chrome

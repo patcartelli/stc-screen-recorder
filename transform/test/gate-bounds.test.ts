@@ -328,6 +328,19 @@ describe("gate bounds — clearance against the CI job timeout", () => {
       .toBeLessThan(SLOW_TESTS_MS);
   });
 
+  // ring-overflow escalates its stall until the kernel's pipe overflows, so its
+  // duration is a property of the machine. Its own comment recorded that it
+  // "timed out on CI at 180 s" — then #54 put the whole slow suite into CI and
+  // took it along. Three green runs, then a random red. CI names the file it
+  // runs instead.
+  test("CI's slow step does not run the pipe-dependent test", () => {
+    const ci = withoutComments(readFileSync(join(root, ".github", "workflows", "ci.yml"), "utf8"));
+    const step = ci.match(/npm run test:slow[^\n]*/)?.[0] ?? "";
+    expect(step, "the test:slow step must name the files it runs").toMatch(/\.slow\.test\.ts/);
+    expect(step, "ring-overflow is machine-dependent and must not gate a push")
+      .not.toMatch(/ring-overflow/);
+  });
+
   test("the in-page encoder bound stays under the per-evaluate bound", () => {
     // The harness bounds its own encoder waits with ENCODER_MS, handed in by
     // gate.mjs. If it ever reached EVAL_MS the outer bound would fire first and

@@ -136,6 +136,21 @@ and the step timings above.
    advice here said "measure fresh runs", then "you cannot measure fresh runs";
    both were too broad.)
 
+## What CI's slow step does NOT cover
+
+`npm run test:slow` locally runs two files; CI runs only
+`app/test/export-identity.slow.test.ts`.
+
+`helper/test/ring-overflow.slow.test.ts` is machine-dependent by construction —
+it escalates a stall until the kernel's pipe buffer overflows, and how long that
+takes is the kernel's business. Its own comment recorded that it "timed out on
+CI at 180 s", which is why it lived outside CI in the first place; adding the
+whole suite took it along, and it passed three runs before timing out on the
+fourth. A test that reddens PRs at random is worse than one that does not run.
+
+So the lossy channel's end-to-end wiring, and the channel-independence check
+added for STC-249, are **local-only commands**. Neither runs automatically.
+
 ## Method
 
 The script pulls the last N completed runs through `gh`, downloads each job log,
