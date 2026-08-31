@@ -73,7 +73,7 @@ belonging to a different commit).
 | STC-249 | **DONE** — both halves. Channel independence is mutation-proven without a grant (`ring-overflow.slow.test.ts`); the capture-side half RAN on real hardware 2026-08-31 and passed (`lossy-under-capture.grant.test.ts`) | nothing |
 | STC-254 | **done** — append/teardown race fixed (part 2), SIGTRAP crash handler closed (part 3). Master CI green again | nothing; watch that master stays green |
 | STC-287 | **done** — the camera's lifecycle is no longer invisible: device name while recording, a visible reason when it fails, and each take states when its PiP starts or that the camera recorded nothing. The ~1.4 s gap itself is inherent and deliberate | nothing |
-| STC-286 | **cause found 2026-08-31, and now reported DURING the take.** In clamshell the built-in camera OPENS — `camera-started device: "FaceTime HD Camera"` — then delivers nothing: 0-byte camera.mp4, `present: false`. Not a failed open and not a wrong pick (`pickCamera` chose correctly over a virtual device and Continuity). A 3 s liveness watchdog warns while recording | the CONTROL arm: confirm it does NOT fire with the lid open |
+| STC-286 | **cause found 2026-08-31, and now reported DURING the take.** In clamshell the built-in camera OPENS — `camera-started device: "FaceTime HD Camera"` — then delivers nothing: 0-byte camera.mp4, `present: false`. Not a failed open and not a wrong pick (`pickCamera` chose correctly over a virtual device and Continuity). A 3 s liveness watchdog warns while recording | nothing — both arms verified on hardware, lid shut AND lid open |
 | STC-247 | multi-display capture | a second display |
 | STC-251/252 | preview memory ceiling (~15 min at 4K); Node 20 actions deprecation | — |
 
@@ -420,9 +420,17 @@ reachable via KVC (`setValue(3, forKey: "captureResolution")`, verified in phase
   immediately: the ~1.4 s a viewer waits for the PiP is the OPEN, already done by then.
   Clamshell is only the reproducible case — a covered lens, another app holding the device, or a
   Continuity camera wandering off all look identical, and all are now reported.
-  **The false-positive direction is UNTESTED by automation.** Nothing in the suite can produce a
-  camera delivering frames, so nothing proves the watchdog stays quiet for a healthy one. That arm
-  is a hardware check: the same probe with the lid OPEN.
+  **BOTH ARMS are verified on hardware (2026-08-31), which no automated test can do — nothing in
+  the suite can produce a camera delivering frames.** Lid shut, three runs: the camera opens, names
+  itself, delivers nothing, and the warning fires 3.06 s after `camera-started`. Lid OPEN, control
+  run: the same camera opens, `present: true`, first frame at 1.759 s, ~29 fps over a 10.6 s track,
+  and the watchdog stays SILENT. The margin is real rather than assumed — almost all of that 1.76 s
+  is the OPEN, and frames follow `startRunning` immediately, which is what the 3 s is measured
+  against.
+  NB the control very nearly read as a second clamshell run: `ioreg -r -k AppleClamshellState -d 4`
+  prints a whole subtree, and `grep -o 'Yes\|No'` on it matches an unrelated token long before the
+  clamshell line. Scope the grep to `"AppleClamshellState"` or the reading is not about the lid at
+  all.
 
 - **The camera's whole lifecycle was invisible to the user (STC-287).** The complaint was "the PiP
   pops in ~1.9 s, so it reads as if the camera didn't work". Two corrections. The visible blank
