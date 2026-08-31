@@ -229,6 +229,21 @@ reachable via KVC (`setValue(3, forKey: "captureResolution")`, verified in phase
   whether a stalled consumer throttles the capture graph, and it needs a Screen Recording grant, so
   it has only ever reached its SKIP-GRANT branch. Written is not tested.
 
+- **The pre-encode hash DEPENDS ON THE RASTERIZATION BACKEND, and that was found by CI.**
+  Measured on `fixtures/basic`, same code and same project: GPU gives
+  `10a05a33…`, swiftshader gives `bc03e397…`. `composite()` draws to a canvas and the pixels are
+  Chromium's to produce, so the determinism this repo gates on holds WITHIN a backend, not across
+  two. Every gate compares inside ONE browser and is unaffected — but any cross-engine comparison
+  is asserting something the codebase does not control.
+  `app/test/export-identity.slow.test.ts` is exactly that: the app's Electron against the CLI's
+  Chrome. It passed here for weeks and failed on its first CI run with precisely those two hashes,
+  because Electron rasterized in software and Chrome used the GPU. Reproduced locally in one
+  command by forcing swiftshader, which is how it was identified rather than guessed.
+  Both sides are pinned to software now (`scripts/render-backend.mjs`, `STC_FORCE_SOFTWARE_RENDER`
+  for the CLI side) — software because it is the backend every environment can provide. The flags
+  live in ONE module and `transform/test/render-backend.test.ts` refuses a second copy; this is the
+  fourth "one value, two copies" defect fixed in a single session.
+
 - **`test:slow` runs in CI now, and the reason it never could was a Desktop dependency.**
   `app/test/export-identity.slow.test.ts` reached into `~/Desktop/stc` for a take and threw when
   it found none, so the one check that catches a UI-vs-CLI export divergence ran nowhere

@@ -10,10 +10,12 @@ import { _electron as electron, type ElectronApplication } from "playwright";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, cpSync, existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { makeTakeFolder } from "./_take-fixture.js";
+import { SOFTWARE_RENDER_ARGS } from "../../scripts/render-backend.mjs";
 import { tmpdir, homedir } from "node:os";
 import { join } from "node:path";
 
 const root = join(__dirname, "..", "..");
+
 let app: ElectronApplication | undefined;
 afterEach(async () => { await app?.close().catch(() => {}); app = undefined; });
 
@@ -59,8 +61,20 @@ async function launchWithTake() {
   const { dir, takeDir } = takeFolder();
   // The bundle is built once in vitest.global-setup.ts. Building it here
   // raced every other suite doing the same on app/dist/ — see that file.
+  // Both engines pinned to the SAME rasterization backend. The pre-encode hash
+  // depends on it — measured on the fixture, GPU gives 10a05a33… and
+  // swiftshader bc03e397…, same code and same project — because composite()
+  // draws to a canvas and the pixels are Chromium's to produce.
+  //
+  // Unpinned, this test compares Electron's Chromium against Playwright's
+  // Chrome and asserts they rasterize identically, which is not a property this
+  // codebase controls. It passed locally only because both happened to take the
+  // same path; on its first CI run Electron went software, Chrome went GPU, and
+  // it failed with exactly those two hashes. Software is the pin because it is
+  // the backend both environments can always provide.
   app = await electron.launch({
-    args: [root], cwd: root, env: { ...process.env, STC_RECORDINGS_DIR: dir },
+    args: [root, ...SOFTWARE_RENDER_ARGS], cwd: root,
+    env: { ...process.env, STC_RECORDINGS_DIR: dir },
   });
   const win = await app.firstWindow();
   await win.waitForLoadState("domcontentloaded");
@@ -82,7 +96,10 @@ describe("export identity across implementations", () => {
     // Same take through the CLI path. Identical hashes prove the UI is running
     // THE export, not a second implementation that happens to look similar.
     const out = execFileSync("node", [join(root, "scripts", "export-gate.mjs"), takeDir],
-      { cwd: root, encoding: "utf8", timeout: 800_000 });
+      { cwd: root, encoding: "utf8", timeout: 400_000,
+        // The other half of the pin. Comparing hashes across two engines is
+        // only meaningful when both rasterize the same way.
+        env: { ...process.env, STC_FORCE_SOFTWARE_RENDER: "1" } });
     const cliHash = out.match(/hash A: ([0-9a-f]{64})/)?.[1];
 
     expect(cliHash, `no hash in CLI output:\n${out}`).toBeDefined();

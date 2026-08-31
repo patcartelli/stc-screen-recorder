@@ -10,6 +10,7 @@
  */
 import { createServer } from "vite";
 import { chromium } from "playwright";
+import { SOFTWARE_RENDER_ARGS, forceSoftwareRender } from "./render-backend.mjs";
 import { bounded, closeQuietly, EVAL_MS, isBoundFailure, instrumentPage } from "./gate-bounds.mjs";
 import { readFileSync, existsSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
@@ -62,7 +63,15 @@ const server = await createServer({
 });
 await server.listen(5200);
 
-const browser = await chromium.launch({ channel: "chrome", headless: true });
+// The pre-encode hash depends on the rasterization backend; see
+// scripts/render-backend.mjs. This gate's own comparisons all happen inside
+// this one browser and are unaffected, so it only pins when a caller comparing
+// against ANOTHER engine asks it to.
+const browser = await chromium.launch({
+  channel: "chrome",
+  headless: true,
+  ...(forceSoftwareRender() ? { args: SOFTWARE_RENDER_ARGS } : {}),
+});
 const page = await browser.newPage();
 // STC-259 Mode B: a blocked renderer kills every in-page bound, so the page's
 // checkpoints are collected out here. Also installs the wedge fault injection.
