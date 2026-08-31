@@ -182,5 +182,14 @@ describe("lossy stats ring under real capture (STC-249)", () => {
     const s = stalled.stopped.frames as number, d = drained.stopped!.frames as number;
     expect(s, `stalled captured ${s} frames vs drained ${d} — stdout is throttling capture`)
       .toBeGreaterThan(d * 0.5);
+
+    // Printed on SUCCESS, not just on failure. This test needs a grant, so it
+    // runs rarely and by hand; a pass that leaves no numbers behind means the
+    // next person has a green tick and no idea what it saw. stderr, because
+    // vitest attributes and can discard console output.
+    process.stderr.write(
+      `[lossy] STC-249 verified: ${stalled.ms}ms stalled -> ${s} frames, ` +
+      `${stalled.stopped.dropped} dropped, ${stalled.drops} stats discarded; ` +
+      `drained control -> ${d} frames\n`);
   }, 300_000);
 });

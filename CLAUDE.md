@@ -70,7 +70,7 @@ belonging to a different commit).
 | STC-232 | **PHASE 3 COMPLETE 2026-08-30** — increments 1-5 done. Recorded from the app with the camera toggle on, previewed with no hand-written project.json, sync measured at 65 ms | nothing |
 | STC-232 4b | **done and VISUALLY CONFIRMED 2026-08-28** — both sinks draw the PiP, gate proves it, app opens camera takes, and a human watched a real 4K take. Increment 5 is unblocked | nothing; increment 5 is next |
 | STC-259 | **DONE** — steps 1-3. Both encoder queries bounded at 15 s, the harness's first append bounded, a deadline watchdog behind all of them, and the product answered: it does not need one (see the trap below). The determinism gate's retry is now **ATTEMPTS = 1** — measured useless, see below | the wedged renderer itself (Mode B) |
-| STC-249 | **half done** — channel independence under a stalled, dropping consumer is now tested and mutation-proven (`ring-overflow.slow.test.ts`, no grant). The capture-side half is written but **has never run**: `lossy-under-capture.grant.test.ts` needs a Screen Recording grant | someone to run `npm run test:capture` on a granted machine |
+| STC-249 | **DONE** — both halves. Channel independence is mutation-proven without a grant (`ring-overflow.slow.test.ts`); the capture-side half RAN on real hardware 2026-08-31 and passed (`lossy-under-capture.grant.test.ts`) | nothing |
 | STC-254 | **done** — append/teardown race fixed (part 2), SIGTRAP crash handler closed (part 3). Master CI green again | nothing; watch that master stays green |
 | STC-232 | phase 3: camera PiP — recommended first, it avoids §2a's CoreAudio wedge entirely | a scope decision |
 | STC-247 | multi-display capture | a second display |
@@ -225,9 +225,16 @@ reachable via KVC (`setValue(3, forKey: "captureResolution")`, verified in phase
   here, 2000 ms dropped NOTHING, 4000 ms dropped 1051, 8000 ms dropped 5038. The kernel's pipe
   buffer decides, and CI's is bigger — a fixed stall calibrated here is the portability bug that
   file already hit on its first CI run.
-  **The capture-side half is NOT verified.** `helper/test/lossy-under-capture.grant.test.ts` asks
-  whether a stalled consumer throttles the capture graph, and it needs a Screen Recording grant, so
-  it has only ever reached its SKIP-GRANT branch. Written is not tested.
+  **The capture-side half is now VERIFIED on real hardware (2026-08-31).**
+  `helper/test/lossy-under-capture.grant.test.ts` recorded for 8 s with stdout never read, and the
+  ring overflowed on the first attempt without escalating. Frames captured, ZERO dropped, zero
+  non-monotonic; `stop` was issued and answered over fd3 while stdout was stalled; and a drained
+  control of the same length captured comparably. So the claim that stats cannot back-pressure the
+  capture graph is measured, not merely described.
+  It needs a Screen Recording grant for the TERMINAL that runs it — the helper is spawned directly,
+  so it inherits the launching process's TCC identity, and STCTestHost being granted says nothing
+  about that. `npx vitest run --config vitest.grant.config.ts helper/test/lossy-under-capture.grant.test.ts`;
+  the SKIP-GRANT path returns before any recording, so a missing grant costs seconds.
 
 - **The pre-encode hash DEPENDS ON THE RASTERIZATION BACKEND, and that was found by CI.**
   Measured on `fixtures/basic`, same code and same project: GPU gives
