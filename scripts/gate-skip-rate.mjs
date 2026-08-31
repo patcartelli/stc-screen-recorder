@@ -19,29 +19,41 @@
  * as "no signal" and reported a skip rate built from the skips alone.
  */
 import { execFileSync } from "node:child_process";
+import { pathToFileURL } from "node:url";
 
 const GATES = [
-  // [label, CI step that runs it, skip marker, pass marker, fail marker]
+  // [label, CI step, skip marker, pass marker, fail marker, unattributedSafe]
   //
-  // Every marker is matched ONLY inside that gate's own step. The first version
-  // of this searched the whole-job log, and `npm test` exercises announceSkip in
+  // Every marker is matched ONLY inside that gate's own step WHEN step
+  // attribution is available. The first version of this searched the whole-job
+  // log, and `npm test` exercises announceSkip in
   // transform/test/gate-retry.test.ts — which prints a real, verbatim
   // "Determinism gate DID NOT RUN" line into the Test step. That fixture was
-  // then read as a live skip and the gate was reported as never running, on runs
-  // where it had passed in nine seconds. Exactly the confusion this same
-  // investigation had already documented for "decoder flush did not complete",
-  // repeated one step later.
+  // then read as a live skip and the gate was reported as never running, on
+  // runs where it had passed in nine seconds.
+  //
+  // `unattributedSafe` says whether a gate's markers can be trusted WITHOUT
+  // attribution. Only Determinism's are printed by a test, so the other three
+  // can be measured on a run whose logs GitHub has not attributed yet — which
+  // is every run for its first few hours, and therefore every run anyone
+  // actually wants to check after a change. transform/test/gate-skip-rate.test.ts
+  // asserts the flag against the test tree rather than trusting this comment.
   //
   // Export and identity share a step; their own markers separate them.
   ["Determinism", /^Determinism gate \(fixture\)$/, "Determinism gate DID NOT RUN",
-    /(^|[^A-Z])GATE: PASS/m, /(^|[^A-Z])GATE: FAIL/m],
+    /(^|[^A-Z])GATE: PASS/m, /(^|[^A-Z])GATE: FAIL/m, false],
   ["Seek", /^Seek gate \(fixture\)$/, "Seek gate DID NOT RUN",
-    /SEEK GATE: PASS/, /SEEK GATE: FAIL/],
+    /SEEK GATE: PASS/, /SEEK GATE: FAIL/, true],
   ["Export", /^Export and identity gates/, "Export gate DID NOT RUN",
-    /EXPORT GATE: PASS/, /EXPORT GATE: FAIL/],
+    /EXPORT GATE: PASS/, /EXPORT GATE: FAIL/, true],
   ["Identity", /^Export and identity gates/, "Identity gate DID NOT RUN",
-    /IDENTITY GATE: PASS/, /IDENTITY GATE: FAIL/],
+    /IDENTITY GATE: PASS/, /IDENTITY GATE: FAIL/, true],
 ];
+
+/** Exported so a test can assert the flag against what the test tree prints. */
+export const UNATTRIBUTED_SAFE_MARKERS = GATES
+  .filter((g) => g[5])
+  .flatMap((g) => [g[2], String(g[3]).replace(/^\/|\/[a-z]*$/g, "")]);
 
 /**
  * `gh run view --log` emits `job<TAB>step<TAB>timestamp message`. Slicing by the
@@ -65,78 +77,92 @@ function stepText(log, stepPattern) {
   return out.join("\n");
 }
 
-const gh = (args) =>
-  execFileSync("gh", args, { encoding: "utf8", maxBuffer: 256 * 1024 * 1024 });
+/**
+ * The executable half. Guarded so a test can import the tables above without
+ * this reaching for `gh` — the flag those tables carry is only true while no
+ * test prints the markers, and that is worth asserting rather than commenting.
+ */
+async function main() {
+  const gh = (args) =>
+    execFileSync("gh", args, { encoding: "utf8", maxBuffer: 256 * 1024 * 1024 });
 
-const limit = Number(process.argv[2] ?? 20);
-const runs = JSON.parse(
-  gh(["run", "list", "--limit", String(limit),
-      "--json", "databaseId,conclusion,event,headBranch,createdAt"]),
-).filter((r) => r.conclusion);
+  const limit = Number(process.argv[2] ?? 20);
+  const runs = JSON.parse(
+    gh(["run", "list", "--limit", String(limit),
+        "--json", "databaseId,conclusion,event,headBranch,createdAt"]),
+  ).filter((r) => r.conclusion);
 
-const verdict = (log, [, step, skip, pass, fail]) => {
-  const text = stepText(log, step);
-  if (!text) return "-";                       // the step did not run at all
-  return text.includes(skip) ? "SKIP" : pass.test(text) ? "pass" : fail.test(text) ? "FAIL" : "-";
-};
+  const verdict = (log, [, step, skip, pass, fail, unattributedSafe], attributed) => {
+    // With attribution, scope to the gate's own step — always correct.
+    // Without it, fall back to the whole log for the gates whose markers no test
+    // prints. Determinism is excluded and reported as unmeasurable, because its
+    // markers are exactly the ones a unit test emits.
+    if (!attributed) return unattributedSafe ? classify(log, skip, pass, fail) : "n/a";
+    const text = stepText(log, step);
+    if (!text) return "-";                       // the step did not run at all
+    return classify(text, skip, pass, fail);
+  };
 
-const tally = Object.fromEntries(GATES.map(([g]) => [g, { pass: 0, seen: 0 }]));
-let unmeasurable = 0;
-const header = GATES.map(([g]) => g.padStart(12)).join("");
-console.log(`${"run".padEnd(12)} ${"result".padEnd(10)} ${"date".padEnd(11)}${header}`);
-console.log("-".repeat(34 + 12 * GATES.length));
+  const classify = (text, skip, pass, fail) =>
+    text.includes(skip) ? "SKIP" : pass.test(text) ? "pass" : fail.test(text) ? "FAIL" : "-";
 
-for (const r of runs) {
-  let log = "";
-  // A run whose logs have expired is skipped rather than counted as anything —
-  // scoring it would quietly change the denominator.
-  try { log = gh(["run", "view", String(r.databaseId), "--log"]); } catch { continue; }
-  // GitHub drops per-step attribution on older runs and reports every line as
-  // "UNKNOWN STEP". Verdicts cannot be scoped to a gate there, and scoring such
-  // a run on whole-log text is what produced a 100% skip rate for a gate that
-  // was passing — `npm test` prints a verbatim skip line of its own. Counted and
-  // named, never folded into the denominator as though it were a result.
-  if (!hasStepAttribution(log)) {
-    unmeasurable++;
+  const tally = Object.fromEntries(GATES.map(([g]) => [g, { pass: 0, seen: 0 }]));
+  let unmeasurable = 0;
+  const header = GATES.map(([g]) => g.padStart(12)).join("");
+  console.log(`${"run".padEnd(12)} ${"result".padEnd(10)} ${"date".padEnd(11)}${header}`);
+  console.log("-".repeat(34 + 12 * GATES.length));
+
+  for (const r of runs) {
+    let log = "";
+    // A run whose logs have expired is skipped rather than counted as anything —
+    // scoring it would quietly change the denominator.
+    try { log = gh(["run", "view", String(r.databaseId), "--log"]); } catch { continue; }
+    // GitHub drops per-step attribution on older runs and reports every line as
+    // "UNKNOWN STEP". Verdicts cannot be scoped to a gate there, and scoring such
+    // a run on whole-log text is what produced a 100% skip rate for a gate that
+    // was passing — `npm test` prints a verbatim skip line of its own. Counted and
+    // named, never folded into the denominator as though it were a result.
+    const attributed = hasStepAttribution(log);
+    if (!attributed) unmeasurable++;
+    const cells = GATES.map((g) => {
+      const v = verdict(log, g, attributed);
+      if (v === "SKIP" || v === "pass" || v === "FAIL") tally[g[0]].seen++;
+      if (v === "pass") tally[g[0]].pass++;
+      return v.padStart(12);
+    });
     console.log(
       `${String(r.databaseId).padEnd(12)} ${r.conclusion.padEnd(10)} ` +
-      `${r.createdAt.slice(0, 10).padEnd(11)}` +
-      "  logs aged out — step attribution gone, not measurable".padEnd(12),
+      `${r.createdAt.slice(0, 10).padEnd(11)}${cells.join("")}`,
     );
-    continue;
   }
-  const cells = GATES.map((g) => {
-    const v = verdict(log, g);
-    if (v !== "-") tally[g[0]].seen++;
-    if (v === "pass") tally[g[0]].pass++;
-    return v.padStart(12);
-  });
-  console.log(
-    `${String(r.databaseId).padEnd(12)} ${r.conclusion.padEnd(10)} ` +
-    `${r.createdAt.slice(0, 10).padEnd(11)}${cells.join("")}`,
-  );
+
+  console.log(`\n${"GATE".padEnd(14)}${"passed".padStart(8)}${"observed".padStart(10)}${"skip rate".padStart(12)}`);
+  let worst = 0;
+  for (const [g] of GATES) {
+    const { pass, seen } = tally[g];
+    const rate = seen ? (100 * (seen - pass)) / seen : 0;
+    worst = Math.max(worst, rate);
+    console.log(
+      `${g.padEnd(14)}${String(pass).padStart(8)}${String(seen).padStart(10)}` +
+      `${(seen ? `${rate.toFixed(0)}%` : "n/a").padStart(12)}`,
+    );
+  }
+  if (unmeasurable) {
+    console.log(
+      `\n${unmeasurable} of ${runs.length} runs had no per-step log attribution — GitHub adds it\n` +
+      "some hours after a run, so this is normal for anything recent. Seek, export and\n" +
+      "identity are still measured there from markers no test prints; determinism shows\n" +
+      "n/a, because its markers are exactly the ones a unit test emits. n/a is excluded\n" +
+      "from the rates, never counted as a skip.",
+    );
+  }
+  if (worst >= 50) {
+    console.log(
+      `\nA gate skipping ${worst.toFixed(0)}% of the time is not being checked. ` +
+      `Per STC-259 the answer\nat that point is the decoder, NOT more attempts.`,
+    );
+  }
+
 }
 
-console.log(`\n${"GATE".padEnd(14)}${"passed".padStart(8)}${"observed".padStart(10)}${"skip rate".padStart(12)}`);
-let worst = 0;
-for (const [g] of GATES) {
-  const { pass, seen } = tally[g];
-  const rate = seen ? (100 * (seen - pass)) / seen : 0;
-  worst = Math.max(worst, rate);
-  console.log(
-    `${g.padEnd(14)}${String(pass).padStart(8)}${String(seen).padStart(10)}` +
-    `${(seen ? `${rate.toFixed(0)}%` : "n/a").padStart(12)}`,
-  );
-}
-if (unmeasurable) {
-  console.log(
-    `\n${unmeasurable} of ${runs.length} runs could not be measured: GitHub had aged out their\n` +
-    `per-step log attribution. They are excluded from the rates above, not counted as skips.`,
-  );
-}
-if (worst >= 50) {
-  console.log(
-    `\nA gate skipping ${worst.toFixed(0)}% of the time is not being checked. ` +
-    `Per STC-259 the answer\nat that point is the decoder, NOT more attempts.`,
-  );
-}
+if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) await main();

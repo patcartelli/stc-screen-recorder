@@ -257,6 +257,14 @@ reachable via KVC (`setValue(3, forKey: "captureResolution")`, verified in phase
   test's own `testTimeout` stays under the step's bound. That last one was missing and the config
   allowed **30 minutes per test** — three tests could have claimed 90 inside a 12-minute step and
   a 65-minute job, and a hung one would have died anonymously at the cap.
+  **CI runs only `export-identity` from that suite, not the whole thing.**
+  `ring-overflow.slow.test.ts` escalates a stall until the KERNEL's pipe overflows, so its
+  duration is a property of the machine; its own comment already recorded that it "timed out on CI
+  at 180 s", which is why it lived outside CI — and putting the whole suite in took it along. It
+  passed three runs and timed out on the fourth. A test that reddens PRs at random is worse than
+  one that does not run, so CI names the file it runs and `gate-bounds.test.ts` refuses
+  `ring-overflow` there. The cost is real and stated in the doc: the lossy channel's end-to-end
+  wiring and STC-249's channel-independence check are local-only commands.
   `vitest.slow.config.ts` was also UNSCOPED (`**/*.slow.test.ts`), so it globbed
   `.claude/worktrees/` — the same defect fixed in `vitest.grant.config.ts` on 2026-08-27, one file
   over. It is not cosmetic: it made a mutation test lie, reporting "2 failed | 2 passed" where the
