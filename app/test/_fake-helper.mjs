@@ -56,6 +56,18 @@ process.stdin.on("data", (chunk) => {
           catch { /* a test seam is not worth killing the stand-in */ }
         }
         send("started", { seq, session });
+        // STC-287. The real helper opens the camera OFF the critical path, so
+        // `started` goes out first and the camera reports separately, a beat
+        // later — success and failure both. That ordering is the whole subject:
+        // a stand-in that announced the camera inside `started` could not
+        // reproduce the window the user complains about.
+        if (process.env.STC_FAKE_CAMERA === "fail") {
+          setTimeout(() => send("warning", {
+            code: "camera-failed", detail: "fake: the device could not be opened",
+          }), 40);
+        } else if (process.env.STC_FAKE_CAMERA) {
+          setTimeout(() => send("camera-started", { device: process.env.STC_FAKE_CAMERA }), 40);
+        }
         break;
       case "stop":
         state = "idle";

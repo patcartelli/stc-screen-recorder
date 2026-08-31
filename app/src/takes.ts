@@ -47,6 +47,16 @@ export interface TakeInfo {
   bytes: number;
   /** User-chosen display name. Never the identity, never the sort key. */
   label?: string;
+  /**
+   * What the camera actually did, when one was asked for (STC-287).
+   *
+   * `present: false` with a camera requested is the silent failure: the device
+   * opened, wrote no frames, and the take looks camera-less with no reason
+   * given. `pipStartsAfterMs` is the gap the viewer sees — the camera opens off
+   * the critical path, so the PiP arrives after the picture does, measured at
+   * 1.26-1.39 s across five real takes.
+   */
+  camera?: { present: boolean; device?: string; pipStartsAfterMs: number };
 }
 
 export const MAX_LABEL_LENGTH = 120;
@@ -61,6 +71,24 @@ export interface InvalidTake {
 export interface TakeList {
   takes: TakeInfo[];
   invalid: InvalidTake[];
+}
+
+/**
+ * Undefined when no camera was asked for; otherwise what it did.
+ *
+ * The helper always writes an `anchors.camera` block — `present: false` when
+ * there is no camera — so "no block at all" and "a camera that produced
+ * nothing" are different states and must not collapse into one.
+ */
+function cameraSummary(anchors: any): TakeInfo["camera"] {
+  const c = anchors?.camera;
+  if (!c || typeof c !== "object") return undefined;
+  const gapNs = Number(c.firstFramePtsNs ?? 0) - Number(anchors?.capture?.firstFrameNs ?? 0);
+  return {
+    present: c.present === true,
+    device: typeof c.device === "string" ? c.device : undefined,
+    pipStartsAfterMs: c.present === true ? Math.max(0, Math.round(gapNs / 1e6)) : 0,
+  };
 }
 
 async function dirSize(dir: string, names: string[]): Promise<number> {
@@ -161,6 +189,7 @@ export async function listTakes(env: NodeJS.ProcessEnv): Promise<TakeList> {
       width: anchors.capture?.width ?? 0,
       height: anchors.capture?.height ?? 0,
       events, label,
+      camera: cameraSummary(anchors),
       bytes: await dirSize(dir, await readdir(dir).catch(() => [])),
     });
   }

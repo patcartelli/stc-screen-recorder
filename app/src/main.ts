@@ -63,6 +63,12 @@ function startSupervisor(): void {
   // Stopped cleanly without being asked — the take is intact, unlike a loss.
   sup.on("recording-ended", (i) => send("helper:recording-ended", i));
   sup.on("helper:warning", (l) => send("helper:warning", l));
+  // STC-287. The camera opens off the critical path (deliberately — see
+  // Capture.swift), so it goes live a second or so AFTER recording starts. The
+  // helper has always announced that; nothing was listening, so the user's only
+  // evidence the camera worked was a PiP appearing ~1.4 s into playback, which
+  // reads as a glitch rather than as the camera starting.
+  sup.on("helper:camera-started", (l) => send("helper:camera-started", l));
 }
 
 app.whenReady().then(() => {

@@ -1,6 +1,6 @@
 import { describe, test, expect, afterEach } from "vitest";
 import { _electron as electron, type ElectronApplication } from "playwright";
-import { mkdtempSync, readFileSync, existsSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { makeTakeFolder, makePipTakeFolder } from "./_take-fixture.js";
@@ -23,7 +23,9 @@ const FAKE_HELPER = join(root, "app", "test", "_fake-helper.mjs");
 let app: ElectronApplication | undefined;
 afterEach(async () => { await app?.close().catch(() => {}); app = undefined; });
 
-async function launch(opts: { userData: string; recordings: string; startLog?: string }) {
+async function launch(opts: {
+  userData: string; recordings: string; startLog?: string; camera?: string;
+}) {
   app = await electron.launch({
     // Electron honours --user-data-dir, which is what makes "sticky" testable:
     // a second launch against the same directory is a genuine restart.
@@ -34,6 +36,7 @@ async function launch(opts: { userData: string; recordings: string; startLog?: s
       STC_RECORDINGS_DIR: opts.recordings,
       STC_HELPER_BIN: FAKE_HELPER,
       ...(opts.startLog ? { STC_FAKE_START_LOG: opts.startLog } : {}),
+      ...(opts.camera ? { STC_FAKE_CAMERA: opts.camera } : {}),
     },
   });
   const win = await app.firstWindow();
@@ -167,4 +170,65 @@ describe("the camera toggle", () => {
     expect(b.pip, "the PiP rectangle is identical with and without a camera track")
       .not.toBe(a.pip);
   }, 240_000);
+});
+
+/**
+ * STC-287 — the camera used to be invisible from the moment you ticked the box.
+ *
+ * It opens off the critical path, so it goes live about a second after
+ * recording starts; measured across five real takes the PiP is absent for
+ * 1.26-1.39 s. The helper announced all of this from the beginning —
+ * `camera-started` with the device name, warnings for every failure — and the
+ * app subscribed to none of it. The renderer's warning handler matched exactly
+ * one code and dropped the rest, so a camera that could not open looked
+ * identical to one that worked.
+ */
+describe("the camera says what it is doing (STC-287)", () => {
+  const dirs = () => ({
+    userData: mkdtempSync(join(tmpdir(), "stc-ud-")),
+    recordings: makeTakeFolder().dir,
+  });
+
+  test("a camera that opens is named, once it actually opens", async () => {
+    const win = await launch({ ...dirs(), camera: "FaceTime HD Camera" });
+    await win.waitForSelector("#camera");
+    if (!(await win.isChecked("#camera"))) await win.click("#camera");
+    await win.click("#record");
+    await expect.poll(() => win.textContent("#camera-state"), { timeout: 20_000 })
+      .toContain("FaceTime HD Camera");
+  }, 60_000);
+
+  // THE case. Before this, a camera that failed produced nothing whatsoever in
+  // the UI — the user's only clue was a take with no picture-in-picture.
+  test("a camera that fails to open says so instead of failing silently", async () => {
+    const win = await launch({ ...dirs(), camera: "fail" });
+    await win.waitForSelector("#camera");
+    if (!(await win.isChecked("#camera"))) await win.click("#camera");
+    await win.click("#record");
+    await expect.poll(() => win.textContent("#camera-state"), { timeout: 20_000 })
+      .toContain("failed");
+    await expect.poll(() => win.textContent("#alert"), { timeout: 20_000 })
+      .toContain("picture-in-picture");
+  }, 60_000);
+
+  test("a take whose camera recorded nothing says so in the library", async () => {
+    // anchors.camera.present is false — the clamshell case, where the device
+    // opens and delivers zero frames. It used to be indistinguishable from a
+    // take recorded with no camera at all.
+    const { dir, takeDir } = makePipTakeFolder("2026-01-01_00-00-00-empty", { withProject: false });
+    const anchorsPath = join(takeDir, "anchors.json");
+    const a = JSON.parse(readFileSync(anchorsPath, "utf8"));
+    a.camera = { present: false };
+    writeFileSync(anchorsPath, JSON.stringify(a));
+    const win = await launch({ userData: mkdtempSync(join(tmpdir(), "stc-ud-")), recordings: dir });
+    await expect.poll(() => win.textContent("#takes"), { timeout: 20_000 })
+      .toContain("recorded no frames");
+  }, 60_000);
+
+  test("a working camera take states when its picture-in-picture starts", async () => {
+    const { dir } = makePipTakeFolder("2026-01-01_00-00-01-pip", { withProject: false });
+    const win = await launch({ userData: mkdtempSync(join(tmpdir(), "stc-ud-")), recordings: dir });
+    await expect.poll(() => win.textContent("#takes"), { timeout: 20_000 })
+      .toMatch(/picture-in-picture starts/);
+  }, 60_000);
 });
