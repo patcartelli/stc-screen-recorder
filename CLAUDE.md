@@ -700,6 +700,29 @@ reachable via KVC (`setValue(3, forKey: "captureResolution")`, verified in phase
   filled that corner anyway. The fix in all three cases was a positive discriminator: name the parts
   and require each, or compare against a control that differs ONLY by the thing under test. Five
   mutations are watched failing in `gate-bounds.test.ts`, including that one.
+- **The gates' wedge is the DECODER's synchronous `configure()`, and the checkpoint trail found it
+  without any GPU logs.** Run 33384105552 wedged all four gates; every trail stopped at the first
+  decoder touch, 391-633 ms after page start — `decodeAll`, `loadSession`, `frameAt(0)`. Not the
+  encoder, and not late in a long run.
+  The seek gate's own IN-PAGE bound fired there (`the decoder accepted chunks and emitted none`),
+  so ITS thread was alive — Mode A, already well diagnosed. The other three ran the full 180 s
+  outer bound while their own 60 s in-page flush bound never fired, which is only possible if no JS
+  timer could run: blocked inside the SYNCHRONOUS `VideoDecoder.configure()`. Both modes, same job,
+  both the decoder.
+  This SUPERSEDES "Mode B cannot be diagnosed from inside the page — Chrome's GPU logs are the
+  avenue". A console message escapes a blocked renderer when nothing else does, which is the whole
+  reason the trail works.
+  `configure()` had no `hardwareAcceleration`, so Chromium was free to pick CI's paravirtualized
+  video hardware — the class of device STC-259 already measured blocking on first touch from Swift.
+  The gates now ask for `prefer-software` (`GATE_DECODER_PREFERENCE`, handed to the page by the
+  runner and ECHOED BACK so a failed addInitScript cannot leave the gate quietly testing the
+  default). The app never sets it and keeps hardware decode.
+  **It changes the pre-encode hash** — 10a05a33 -> bc03e397 on `fixtures/basic`, the same two
+  values the rasterization pin produces, because forcing either the decoder or the renderer onto
+  the CPU lands in the same state. An earlier draft of this note claimed H.264's bit-exactness made
+  that impossible; the decode is bit-exact in YUV, the RGBA that reaches the canvas is not. It is
+  survivable only because the gates compare within ONE browser and never against a stored constant.
+
 - **The gates skip on roughly 60% of CI runs, ALL FOUR TOGETHER, and that is the number to
   watch.** Measured 2026-08-30 over the 10 runs whose logs still carry per-step attribution;
   `docs/STC-259-GATE-SKIP-RATE.md`, re-derive with `node scripts/gate-skip-rate.mjs`. In every run

@@ -1,5 +1,6 @@
 import type { DemuxedVideo } from "./demux.js";
 import { withTimeout } from "./timeout.js";
+import { decoderPreference } from "./decoder-preference.js";
 
 /**
  * Forward-only streaming frame source for export.
@@ -44,6 +45,7 @@ export class ForwardFrameSource {
       codedWidth: video.codedWidth,
       codedHeight: video.codedHeight,
       description: video.description,
+      ...decoderPreference(),
     });
   }
 

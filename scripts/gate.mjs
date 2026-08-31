@@ -10,7 +10,7 @@
 import { createServer } from "vite";
 import { chromium } from "playwright";
 import {
-  bounded, closeQuietly, instrumentPage, EVAL_MS, ENCODER_MS,
+  bounded, closeQuietly, instrumentPage, EVAL_MS, ENCODER_MS, GATE_DECODER_PREFERENCE,
 } from "./gate-bounds.mjs";
 
 const server = await createServer({ configFile: "harness/vite.config.ts" });
@@ -75,6 +75,13 @@ try {
   // sides believing they agree is how the bounds drift apart unnoticed.
   if (r.encoderBoundMs !== ENCODER_MS) {
     fail(`page used encoder bound ${r.encoderBoundMs}ms, runner sent ${ENCODER_MS}ms`);
+  }
+  // The decoder the runner asked for actually reached the page. Without this a
+  // failed addInitScript leaves the page on Chromium's default — the path that
+  // wedges on CI — and the gate passes having tested the wrong thing.
+  if (r.decoderPreference !== GATE_DECODER_PREFERENCE) {
+    fail(`page used decoder preference ${JSON.stringify(r.decoderPreference)}, ` +
+         `runner sent ${JSON.stringify(GATE_DECODER_PREFERENCE)}`);
   }
 
   console.log(`demuxed frame grid matches frames.json: ${r.framesMatch}`);

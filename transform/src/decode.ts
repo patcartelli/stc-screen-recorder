@@ -1,5 +1,6 @@
 import type { DemuxedVideo } from "./demux.js";
 import { withTimeout, TimeoutError } from "./timeout.js";
+import { decoderPreference } from "./decoder-preference.js";
 
 /** One constant, so the bound and the message it prints cannot disagree. */
 const FLUSH_MS = 60_000;
@@ -34,6 +35,7 @@ export async function decodeAll(video: DemuxedVideo): Promise<ImageBitmap[]> {
     codedWidth: video.codedWidth,
     codedHeight: video.codedHeight,
     description: video.description,
+    ...decoderPreference(),
   });
   for (const c of video.chunks) {
     decoder.decode(new EncodedVideoChunk({

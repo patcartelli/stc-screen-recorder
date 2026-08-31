@@ -1,5 +1,6 @@
 import type { DemuxedVideo } from "./demux.js";
 import { withTimeout } from "./timeout.js";
+import { decoderPreference } from "./decoder-preference.js";
 
 /**
  * Random-access frame source for the preview sink.
@@ -119,6 +120,7 @@ export class SeekingFrameSource {
       codedWidth: this.video.codedWidth,
       codedHeight: this.video.codedHeight,
       description: this.video.description,
+      ...decoderPreference(),
       // A scrub wants the frame it asked for NOW, not the throughput a batch
       // decode would prefer. Without this the decoder buffers several frames
       // before its first output, which is the wrong trade for random access.
