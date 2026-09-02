@@ -20,6 +20,8 @@ export class PreviewPlayer {
   private playAnchorWallMs = 0;
   private playAnchorTNs = 0;
   private rendering = false;
+  /** A draw asked for while one was in flight; served once that one lands. */
+  private redrawWanted = false;
   private closed = false;
   private lateFrames = 0;
   private renderedFrames = 0;
@@ -112,9 +114,21 @@ export class PreviewPlayer {
     this.raf = 0;
   }
 
-  /** One in flight at a time; a request arriving mid-draw is simply dropped. */
+  /**
+   * One in flight at a time. A request arriving mid-draw is COALESCED, not
+   * dropped: it is served once the in-flight draw lands, at whatever `tNs` is
+   * by then — the latest, which is the only one a scrub cares about.
+   *
+   * Dropping it was wrong for a paused player. A scrub is a burst of input
+   * events, the last of which very often lands while the previous draw is
+   * still awaiting the decoder; dropped, nothing ever drew that final t, so
+   * the canvas showed an earlier frame while the clock — and a mark-in set
+   * from `currentNs` — said the later one. During playback the next tick
+   * papered over it, which is why it only showed when scrubbing paused.
+   */
   private async draw(): Promise<void> {
-    if (this.rendering || this.closed) { this.lateFrames++; return; }
+    if (this.closed) return;
+    if (this.rendering) { this.lateFrames++; this.redrawWanted = true; return; }
     this.rendering = true;
     try {
       const tick = tickOf(this.tNs);
@@ -139,6 +153,10 @@ export class PreviewPlayer {
       if (cameraFrame) this.cameraRenderedFrames++;
     } finally {
       this.rendering = false;
+    }
+    if (this.redrawWanted && !this.closed) {
+      this.redrawWanted = false;
+      await this.draw();
     }
   }
 
