@@ -203,6 +203,12 @@ ipcMain.handle("export:write", async (_e, name: string, bytes: ArrayBuffer) => {
   if (!/^[A-Za-z0-9._-]+\.(mp4|json)$/.test(name) || name.includes("..")) {
     throw new Error(`refusing to write "${name}"`);
   }
+  // Source media is never mutated. The leaf-name rule above still admitted
+  // display.mp4, camera.mp4 and the sidecars — an export named after one of
+  // them would have replaced the recording with its own rendering.
+  if (TAKE_FILES.has(name) || name === "take.json") {
+    throw new Error(`refusing to overwrite the take's own "${name}"`);
+  }
   const dest = join(openTake, name);
   await writeFile(dest, Buffer.from(bytes));
   return dest;
