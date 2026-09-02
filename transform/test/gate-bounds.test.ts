@@ -6,6 +6,7 @@ import {
   bounded, EVAL_MS, ENCODER_MS, EVAL_SLOTS, SEEK_MS, PRE_GATE_BUDGET_MS,
   worstCaseJobMs, attemptFloorMs, FLOOR_MARGIN, READY_MS, LAUNCH_MS, TEARDOWN_MS,
   GATE_PROCESS_MS, GATE_ATTEMPTS, gateFloorMs, GC_RETRIES, SLOW_TESTS_MS,
+  attachCheckpointTrail,
 } from "../../scripts/gate-bounds.mjs";
 import { ATTEMPTS, ATTEMPT_MS } from "../../scripts/gate-retry.mjs";
 import * as bounds from "../../scripts/gate-bounds.mjs";
@@ -449,5 +450,84 @@ describe("gate bounds — clearance against the CI job timeout", () => {
         expect(guarded, `${f}:${i + 1} unbounded page.evaluate -> ${line.trim()}`).toBe(true);
       });
     }
+  });
+});
+
+/**
+ * A trail must not read as though the page did something twice.
+ *
+ * seek-gate, export-gate and identity-gate reload deliberately; gate.mjs does
+ * not. mark.ts's `seq` is per-document, so a reload restarts it — and CI run
+ * 33576888543 printed TWO `[gate-mark 1]` lines in three of the four trails,
+ * which invites a hunt for code running twice in one page. Only the driver can
+ * tell the difference, since noticing it from inside would need the thread that
+ * is stuck.
+ */
+describe("the checkpoint trail distinguishes a reload from a repeat", () => {
+  const fakePage = () => {
+    const handlers: Record<string, ((a: unknown) => void)[]> = {};
+    const main = { id: "main" };
+    const page = {
+      on: (ev: string, fn: (a: unknown) => void) => { (handlers[ev] ??= []).push(fn); },
+      mainFrame: () => main,
+    };
+    return {
+      page,
+      main,
+      subframe: { id: "iframe" },
+      mark: (text: string) =>
+        handlers.console?.forEach((f) => f({ text: () => text } as never)),
+      navigate: (frame: unknown = main) =>
+        handlers.framenavigated?.forEach((f) => f(frame)),
+    };
+  };
+
+  const dumped = (trail: { dump(w?: (s: string) => void): void }) => {
+    const lines: string[] = [];
+    trail.dump((l) => lines.push(l));
+    return lines;
+  };
+
+  test("a reload between marks is announced where it happened", () => {
+    const f = fakePage();
+    const trail = attachCheckpointTrail(f.page);
+    f.mark("[gate-mark 1] decoder preference: prefer-software");
+    f.navigate();
+    f.mark("[gate-mark 1] decoder preference: prefer-software");
+    f.mark("[gate-mark 2] seek: new SeekingFrameSource");
+
+    // Position is the whole point: after the first document's marks and before
+    // the second's, which is why this hangs off `framenavigated` and not
+    // `load` — load fires after module evaluation, so the separator would sort
+    // to the wrong side of the marks it explains.
+    const body = dumped(trail).filter((l) => /gate-mark|reloaded/.test(l));
+    expect(body).toEqual([
+      expect.stringContaining("[gate-mark 1] decoder preference"),
+      expect.stringContaining("page reloaded"),
+      expect.stringContaining("[gate-mark 1] decoder preference"),
+      expect.stringContaining("[gate-mark 2] seek"),
+    ]);
+  });
+
+  test("the first navigation is not announced — there is nothing to disambiguate", () => {
+    const f = fakePage();
+    const trail = attachCheckpointTrail(f.page);
+    f.navigate();
+    f.mark("[gate-mark 1] decoder preference: prefer-software");
+
+    expect(dumped(trail).some((l) => l.includes("reloaded")),
+      "every seek/export/identity trail would open with a separator explaining " +
+      "a restart that has not happened").toBe(false);
+  });
+
+  test("a subframe navigating is not a reload of the page", () => {
+    const f = fakePage();
+    const trail = attachCheckpointTrail(f.page);
+    f.mark("[gate-mark 1] decoder preference: prefer-software");
+    f.navigate(f.subframe);
+    f.mark("[gate-mark 2] seek: new SeekingFrameSource");
+
+    expect(dumped(trail).some((l) => l.includes("reloaded")),
+      "an iframe committing does not restart the main document's mark numbers").toBe(false);
   });
 });
