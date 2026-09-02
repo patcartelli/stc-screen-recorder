@@ -106,8 +106,51 @@ touch. Watched firing locally under `STC_GATE_FAULT=wedge:`:
   +   1580 ms  [gate-mark 2] export[A]: decodeAll (VideoDecoder.configure is synchronous)
 ```
 
-The next CI wedge answers the question from its own output. Until one does, the
-finding above stands as **strongly indicated, not closed**.
+### Confirmed on CI, run 33576888543
+
+The run that merged the mark wedged, which gave it its first opportunity. All
+four gates skipped, and every trail carried the preference ahead of its own
+first decoder touch:
+
+| gate | preference mark | first decoder touch |
+|---|---|---|
+| Determinism | 393 ms | 466 ms — `decodeAll` |
+| Seek | 531 ms | 584 ms — `new SeekingFrameSource` |
+| Export | 450 ms | 482 ms — `loadSession` |
+| Identity | 348 ms | 375 ms — `loadSession` |
+
+Every one reads `decoder preference: prefer-software`. **The page did get
+software decoding and wedged in `configure()` anyway.** The finding is closed:
+`prefer-software` is not the cause, on evidence rather than on the assumption
+that `addInitScript` had applied.
+
+That verdict does not rest on step attribution — the run has none, every line
+being `UNKNOWN STEP`. It does not need any: `decoder preference:` is printed
+only by `harness/decoder.ts`, and the two references to the string in
+`transform/test/decoder-preference-mark.test.ts` sit behind a `console.log`
+spy, so nothing but a live gate can emit it. That check is the lesson of the
+100%-skip retraction applied before publishing rather than after.
+
+### One `[gate-mark 1]` per document, not per run
+
+The same run printed **two** `[gate-mark 1]` lines in three of the four trails.
+Not the code running twice: `seek-gate.mjs`, `export-gate.mjs` and
+`identity-gate.mjs` each `page.reload()` deliberately, to settle vite's dep
+re-optimisation, and `mark.ts`'s `seq` is per-document. `gate.mjs` does not
+reload, which is exactly why the determinism trail shows one.
+
+`attachCheckpointTrail` now says so where it happens:
+
+```
+  +    588 ms  [gate-mark 1] decoder preference: prefer-software
+  +    872 ms  --- page reloaded; the next mark numbers restart at 1 ---
+  +    943 ms  [gate-mark 1] decoder preference: prefer-software
+  +   1375 ms  [gate-mark 2] seek: new SeekingFrameSource (...)
+```
+
+It hangs off `framenavigated`, which commits before the new document's scripts
+run. `load` and `domcontentloaded` both fire *after* module evaluation and would
+sort the separator to the wrong side of the marks it explains.
 
 ## What a skip costs, and what a pass costs
 
@@ -184,9 +227,11 @@ and the step timings above.
 
 ## What to do next
 
-1. **Read the decoder preference off the next wedge's trail.** It is
-   `[gate-mark 1]` now. That closes the last assumption under "`prefer-software`
-   was not the cause" above, and it costs nothing but looking.
+1. ~~Read the decoder preference off the next wedge's trail.~~ **Done
+   2026-09-02**, run 33576888543 — see above. `prefer-software` reached all four
+   pages and all four wedged anyway. The next question is what the decoder is
+   actually blocked on, and it is no longer answerable by choosing a different
+   one.
    (This item used to read "diagnose Mode B out of process — in-page
    instrumentation cannot see this by construction, Chrome's GPU logging is the
    avenue". #50 disproved that: a console message escapes a blocked renderer

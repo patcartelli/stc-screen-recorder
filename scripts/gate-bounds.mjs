@@ -189,10 +189,33 @@ export async function instrumentPage(page, { keep = 40 } = {}) {
 export function attachCheckpointTrail(page, { keep = 40 } = {}) {
   const t0 = Date.now();
   const trail = [];
+  const at = () => `+${String(Date.now() - t0).padStart(7)} ms  `;
+
+  // seek-gate, export-gate and identity-gate reload the page deliberately (to
+  // settle vite's dep re-optimisation); gate.mjs does not. A reload is a new
+  // document, so mark.ts's `seq` restarts at 1 — and on CI run 33576888543
+  // three of the four trails duly printed TWO `[gate-mark 1]` lines, which
+  // reads as the same code running twice in one page. It is not; it is two
+  // pages. Only the driver can know that, because knowing it in the page would
+  // need the thread that is stuck.
+  //
+  // Nothing is added before the first mark: a reload with nothing yet collected
+  // has no ambiguity to resolve, and a separator there would just be noise at
+  // the top of every seek/export/identity trail.
+  page.on("framenavigated", (frame) => {
+    // `framenavigated` commits BEFORE the new document's scripts run, so the
+    // separator lands ahead of that document's first mark. `load` and
+    // `domcontentloaded` both fire after module evaluation and would sort the
+    // separator to the wrong side of the marks it explains.
+    if (frame !== page.mainFrame() || !trail.length) return;
+    trail.push(`${at()}--- page reloaded; the next mark numbers restart at 1 ---`);
+    if (trail.length > keep) trail.shift();
+  });
+
   page.on("console", (m) => {
     const text = m.text();
     if (!text.startsWith("[gate-mark")) return;
-    trail.push(`+${String(Date.now() - t0).padStart(7)} ms  ${text}`);
+    trail.push(`${at()}${text}`);
     if (trail.length > keep) trail.shift();
   });
   return {

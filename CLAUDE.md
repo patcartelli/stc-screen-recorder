@@ -70,7 +70,7 @@ belonging to a different commit).
 |---|---|---|
 | STC-232 | **PHASE 3 COMPLETE 2026-08-30** — increments 1-5 done. Recorded from the app with the camera toggle on, previewed with no hand-written project.json, sync measured at 65 ms | nothing |
 | STC-232 4b | **done and VISUALLY CONFIRMED 2026-08-28** — both sinks draw the PiP, gate proves it, app opens camera takes, and a human watched a real 4K take. Increment 5 is unblocked | nothing; increment 5 is next |
-| STC-259 | **DONE** — steps 1-3, plus Mode B diagnosed. Both encoder queries bounded at 15 s, the harness's first append bounded behind a deadline watchdog, and the product answered: it does not need one. `ATTEMPTS = 1` (measured useless). The wedge is the decoder's synchronous `configure()`. **`prefer-software` did NOT fix it** — measured 2026-09-01, the gates still skip with the identical trail signature | read `[gate-mark 1]` off the next CI wedge; that is the last unverified step in the finding above |
+| STC-259 | **DONE** — steps 1-3, plus Mode B diagnosed. Both encoder queries bounded at 15 s, the harness's first append bounded behind a deadline watchdog, and the product answered: it does not need one. `ATTEMPTS = 1` (measured useless). The wedge is the decoder's synchronous `configure()`. **`prefer-software` did NOT fix it, CONFIRMED on CI** — run 33576888543 wedged all four gates with `decoder preference: prefer-software` in every trail | nothing. What the decoder is blocked ON is the open question, and it is no longer answerable by choosing a different decoder |
 | STC-249 | **DONE** — both halves. Channel independence is mutation-proven without a grant (`ring-overflow.slow.test.ts`); the capture-side half RAN on real hardware 2026-08-31 and passed (`lossy-under-capture.grant.test.ts`) | nothing |
 | STC-254 | **done** — append/teardown race fixed (part 2), SIGTRAP crash handler closed (part 3). Master CI green again | nothing; watch that master stays green |
 | STC-287 | **done** — the camera's lifecycle is no longer invisible: device name while recording, a visible reason when it fails, and each take states when its PiP starts or that the camera recorded nothing. The ~1.4 s gap itself is inherent and deliberate | nothing |
@@ -781,7 +781,14 @@ reachable via KVC (`setValue(3, forKey: "captureResolution")`, verified in phase
   measurement that could not see what it was being read as evidence about. `harness/decoder.ts`
   now applies the preference and MARKS it, so a wedged run says which decoder it was asking for;
   it is `[gate-mark 1]`, ahead of the first decoder touch, watched firing under
-  `STC_GATE_FAULT=wedge:`. That file is also the ONE place the runner's value is read — four
+  `STC_GATE_FAULT=wedge:`.
+  **CI then wedged on the very run that merged it (33576888543) and settled it.** All four gates
+  skipped and every trail carried `decoder preference: prefer-software` ahead of its own first
+  decoder touch — 393/466 ms determinism, 531/584 seek, 450/482 export, 348/375 identity. The page
+  GOT software decoding and `configure()` blocked anyway, so the hypothesis is dead on evidence
+  rather than on assuming `addInitScript` applied. NB that verdict needs no step attribution (the
+  run has none): `decoder preference:` is printed only by `harness/decoder.ts`, and the two
+  references in its test sit behind a `console.log` spy, so no test can emit it. That file is also the ONE place the runner's value is read — four
   harness entries carried an identical copy of the block, and `main.ts` separately re-read the
   global to echo it, which would have reported `prefer-software` even if `setDecoderPreference`
   had never been called.
@@ -790,6 +797,20 @@ reachable via KVC (`setValue(3, forKey: "captureResolution")`, verified in phase
   the CPU lands in the same state. An earlier draft of this note claimed H.264's bit-exactness made
   that impossible; the decode is bit-exact in YUV, the RGBA that reaches the canvas is not. It is
   survivable only because the gates compare within ONE browser and never against a stored constant.
+
+- **`[gate-mark N]` is numbered per DOCUMENT, not per run — three of the four gates reload.**
+  `seek-gate.mjs`, `export-gate.mjs` and `identity-gate.mjs` each `page.reload()` deliberately, to
+  settle vite's dep re-optimisation; `gate.mjs` does not. `mark.ts`'s `seq` lives in the page, so a
+  reload restarts it, and run 33576888543 duly printed TWO `[gate-mark 1]` lines in exactly those
+  three trails — which reads as the same code running twice in one page and is not. Only the
+  DRIVER can tell the difference, because noticing it from inside would need the thread that is
+  stuck. `attachCheckpointTrail` announces it on `framenavigated`, which commits BEFORE the new
+  document's scripts run; `load` and `domcontentloaded` both fire after module evaluation and would
+  sort the separator to the wrong side of the marks it explains. Nothing is printed before the
+  first mark — a reload with nothing yet collected has no ambiguity to resolve.
+  This only became visible when the preference mark gave each load something to emit early; before
+  that, the pre-reload document died before reaching any mark. A diagnostic gaining detail is how
+  you find out what the old one was not showing you.
 
 - **The gates skip on a large minority of CI runs, ALL FOUR TOGETHER, and that is the number to
   watch.** 60% measured 2026-08-30 over 10 runs, 25-28% measured 2026-09-01 over 20 — different
