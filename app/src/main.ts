@@ -78,12 +78,27 @@ app.whenReady().then(() => {
 });
 
 app.on("window-all-closed", async () => {
-  await sup?.shutdown();
+  // A take in flight when its window goes is ENDED, not abandoned: the helper
+  // would otherwise keep recording with nothing left that could stop it.
+  if (sup?.state === "recording") await sup.stopRecording().catch(() => {});
+  // On macOS the app stays alive and the helper stays with it. Shutting the
+  // helper down here left a reopened window (Dock click) with a supervisor
+  // that was "stopped" for good — every Record failed with "helper already
+  // exited" until the app was relaunched. Elsewhere, quitting shuts it down.
   if (process.platform !== "darwin") app.quit();
 });
 
-// Devices are released on a deliberate quit, not left to process teardown.
-app.on("before-quit", async () => { await sup?.shutdown(); });
+// Devices are released on a deliberate quit, not left to process teardown —
+// and a recording in flight is stopped first (see HelperSupervisor.shutdown).
+// Electron does not await an async listener here, so the first pass holds
+// the quit until the shutdown has actually finished, then re-issues it.
+let quitting = false;
+app.on("before-quit", (e) => {
+  if (quitting) return;
+  e.preventDefault();
+  quitting = true;
+  (sup ? sup.shutdown() : Promise.resolve()).catch(() => {}).finally(() => app.quit());
+});
 
 ipcMain.handle("recorder:getSettings", async (): Promise<Settings> =>
   readSettings(app.getPath("userData")));

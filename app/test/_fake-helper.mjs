@@ -41,6 +41,13 @@ process.stdin.on("data", (chunk) => {
     let cmd;
     try { cmd = JSON.parse(raw); } catch { continue; }
     const seq = cmd.seq;
+    // Every command, in arrival order, when a test asks. The ORDER is the
+    // subject for the quit path: a stop must reach the helper before the quit
+    // does, or the take in flight is lost.
+    if (process.env.STC_FAKE_CMD_LOG) {
+      try { writeFileSync(process.env.STC_FAKE_CMD_LOG, String(cmd.cmd) + "\n", { flag: "a" }); }
+      catch { /* a test seam is not worth killing the stand-in */ }
+    }
     switch (cmd.cmd) {
       case "status":
         send("status", { seq, state, session });
@@ -79,11 +86,19 @@ process.stdin.on("data", (chunk) => {
           setTimeout(() => send("camera-started", { device: process.env.STC_FAKE_CAMERA }), 40);
         }
         break;
-      case "stop":
-        state = "idle";
-        session = null;
-        send("stopped", { seq, reason: "requested" });
+      case "stop": {
+        // A real stop takes hundreds of milliseconds to seconds (finishWriting),
+        // and that duration is what the quit path has to survive. Instant, the
+        // stand-in cannot tell "waited for the stop" from "did not" — the quit
+        // test passed against the broken before-quit until this existed.
+        const delay = Number(process.env.STC_FAKE_STOP_DELAY_MS) || 0;
+        setTimeout(() => {
+          state = "idle";
+          session = null;
+          send("stopped", { seq, reason: "requested" });
+        }, delay);
         break;
+      }
       case "quit":
         send("bye", { seq });
         process.exit(0);

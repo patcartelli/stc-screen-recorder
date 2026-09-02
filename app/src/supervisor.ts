@@ -74,11 +74,22 @@ export class HelperSupervisor {
     this.emit("recording-ended", { reason, dir, info: line });
   }
 
-  /** Deliberate teardown. Must not look like a crash. */
+  /**
+   * Deliberate teardown. Must not look like a crash.
+   *
+   * A recording in flight is STOPPED first, and waited for. The helper's own
+   * `quit` does not wait for its stop to finish — it starts the teardown and
+   * exits — and the 2 s grace below is far shorter than the helper's 20 s
+   * stop bound, so quitting mid-take used to leave display.mp4 unfinalised
+   * (no moov, unplayable) and the sidecars unwritten, with nothing to say so:
+   * Cmd-Q during a recording lost the take silently. The request timeout
+   * bounds the wait, the same bound every stop already has.
+   */
   async shutdown(): Promise<void> {
     this.shuttingDown = true;
     const c = this.client;
     if (!c) { this.state = "stopped"; return; }
+    if (this.state === "recording") await this.stopRecording().catch(() => {});
     const exited = c.waitForExit();
     await c.request("quit").catch(() => {});
     await Promise.race([exited, new Promise((r) => setTimeout(r, 2000))]);
