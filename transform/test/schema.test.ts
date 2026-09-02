@@ -29,9 +29,9 @@ describe("session schemas validate the fixture", () => {
     expect(ok, JSON.stringify(validate.errors, null, 2)).toBe(true);
   });
 
-  test("the pip fixture's events.json, written by the helper, conforms to events-1", () => {
+  test("the real session's events.json, written by the helper, conforms to events-1", () => {
     const validate = compile("schema/events-1.schema.json");
-    const ok = validate(load("fixtures/pip/events.json"));
+    const ok = validate(load("fixtures/real-session/events.json"));
     expect(ok, JSON.stringify(validate.errors, null, 2)).toBe(true);
   });
 
@@ -188,7 +188,7 @@ describe("v2 schemas carry the camera track and PiP geometry", () => {
 
   test("a v1 events document is not a v2 document", () => {
     const validate = compile("schema/events-2.schema.json");
-    expect(validate(load("fixtures/pip/events.json"))).toBe(false);
+    expect(validate(load("fixtures/real-session/events.json"))).toBe(false);
   });
 
   test("a v2 events document is not a v1 document", () => {
