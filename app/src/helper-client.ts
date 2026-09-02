@@ -64,7 +64,7 @@ export class HelperClient {
   private readonly exitWaiters: ((v: { code: number | null; signal: string | null }) => void)[] = [];
   private readyLine: HelperLine | undefined;
   private stderrTail = "";
-  private readyWaiters: ((l: HelperLine) => void)[] = [];
+  private readyWaiters: { ok(l: HelperLine): void; fail(e: Error): void }[] = [];
 
   private constructor(private readonly proc: ChildProcess, opts: SpawnOptions) {
     this.defaultTimeoutMs = opts.defaultTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
@@ -74,7 +74,7 @@ export class HelperClient {
     this.readLines(proc.stdio[3] as Readable, (line) => {
       if (line.ev === "ready") {
         this.readyLine = line;
-        this.readyWaiters.splice(0).forEach((w) => w(line));
+        this.readyWaiters.splice(0).forEach((w) => w.ok(line));
       }
       const seq = line.seq;
       if (typeof seq === "number" && this.pending.has(seq)) {
@@ -104,16 +104,47 @@ export class HelperClient {
     });
     proc.stderr?.resume();
 
-    proc.on("exit", (code, signal) => {
-      this.exitInfo = { code, signal };
-      const err = new Error(
-        `helper exited (code ${code}, signal ${signal})` +
-        (this.stderrTail.trim() ? `\nhelper stderr:\n${this.stderrTail.trim()}` : ""),
-      );
-      for (const [, p] of this.pending) { clearTimeout(p.timer); p.reject(err); }
-      this.pending.clear();
-      this.exitWaiters.splice(0).forEach((w) => w(this.exitInfo!));
+    proc.on("exit", (code, signal) => this.onExit(code, signal));
+
+    // A binary that cannot be spawned at all (ENOENT, EACCES, a bad
+    // interpreter line) never reaches `exit`: node reports it as an `error`
+    // event on the child, and an `error` event nobody listens to is an
+    // uncaught exception — in the Electron main process, that is the app
+    // dying with no window ever shown. Route it through the same path a crash
+    // takes so the supervisor sees a death it can report ("gave-up", with the
+    // reason in stderr) instead of taking the app down with it. `exit` may or
+    // may not follow an `error`, so onExit is idempotent.
+    proc.on("error", (e) => {
+      this.stderrTail = (this.stderrTail + `[spawn] ${e.message}\n`).slice(-HelperClient.STDERR_KEEP);
+      this.onExit(null, null);
     });
+
+    // A request written to a helper that has just died is EPIPE on stdin.
+    // Node reports that as an `error` event on the stream, and unhandled it
+    // is the same uncaught exception as above. Nothing is lost by swallowing
+    // it here: the pending request is rejected by `exit`, which always
+    // follows, with the helper's last words attached.
+    proc.stdin?.on("error", () => { /* reported by exit */ });
+  }
+
+  /** The one wording for "the helper is gone", with its last words attached. */
+  private exitError(what = "helper exited"): Error {
+    const { code, signal } = this.exitInfo ?? { code: null, signal: null };
+    return new Error(
+      `${what} (code ${code}, signal ${signal})` +
+      (this.stderrTail.trim() ? `\nhelper stderr:\n${this.stderrTail.trim()}` : ""),
+    );
+  }
+
+  /** Idempotent: `error` and `exit` can both fire for one death. */
+  private onExit(code: number | null, signal: string | null): void {
+    if (this.exitInfo) return;
+    this.exitInfo = { code, signal };
+    const err = this.exitError();
+    for (const [, p] of this.pending) { clearTimeout(p.timer); p.reject(err); }
+    this.pending.clear();
+    this.readyWaiters.splice(0).forEach((w) => w.fail(err));
+    this.exitWaiters.splice(0).forEach((w) => w(this.exitInfo!));
   }
 
   static spawn(binPath: string, opts: SpawnOptions = {}): HelperClient {
@@ -128,20 +159,21 @@ export class HelperClient {
   /** Resolves with the helper's `ready` line (immediately if already seen). */
   ready(timeoutMs = 10_000): Promise<HelperLine> {
     if (this.readyLine) return Promise.resolve(this.readyLine);
+    if (this.exitInfo) return Promise.reject(this.exitError());
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error("helper never reported ready")), timeoutMs);
-      this.readyWaiters.push((l) => { clearTimeout(timer); resolve(l); });
+      this.readyWaiters.push({
+        ok: (l) => { clearTimeout(timer); resolve(l); },
+        // A helper that died cannot become ready; say so now rather than
+        // letting the timer above report it as merely slow.
+        fail: (e) => { clearTimeout(timer); reject(e); },
+      });
     });
   }
 
   request(cmd: string, params: Record<string, unknown> = {},
           opts: { timeoutMs?: number } = {}): Promise<HelperLine> {
-    if (this.exitInfo) {
-      return Promise.reject(new Error(
-        `helper already exited (code ${this.exitInfo.code}, signal ${this.exitInfo.signal})` +
-        (this.stderrTail.trim() ? `\nhelper stderr:\n${this.stderrTail.trim()}` : ""),
-      ));
-    }
+    if (this.exitInfo) return Promise.reject(this.exitError("helper already exited"));
     const seq = ++this.seq;
     const timeoutMs = opts.timeoutMs ?? this.defaultTimeoutMs;
     return new Promise((resolve, reject) => {

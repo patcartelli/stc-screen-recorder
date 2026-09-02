@@ -99,6 +99,11 @@ export class HelperSupervisor {
       if (this.state !== "recording") this.state = "idle";
       this.emit("ready", line);
     });
+    // A helper that dies before `ready` rejects this. Callers who asked
+    // (`ready()`) still see the rejection; the death itself is reported
+    // through `waitForExit` below. Without a handler here it is an unhandled
+    // rejection on every launch nobody awaited — including every respawn.
+    this.readyPromise.catch(() => {});
 
     c.on("*", (line) => this.emit(`helper:${line.ev}`, line));
     c.on("stats", (line) => {
@@ -144,7 +149,10 @@ export class HelperSupervisor {
         // Respawning forever would turn a reproducible crash into a busy loop
         // that looks like the app merely being slow.
         this.state = "failed";
-        this.emit("gave-up", { restarts: this.restarts.length, ...info });
+        // With the helper's last words: a binary that could not be spawned
+        // at all says so here ("spawn ENOENT"), and nowhere else.
+        this.emit("gave-up", { restarts: this.restarts.length, ...info,
+                               stderr: c.recentStderr.trim() || undefined });
         return;
       }
 
