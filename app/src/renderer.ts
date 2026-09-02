@@ -652,5 +652,16 @@ async function refreshTakes(): Promise<void> {
   }
 }
 
-recorder.status().then((s) => { setState(s.state); if (s.pid) $("pid").textContent = String(s.pid); });
+recorder.status().then((s) => {
+  setState(s.state);
+  if (s.pid) $("pid").textContent = String(s.pid);
+  // A helper that could not be spawned at all fails in milliseconds — every
+  // restart the supervisor allows has already been used up before this page
+  // exists, so the gave-up event above was emitted to nobody. Read the state
+  // instead of relying on having been there when it changed.
+  if (s.state === "failed") {
+    recordBtn.disabled = true;
+    alertUser("The recorder keeps failing to start. Restart the app.");
+  }
+});
 refreshTakes();
