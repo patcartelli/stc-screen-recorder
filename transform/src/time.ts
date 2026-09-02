@@ -20,6 +20,30 @@ export function tickTimeNs(n: number): number {
   return Math.ceil((n * NS_PER_S) / SIM_HZ);
 }
 
+/** Output frames per second. Every other 120 Hz tick; the only rate phase 1 supports. */
+export const EXPORT_FPS = 60;
+
+/**
+ * The session time export renders output frame k at. Every sink and gate that
+ * walks the output grid uses this; a second copy of "2 * k" is how a still and
+ * a video frame would come to disagree about the same instant.
+ */
+export function exportFrameTimeNs(k: number): number {
+  return tickTimeNs((SIM_HZ / EXPORT_FPS) * k);
+}
+
+/**
+ * The output frame whose interval contains tNs, and the time export renders it
+ * at. A preview may sit on an odd 120 Hz tick that no export ever visits; a
+ * still taken there would be "the frame the playhead is on" by eye and off by
+ * half a tick from the video export. Snapping to the grid is what makes the
+ * still pixel-identical to the export's frame at the same timestamp.
+ */
+export function exportFrameOf(tNs: number): { frame: number; tNs: number } {
+  const frame = Math.floor((Math.max(0, tNs) * EXPORT_FPS) / NS_PER_S);
+  return { frame, tNs: exportFrameTimeNs(frame) };
+}
+
 /**
  * Frame selection: index of the source frame with the greatest PTS <= tNs;
  * hold, never interpolate. null when no frame exists yet. Same rule in every
