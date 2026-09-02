@@ -8,11 +8,13 @@ import type { Project, Session } from "@transform/types";
 import { parseProject } from "@transform/trim";
 import { Muxer, ArrayBufferTarget } from "mp4-muxer";
 import { withTimeout } from "@transform/timeout";
-import { setDecoderPreference } from "@transform/decoder-preference";
+import { applyDecoderPreference } from "./decoder.js";
+import { decoderPreference } from "@transform/decoder-preference";
 
 // STC-259: handed in by the runner (scripts/gate-bounds.mjs), never chosen
-// here. Undefined outside a gate, which is Chromium's own default.
-setDecoderPreference((globalThis as { __decoderPreference?: any }).__decoderPreference);
+// here — and MARKED, so a wedged run's trail says which decoder it was
+// asking for when it stopped. See harness/decoder.ts.
+applyDecoderPreference();
 
 const status = document.getElementById("status")!;
 const say = (s: string) => { status.textContent += `\n${s}`; };
@@ -176,7 +178,10 @@ async function main() {
       // that silently failed to run would leave the page on Chromium's default
       // — the very path that wedges on CI — and the gate would still pass,
       // having quietly tested the wrong thing (STC-259).
-      decoderPreference: (globalThis as { __decoderPreference?: string }).__decoderPreference ?? null,
+      // Read back from the applied config, NOT from the global the runner
+      // set: the runner's check is asking whether the page will decode the
+      // way it was told to, and the global answers a weaker question.
+      decoderPreference: decoderPreference().hardwareAcceleration ?? null,
       framesMatch,
       sampledK,
       previewHash,

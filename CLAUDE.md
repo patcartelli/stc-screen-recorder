@@ -70,7 +70,7 @@ belonging to a different commit).
 |---|---|---|
 | STC-232 | **PHASE 3 COMPLETE 2026-08-30** — increments 1-5 done. Recorded from the app with the camera toggle on, previewed with no hand-written project.json, sync measured at 65 ms | nothing |
 | STC-232 4b | **done and VISUALLY CONFIRMED 2026-08-28** — both sinks draw the PiP, gate proves it, app opens camera takes, and a human watched a real 4K take. Increment 5 is unblocked | nothing; increment 5 is next |
-| STC-259 | **DONE** — steps 1-3, plus Mode B diagnosed and mitigated. Both encoder queries bounded at 15 s, the harness's first append bounded behind a deadline watchdog, and the product answered: it does not need one. `ATTEMPTS = 1` (measured useless). The wedge was localised to the decoder's synchronous `configure()` by the checkpoint trail, and the gates now ask for `prefer-software` | **one check**: `node scripts/gate-skip-rate.mjs 20` in a day or two — whether that mitigation worked is UNVERIFIED, and two green runs against an already-green baseline is not evidence |
+| STC-259 | **DONE** — steps 1-3, plus Mode B diagnosed. Both encoder queries bounded at 15 s, the harness's first append bounded behind a deadline watchdog, and the product answered: it does not need one. `ATTEMPTS = 1` (measured useless). The wedge is the decoder's synchronous `configure()`. **`prefer-software` did NOT fix it** — measured 2026-09-01, the gates still skip with the identical trail signature | read `[gate-mark 1]` off the next CI wedge; that is the last unverified step in the finding above |
 | STC-249 | **DONE** — both halves. Channel independence is mutation-proven without a grant (`ring-overflow.slow.test.ts`); the capture-side half RAN on real hardware 2026-08-31 and passed (`lossy-under-capture.grant.test.ts`) | nothing |
 | STC-254 | **done** — append/teardown race fixed (part 2), SIGTRAP crash handler closed (part 3). Master CI green again | nothing; watch that master stays green |
 | STC-287 | **done** — the camera's lifecycle is no longer invisible: device name while recording, a visible reason when it fails, and each take states when its PiP starts or that the camera recorded nothing. The ~1.4 s gap itself is inherent and deliberate | nothing |
@@ -773,14 +773,27 @@ reachable via KVC (`setValue(3, forKey: "captureResolution")`, verified in phase
   The gates now ask for `prefer-software` (`GATE_DECODER_PREFERENCE`, handed to the page by the
   runner and ECHOED BACK so a failed addInitScript cannot leave the gate quietly testing the
   default). The app never sets it and keeps hardware decode.
+  **It did not work, and the echo could not tell you (measured 2026-09-01).** The gates still skip
+  post-change and the trail still stops at the first decoder touch 317-406 ms in — the same
+  signature. But that echo runs AFTER `bounded(page.evaluate(...))` returns, and a wedge never
+  returns, so on exactly the runs it exists for it cannot fire: the conclusion rested on assuming
+  `addInitScript` had applied. Same shape as every wrong number in the 2026-08-31 handoff — a
+  measurement that could not see what it was being read as evidence about. `harness/decoder.ts`
+  now applies the preference and MARKS it, so a wedged run says which decoder it was asking for;
+  it is `[gate-mark 1]`, ahead of the first decoder touch, watched firing under
+  `STC_GATE_FAULT=wedge:`. That file is also the ONE place the runner's value is read — four
+  harness entries carried an identical copy of the block, and `main.ts` separately re-read the
+  global to echo it, which would have reported `prefer-software` even if `setDecoderPreference`
+  had never been called.
   **It changes the pre-encode hash** — 10a05a33 -> bc03e397 on `fixtures/basic`, the same two
   values the rasterization pin produces, because forcing either the decoder or the renderer onto
   the CPU lands in the same state. An earlier draft of this note claimed H.264's bit-exactness made
   that impossible; the decode is bit-exact in YUV, the RGBA that reaches the canvas is not. It is
   survivable only because the gates compare within ONE browser and never against a stored constant.
 
-- **The gates skip on roughly 60% of CI runs, ALL FOUR TOGETHER, and that is the number to
-  watch.** Measured 2026-08-30 over the 10 runs whose logs still carry per-step attribution;
+- **The gates skip on a large minority of CI runs, ALL FOUR TOGETHER, and that is the number to
+  watch.** 60% measured 2026-08-30 over 10 runs, 25-28% measured 2026-09-01 over 20 — different
+  run sets, samples too small to separate, and NOT evidence of a trend either way;
   `docs/STC-259-GATE-SKIP-RATE.md`, re-derive with `node scripts/gate-skip-rate.mjs`. In every run
   where one gate skipped all four did, and where one passed all four did — it is a property of the
   JOB (can this machine service a video pipeline right now), not of any gate.

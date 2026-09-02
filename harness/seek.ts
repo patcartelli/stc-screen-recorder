@@ -1,11 +1,12 @@
 import { demuxTrack } from "@transform/demux";
 import { mark } from "./mark.js";
 import { SeekingFrameSource } from "@transform/seeking-frame-source";
-import { setDecoderPreference } from "@transform/decoder-preference";
+import { applyDecoderPreference } from "./decoder.js";
 
 // STC-259: handed in by the runner (scripts/gate-bounds.mjs), never chosen
-// here. Undefined outside a gate, which is Chromium's own default.
-setDecoderPreference((globalThis as { __decoderPreference?: any }).__decoderPreference);
+// here — and MARKED, so a wedged run's trail says which decoder it was
+// asking for when it stopped. See harness/decoder.ts.
+applyDecoderPreference();
 
 /**
  * Seek gate driver. Every returned frame is PIXEL-PROBED for the 12-bit index
