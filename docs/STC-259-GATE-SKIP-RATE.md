@@ -45,6 +45,70 @@ in every run where one passed, all four did. This is a property of the job, not
 of any gate — the machine is either able to service a video pipeline for that
 run or it is not.
 
+## Re-measured 2026-09-01: `prefer-software` was not the cause
+
+#56 changed the gates to ask Chromium for `prefer-software` decoding, on the
+theory that CI's paravirtualized hardware decoder is what wedges them. The
+2026-08-31 handoff flagged that as **a hypothesis tested only on a machine that
+does not exhibit the fault** — two post-change runs were green against a
+baseline that was also mostly green.
+
+`node scripts/gate-skip-rate.mjs 20`, over the 20 runs to `82c9375`:
+
+| gate | passed | measurable runs | skip rate |
+|---|---|---|---|
+| Determinism | 6 | 8 | 25% |
+| Seek | 13 | 18 | 28% |
+| Export | 13 | 18 | 28% |
+| Identity | 13 | 18 | 28% |
+
+Split at `7f3a3d7` (#56 — its own push run is the first carrying the change),
+the seek/export/identity column gives 2 skips in 6 measurable runs before and 3
+in 12 after. **Do not read that as an improvement.** At those sample sizes 33%
+and 25% are the same number, and the earlier 60% came from a different run set
+again.
+
+**The rate is not the evidence here; the checkpoint trail is.** Run
+`33445860846` — post-change, all four gates SKIP:
+
+```
+Determinism gate: the in-page gate run did not return within 180000 ms
+  +    317 ms  [gate-mark 1] export[A]: decodeAll (VideoDecoder.configure is synchronous)
+  (teardown: browser.close() did not return within 30000 ms)
+
+Seek gate: the decoder accepted chunks and emitted none — frameAt(0) never resolved
+  +    406 ms  [gate-mark 1] seek: new SeekingFrameSource (VideoDecoder.configure is synchronous)
+```
+
+Same call, same 300-400 ms into the page, same outer bound firing while no
+in-page timer can — the pre-change signature from `33384105552` exactly, both
+modes still in one job. Asking for software decoding did not move the wedge.
+
+### The hole that made that conclusion weaker than it looked
+
+`scripts/gate.mjs` verifies the page used the preference the runner sent — and
+that check runs *after* `bounded(page.evaluate(...))` returns. **A wedge never
+returns, so on precisely the runs the check exists for, it cannot fire.** The
+conclusion above rested on the unverified assumption that `addInitScript` had
+applied; the trail from a wedge named the blocking call but not what it was
+asking that call for.
+
+The same shape as everything in the 2026-08-31 handoff's closing section: a
+measurement that could not see the thing it was being read as evidence about.
+
+`harness/decoder.ts` now applies the preference and MARKS it, so it arrives over
+the one channel that survives a blocked main thread, ahead of the first decoder
+touch. Watched firing locally under `STC_GATE_FAULT=wedge:`:
+
+```
+--- last 23 in-page checkpoints before the bound fired ---
+  +    701 ms  [gate-mark 1] decoder preference: prefer-software
+  +   1580 ms  [gate-mark 2] export[A]: decodeAll (VideoDecoder.configure is synchronous)
+```
+
+The next CI wedge answers the question from its own output. Until one does, the
+finding above stands as **strongly indicated, not closed**.
+
 ## What a skip costs, and what a pass costs
 
 Measured from step durations on real runs:
@@ -120,9 +184,13 @@ and the step timings above.
 
 ## What to do next
 
-1. **Diagnose Mode B out of process.** In-page instrumentation cannot see this by
-   construction. Chrome's own GPU logging is the avenue — `--enable-logging
-   --v=1`, and `chrome://gpu` state captured before the wedge.
+1. **Read the decoder preference off the next wedge's trail.** It is
+   `[gate-mark 1]` now. That closes the last assumption under "`prefer-software`
+   was not the cause" above, and it costs nothing but looking.
+   (This item used to read "diagnose Mode B out of process — in-page
+   instrumentation cannot see this by construction, Chrome's GPU logging is the
+   avenue". #50 disproved that: a console message escapes a blocked renderer
+   when nothing else does, and the trail located the wedge without any GPU log.)
 2. ~~Consider `ATTEMPTS = 1`.~~ **Done 2026-08-30.**
 3. **Do not add attempts to the other three gates.** Already rejected on
    arithmetic (118 min, needing a ~2 hour cap) — and since all four gates skip

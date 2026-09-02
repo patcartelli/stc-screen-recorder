@@ -3,11 +3,12 @@ import { loadSession } from "@transform/session";
 import { exportSession as runExport, type ExportOptions } from "@transform/export";
 import { parseProject } from "@transform/trim";
 import type { Project } from "@transform/types";
-import { setDecoderPreference } from "@transform/decoder-preference";
+import { applyDecoderPreference } from "./decoder.js";
 
 // STC-259: handed in by the runner (scripts/gate-bounds.mjs), never chosen
-// here. Undefined outside a gate, which is Chromium's own default.
-setDecoderPreference((globalThis as { __decoderPreference?: any }).__decoderPreference);
+// here — and MARKED, so a wedged run's trail says which decoder it was
+// asking for when it stopped. See harness/decoder.ts.
+applyDecoderPreference();
 
 /**
  * Thin browser wrapper: fetch a session, then call the ONE export

@@ -1,4 +1,5 @@
 import { defineConfig } from "vitest/config";
+import { fileURLToPath } from "node:url";
 
 /**
  * Two projects, because the E2E files need a different concurrency rule than
@@ -21,6 +22,21 @@ import { defineConfig } from "vitest/config";
  */
 const EXCLUDE = ["**/node_modules/**", "**/*.grant.test.ts", "**/*.slow.test.ts"];
 
+/**
+ * The same "@transform" alias harness/vite.config.ts serves the browser and
+ * tsconfig.json's `paths` serves tsc. A test that imports a harness file —
+ * transform/test/decoder-preference-mark.test.ts does, to exercise the gate
+ * wiring for real rather than by grepping it — resolves the import through
+ * this. The copies cannot be one: the others are a vite config, a JSON file
+ * and (app/build.mjs) an esbuild call, in three config languages.
+ *
+ * It sits on each PROJECT, not on the root: with `projects`, every project is
+ * its own vite config and inherits no `resolve` from the parent.
+ */
+const resolve = {
+  alias: { "@transform": fileURLToPath(new URL("./transform/src", import.meta.url)) },
+};
+
 export default defineConfig({
   test: {
     // Needs a Screen Recording grant, which a plain test runner does not have.
@@ -30,6 +46,7 @@ export default defineConfig({
     globalSetup: ["./vitest.global-setup.ts"],
     projects: [
       {
+        resolve,
         test: {
           name: "unit",
           include: ["transform/test/**/*.test.ts", "helper/test/**/*.test.ts", "app/test/**/*.test.ts"],
@@ -39,6 +56,7 @@ export default defineConfig({
       },
       {
         // One Electron app on the machine at a time.
+        resolve,
         test: {
           name: "e2e",
           include: ["app/test/**/*.e2e.test.ts"],
