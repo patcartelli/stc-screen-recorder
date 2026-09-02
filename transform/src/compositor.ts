@@ -1,11 +1,18 @@
 import type { FrameState } from "./render.js";
 
 /**
- * The one compositor. Both sinks call exactly this with identical inputs on
- * identically-configured contexts ({ alpha: false, willReadFrequently: true },
- * which also keeps Chrome on the software raster path) — that is what makes
- * the pre-encode RGBA gate meaningful. Sinks may not fork this any more than
- * they may fork render().
+ * The one compositor. Both sinks call exactly this with identical inputs, and
+ * that is what makes the pre-encode RGBA gate meaningful. Sinks may not fork
+ * this any more than they may fork render().
+ *
+ * The contexts are NOT identically configured, and an earlier version of this
+ * comment said they were: the gates and a hashing export use
+ * { alpha: false, willReadFrequently: true } (software raster, so pixels can
+ * be read back), while the app's preview and a plain export use { alpha: false }
+ * alone. PHASE-2 measured the two raster paths byte-identical on this machine;
+ * the identity gate compares them for real, inside one browser, and
+ * export-identity.slow pins both processes to software because across
+ * rasterizers they differ (CLAUDE.md, the rasterization-backend trap).
  */
 export function composite(
   ctx: OffscreenCanvasRenderingContext2D,

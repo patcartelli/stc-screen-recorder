@@ -1,10 +1,10 @@
 import { render } from "./render.js";
-import { tickTimeNs, frameIndexAt } from "./time.js";
+import { tickTimeNs } from "./time.js";
 import { ForwardFrameSource } from "./frame-source.js";
 import { composite } from "./compositor.js";
 import type { LoadedSession } from "./session.js";
 import type { Project } from "./types.js";
-import { exportWindow } from "./trim.js";
+import { exportWindow, availableFrames } from "./trim.js";
 import { Muxer, ArrayBufferTarget } from "mp4-muxer";
 import { withTimeout } from "./timeout.js";
 
@@ -77,7 +77,10 @@ export async function exportSession(
   }) as OffscreenCanvasRenderingContext2D;
 
   const lastFrameNs = session.frames[session.frames.length - 1]!;
-  const available = Math.floor((lastFrameNs * fps) / 1_000_000_000) + 1;
+  // The same formula exportWindow uses, from the same module. A second copy
+  // here agreed with it by inspection only, and "one value, two copies" is
+  // this repo's most repeated defect.
+  const available = availableFrames(lastFrameNs, fps);
   const clip = exportWindow(project, lastFrameNs);
   const from = Math.max(0, Math.min(opts.fromFrame ?? clip.fromFrame, available - 1));
   const total = Math.min(opts.maxFrames ?? clip.maxFrames, available - from);
@@ -111,7 +114,10 @@ export async function exportSession(
 
       const tNs = tickTimeNs(2 * (from + k));
       const fs = render(project, session, tNs);
-      const idx = frameIndexAt(session.frames, tNs);
+      // Frame selection is render()'s answer, not the sink's to re-derive: a
+      // sink that recomputed it would keep the old rule if render()'s ever
+      // changed, and the two would disagree silently.
+      const idx = fs.frameIndex;
       const frame = idx === null ? null : await source.frameAt(idx);
       const cameraFrame = fs.pip && cameraSource ? await cameraSource.frameAt(fs.pip.frameIndex) : null;
       peakBuffered = Math.max(peakBuffered, source.bufferedCount + (cameraSource?.bufferedCount ?? 0));

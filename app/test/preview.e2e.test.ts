@@ -92,6 +92,47 @@ describe("preview player in the app", () => {
     expect(await win.textContent("#clock")).not.toMatch(/^0:00 /);
   }, 120_000);
 
+  // A scrub is a burst of input events. The last one very often lands while
+  // the previous draw is still awaiting the decoder, and a draw that was
+  // simply dropped there left the canvas on an earlier frame while the clock
+  // said the later one. Fired from inside the page so the burst is genuinely
+  // back-to-back: with the old player the canvas settles on the FIRST value's
+  // frame and never moves.
+  test("a burst of scrub events ends on the frame of the last one", async () => {
+    const { win } = await launchWithTake();
+    await win.click("#takes >> text=Preview");
+    await expect.poll(() => inkiness(win), { timeout: 30_000 }).toBeGreaterThan(0.2);
+
+    const stageHash = () => win.evaluate(() => {
+      const c = document.getElementById("stage") as HTMLCanvasElement;
+      const d = c.getContext("2d")!.getImageData(0, 0, c.width, c.height).data;
+      let h = 0;
+      for (let i = 0; i < d.length; i += 4) h = (h * 31 + d[i]! + d[i + 1]! + d[i + 2]!) >>> 0;
+      return h;
+    });
+
+    // The reference: one clean seek to the final value.
+    await win.fill("#scrub", "700");
+    await win.dispatchEvent("#scrub", "input");
+    await expect.poll(() => win.textContent("#clock"), { timeout: 20_000 }).not.toMatch(/^0:00 /);
+    await new Promise((r) => setTimeout(r, 500));
+    const expected = await stageHash();
+
+    // Back to the start, then the burst, all in one tick of the page's loop.
+    await win.fill("#scrub", "0");
+    await win.dispatchEvent("#scrub", "input");
+    await new Promise((r) => setTimeout(r, 500));
+    expect(await stageHash()).not.toBe(expected);
+    await win.evaluate(() => {
+      const s = document.getElementById("scrub") as HTMLInputElement;
+      for (let v = 100; v <= 700; v += 25) {
+        s.value = String(v);
+        s.dispatchEvent(new Event("input"));
+      }
+    });
+    await expect.poll(stageHash, { timeout: 10_000 }).toBe(expected);
+  }, 120_000);
+
   test("play advances the clock and pause stops it", async () => {
     const { win } = await launchWithTake();
     await win.click("#takes >> text=Preview");

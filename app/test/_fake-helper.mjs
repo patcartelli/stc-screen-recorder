@@ -41,6 +41,13 @@ process.stdin.on("data", (chunk) => {
     let cmd;
     try { cmd = JSON.parse(raw); } catch { continue; }
     const seq = cmd.seq;
+    // Every command, in arrival order, when a test asks. The ORDER is the
+    // subject for the quit path: a stop must reach the helper before the quit
+    // does, or the take in flight is lost.
+    if (process.env.STC_FAKE_CMD_LOG) {
+      try { writeFileSync(process.env.STC_FAKE_CMD_LOG, String(cmd.cmd) + "\n", { flag: "a" }); }
+      catch { /* a test seam is not worth killing the stand-in */ }
+    }
     switch (cmd.cmd) {
       case "status":
         send("status", { seq, state, session });
@@ -78,12 +85,28 @@ process.stdin.on("data", (chunk) => {
         } else if (process.env.STC_FAKE_CAMERA) {
           setTimeout(() => send("camera-started", { device: process.env.STC_FAKE_CAMERA }), 40);
         }
+        // Any warning code, after `started` — the real helper reports a tap it
+        // could not install, or a stream that died, as a warning on the
+        // reliable channel once the take is already running.
+        if (process.env.STC_FAKE_WARNING) {
+          setTimeout(() => send("warning", {
+            code: process.env.STC_FAKE_WARNING, detail: "fake: a warning the UI must show",
+          }), 60);
+        }
         break;
-      case "stop":
-        state = "idle";
-        session = null;
-        send("stopped", { seq, reason: "requested" });
+      case "stop": {
+        // A real stop takes hundreds of milliseconds to seconds (finishWriting),
+        // and that duration is what the quit path has to survive. Instant, the
+        // stand-in cannot tell "waited for the stop" from "did not" — the quit
+        // test passed against the broken before-quit until this existed.
+        const delay = Number(process.env.STC_FAKE_STOP_DELAY_MS) || 0;
+        setTimeout(() => {
+          state = "idle";
+          session = null;
+          send("stopped", { seq, reason: "requested" });
+        }, delay);
         break;
+      }
       case "quit":
         send("bye", { seq });
         process.exit(0);
