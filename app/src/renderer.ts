@@ -190,19 +190,62 @@ const CAMERA_FAULTS: Record<string, string> = {
     "the camera all look like this.",
 };
 
+/**
+ * Warnings that are not about the camera but still decide whether a take is
+ * what the user thinks it is.
+ *
+ * `event-tap-unavailable` is the one that matters most: the captured pixels
+ * carry no cursor by design (showsCursor is false, the transform draws it from
+ * events.json), so a take recorded without the tap has NO cursor anywhere and
+ * looked identical to a good one — the rule that the cursor is never only in
+ * the video was being broken silently, and the library's "0 events" was the
+ * only trace. `stream-stopped` is a display stream that died mid-take: the
+ * helper stays in "recording", frames simply stop, and until Stop is pressed
+ * nothing said so.
+ */
+const RECORDING_FAULTS: Record<string, string> = {
+  "event-tap-unavailable":
+    "Cursor input is NOT being recorded: the recorder could not install its input tap, " +
+    "so this take will have no cursor at all. Grant Input Monitoring in System Settings › " +
+    "Privacy & Security, then record again.",
+  "stream-stopped":
+    "The display capture stopped unexpectedly. No more frames are being recorded — " +
+    "press Stop; what was captured up to this point is kept.",
+  "av-runtime-error": "A capture device reported an error during the recording.",
+};
+
+/**
+ * Emitted by the helper's watchers whenever ANY display changes, recording or
+ * not. While recording it is accompanied by display-change-during-recording,
+ * which is the one that says what happened to the take; alone it is an idle
+ * machine's monitor being plugged in, and not worth an alert.
+ */
+const INFORMATIONAL_WARNINGS = new Set(["display-reconfigured"]);
+
 recorder.on("helper:warning", (l) => {
-  if (l.code === "display-change-during-recording") {
+  const code = String(l.code);
+  if (code === "display-change-during-recording") {
     alertUser("Display configuration changed — the recording was stopped.");
     return;
   }
-  const camera = CAMERA_FAULTS[String(l.code)];
-  if (!camera) return;
-  // Both: the row is the at-a-glance state, the alert is the thing that cannot
-  // be missed. A silent failure is what this whole change exists to remove.
-  // "no frames" is not the same as "failed to open", and the row said the
-  // device name right up until this fired. Name the state, not just the code.
-  setCamera(l.code === "camera-no-frames" ? "no frames" : `failed — ${l.code}`);
-  alertUser(l.detail ? `${camera}\n\n${l.detail}` : camera);
+  if (INFORMATIONAL_WARNINGS.has(code)) return;
+  const camera = CAMERA_FAULTS[code];
+  if (camera) {
+    // Both: the row is the at-a-glance state, the alert is the thing that
+    // cannot be missed. A silent failure is what this whole change exists to
+    // remove. "no frames" is not the same as "failed to open", and the row
+    // said the device name right up until this fired. Name the state, not
+    // just the code.
+    setCamera(code === "camera-no-frames" ? "no frames" : `failed — ${code}`);
+    alertUser(l.detail ? `${camera}\n\n${l.detail}` : camera);
+    return;
+  }
+  // Everything else is shown too. This handler used to match a handful of
+  // codes and drop the rest, which is how a take with no cursor track looked
+  // like a good one; a warning the helper thought worth a reliable-channel
+  // line is not one the UI gets to discard.
+  const text = RECORDING_FAULTS[code] ?? `The recorder reported a problem: ${code}`;
+  alertUser(l.detail ? `${text}\n\n${l.detail}` : text);
 });
 
 const fmtDuration = (ms: number) => {

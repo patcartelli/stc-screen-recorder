@@ -85,6 +85,14 @@ process.stdin.on("data", (chunk) => {
         } else if (process.env.STC_FAKE_CAMERA) {
           setTimeout(() => send("camera-started", { device: process.env.STC_FAKE_CAMERA }), 40);
         }
+        // Any warning code, after `started` — the real helper reports a tap it
+        // could not install, or a stream that died, as a warning on the
+        // reliable channel once the take is already running.
+        if (process.env.STC_FAKE_WARNING) {
+          setTimeout(() => send("warning", {
+            code: process.env.STC_FAKE_WARNING, detail: "fake: a warning the UI must show",
+          }), 60);
+        }
         break;
       case "stop": {
         // A real stop takes hundreds of milliseconds to seconds (finishWriting),
