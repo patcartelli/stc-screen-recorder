@@ -1,5 +1,5 @@
 import { render } from "./render.js";
-import { tickTimeNs, tickOf, frameIndexAt, SIM_HZ } from "./time.js";
+import { tickTimeNs, tickOf, SIM_HZ } from "./time.js";
 import { SeekingFrameSource } from "./seeking-frame-source.js";
 import { composite } from "./compositor.js";
 import type { LoadedSession } from "./session.js";
@@ -120,7 +120,8 @@ export class PreviewPlayer {
       const tick = tickOf(this.tNs);
       const t = tickTimeNs(tick);
       const fs = render(this.project, this.session, t);
-      const idx = frameIndexAt(this.session.frames, t);
+      // render()'s answer, not re-derived here — see export.ts.
+      const idx = fs.frameIndex;
       // Both decoders are driven concurrently. They are independent decoders
       // with independent in-flight guards, and `this.rendering` already
       // serialises whole draws — so a superseded seek can never pair a display
