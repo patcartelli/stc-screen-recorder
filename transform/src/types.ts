@@ -1,4 +1,4 @@
-/** Mirrors schema/events-1.schema.json. All times are session-relative integer ns. */
+/** Mirrors schema/events-1.schema.json and events-2.schema.json. All times are session-relative integer ns. */
 export interface MoveEvent {
   t: number;
   kind: "move";
@@ -12,7 +12,18 @@ export interface ButtonEvent {
   y: number;
   button: number;
 }
-export type SessionEvent = MoveEvent | ButtonEvent;
+/**
+ * Which macOS pointer is showing from t onward (events-2). The set is the
+ * artwork the compositor can draw — see transform/src/cursor-art.ts, which
+ * holds the runtime list the schema's enum must equal.
+ */
+export type CursorShape = "arrow" | "ibeam" | "crosshair" | "pointingHand";
+export interface CursorShapeEvent {
+  t: number;
+  kind: "cursor";
+  shape: CursorShape;
+}
+export type SessionEvent = MoveEvent | ButtonEvent | CursorShapeEvent;
 
 /** Mirrors the optional `camera` block in schema/anchors-2.schema.json. */
 export interface CameraTrack {
@@ -55,6 +66,9 @@ export interface Anchors {
   stop?: { t: number; reason: "user" | "display-reconfigured" | "device-lost" | "error" };
 }
 
+/** Mirrors `cursor.style` in schema/project-2.schema.json. */
+export type CursorStyle = "default" | "circle";
+
 /** Mirrors the optional `trim` block in schema/project-2.schema.json. */
 export interface Trim {
   startNs: number;
@@ -65,7 +79,11 @@ export interface Trim {
 export interface Project {
   version: 1 | 2;
   output: { fps: 60; width: number; height: number };
-  cursor: { style: "default"; scale: number };
+  /**
+   * `default` is the macOS pointer set (cursor-art.ts); `circle` is the phase-1
+   * placeholder, kept as an option. `scale` multiplies the point size of either.
+   */
+  cursor: { style: CursorStyle; scale: number };
   pip?: Pip;
   /** Absent means the full take. */
   trim?: Trim;
@@ -92,4 +110,6 @@ export interface CursorState {
   vy: number;
   pressed: boolean;
   visible: boolean;
+  /** the pointer showing at this tick: the last cursor event at or before it, else the arrow */
+  shape: CursorShape;
 }

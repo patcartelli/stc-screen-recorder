@@ -1,0 +1,60 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "stc:events-2",
+  "title": "stc session cursor events, v2",
+  "description": "events-1 plus the cursor-shape event (STC-239). t is session-relative integer nanoseconds (CGEvent.timestamp minus anchors.t0Ns; CGEvent.timestamp is already ns, never converted). x/y are global display-space points; subtract anchors.display.originX/Y for display-local coordinates. A cursor event says which macOS pointer is showing from t until the next cursor event; before the first one the arrow is showing. The shape is a name into the compositor's own artwork set, never a bitmap — compact, and render() stays a pure function of session data.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "events"],
+  "properties": {
+    "version": { "const": 2 },
+    "events": {
+      "type": "array",
+      "items": {
+        "oneOf": [
+          { "$ref": "#/definitions/moveEvent" },
+          { "$ref": "#/definitions/buttonEvent" },
+          { "$ref": "#/definitions/cursorEvent" }
+        ]
+      }
+    }
+  },
+  "definitions": {
+    "moveEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["t", "kind", "x", "y"],
+      "properties": {
+        "t": { "type": "integer", "minimum": 0 },
+        "kind": { "const": "move" },
+        "x": { "type": "number" },
+        "y": { "type": "number" }
+      }
+    },
+    "buttonEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["t", "kind", "x", "y", "button"],
+      "properties": {
+        "t": { "type": "integer", "minimum": 0 },
+        "kind": { "enum": ["down", "up"] },
+        "x": { "type": "number" },
+        "y": { "type": "number" },
+        "button": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "cursorEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["t", "kind", "shape"],
+      "properties": {
+        "t": { "type": "integer", "minimum": 0 },
+        "kind": { "const": "cursor" },
+        "shape": {
+          "enum": ["arrow", "ibeam", "crosshair", "pointingHand"],
+          "description": "exactly the set transform/src/cursor-art.ts can draw; cursor-art.test.ts keeps the two equal"
+        }
+      }
+    }
+  }
+}

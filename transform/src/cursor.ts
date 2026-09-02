@@ -1,5 +1,6 @@
-import type { CursorState, SessionEvent } from "./types.js";
+import type { CursorShape, CursorState, SessionEvent } from "./types.js";
 import { SIM_HZ, tickTimeNs } from "./time.js";
+import { DEFAULT_CURSOR_SHAPE } from "./cursor-art.js";
 
 /**
  * Cursor easing: a critically damped spring toward the latest raw cursor
@@ -9,6 +10,11 @@ import { SIM_HZ, tickTimeNs } from "./time.js";
  * (30 min = 216k ticks) without changing a single arithmetic operation:
  * a checkpoint IS the stepped state, so resuming from it replays the exact
  * float sequence the continuous run would have produced.
+ *
+ * The pointer's SHAPE is not simulated: it is a step function of the cursor
+ * events (events-2), read at the tick's start time like `pressed`. Before the
+ * first cursor event — and for the whole of a v1 take, which has none — it is
+ * the arrow.
  */
 
 const DT = 1 / SIM_HZ;
@@ -21,8 +27,20 @@ export interface CursorSim {
 }
 
 export function createCursorSim(events: readonly SessionEvent[]): CursorSim {
-  const sorted = [...events].sort((a, b) => a.t - b.t);
+  const all = [...events].sort((a, b) => a.t - b.t);
+  // Only move/down/up carry a position; a cursor event says which pointer is
+  // showing and must not become a spring target.
+  const sorted = all.filter((e) => e.kind !== "cursor");
   const times = sorted.map((e) => e.t);
+
+  const shapeTimes: number[] = [];
+  const shapeVals: CursorShape[] = [];
+  for (const e of all) {
+    if (e.kind === "cursor") {
+      shapeTimes.push(e.t);
+      shapeVals.push(e.shape);
+    }
+  }
 
   // pressed = any button down at t: prefix sum over down(+1)/up(-1) events
   const btnTimes: number[] = [];
@@ -57,8 +75,15 @@ export function createCursorSim(events: readonly SessionEvent[]): CursorSim {
     return i >= 0 && btnDepth[i]! > 0;
   }
 
+  function shapeAt(tNs: number): CursorShape {
+    const i = lastLE(shapeTimes, tNs);
+    return i < 0 ? DEFAULT_CURSOR_SHAPE : shapeVals[i]!;
+  }
+
   if (sorted.length === 0) {
-    const hidden: CursorState = { x: 0, y: 0, vx: 0, vy: 0, pressed: false, visible: false };
+    const hidden: CursorState = {
+      x: 0, y: 0, vx: 0, vy: 0, pressed: false, visible: false, shape: DEFAULT_CURSOR_SHAPE,
+    };
     return { stateAt: () => ({ ...hidden }) };
   }
 
@@ -95,7 +120,8 @@ export function createCursorSim(events: readonly SessionEvent[]): CursorSim {
   return {
     stateAt(n: number): CursorState {
       const kin = kinematicsAt(n);
-      return { ...kin, pressed: pressedAt(tickTimeNs(n)), visible: true };
+      const tNs = tickTimeNs(n);
+      return { ...kin, pressed: pressedAt(tNs), visible: true, shape: shapeAt(tNs) };
     },
   };
 }

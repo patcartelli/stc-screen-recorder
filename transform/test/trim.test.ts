@@ -63,6 +63,16 @@ describe("parseProject", () => {
     expect(parseProject({ version: 2 }, 1920, 1080, duration)).toEqual(defaultProject(1920, 1080));
   });
 
+  test("carries cursor.style: circle, and coerces anything else to the default pointer", () => {
+    const raw = (style: unknown) => ({
+      version: 2, output: { fps: 60, width: 640, height: 360 }, cursor: { style, scale: 2 },
+    });
+    expect(parseProject(raw("circle"), 640, 360, duration).cursor).toEqual({ style: "circle", scale: 2 });
+    expect(parseProject(raw("default"), 640, 360, duration).cursor.style).toBe("default");
+    expect(parseProject(raw("dot"), 640, 360, duration).cursor.style).toBe("default");
+    expect(parseProject(raw(undefined), 640, 360, duration).cursor.style).toBe("default");
+  });
+
   test("round-trips a valid trim", () => {
     const raw = defaultProject(640, 360, { startNs: NS, endNs: 2 * NS });
     const p = parseProject(raw, 3840, 2160, duration);

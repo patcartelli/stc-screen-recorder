@@ -23,9 +23,15 @@ describe("session schemas validate the fixture", () => {
     expect(ok, JSON.stringify(validate.errors, null, 2)).toBe(true);
   });
 
-  test("events.json conforms to events-1 schema", () => {
-    const validate = compile("schema/events-1.schema.json");
+  test("events.json conforms to events-2 schema (it carries cursor-shape events)", () => {
+    const validate = compile("schema/events-2.schema.json");
     const ok = validate(load("fixtures/basic/events.json"));
+    expect(ok, JSON.stringify(validate.errors, null, 2)).toBe(true);
+  });
+
+  test("the real session's events.json, written by the helper, conforms to events-1", () => {
+    const validate = compile("schema/events-1.schema.json");
+    const ok = validate(load("fixtures/real-session/events.json"));
     expect(ok, JSON.stringify(validate.errors, null, 2)).toBe(true);
   });
 
@@ -38,28 +44,28 @@ describe("session schemas validate the fixture", () => {
 
 describe("schemas reject malformed documents", () => {
   test("events: float timestamps are rejected (integer ns only)", () => {
-    const validate = compile("schema/events-1.schema.json");
+    const validate = compile("schema/events-2.schema.json");
     const doc = clone(load("fixtures/basic/events.json"));
     doc.events[0].t = 0.5;
     expect(validate(doc)).toBe(false);
   });
 
   test("events: negative timestamps are rejected (session-relative)", () => {
-    const validate = compile("schema/events-1.schema.json");
+    const validate = compile("schema/events-2.schema.json");
     const doc = clone(load("fixtures/basic/events.json"));
     doc.events[0].t = -1;
     expect(validate(doc)).toBe(false);
   });
 
   test("events: unknown kind is rejected", () => {
-    const validate = compile("schema/events-1.schema.json");
+    const validate = compile("schema/events-2.schema.json");
     const doc = clone(load("fixtures/basic/events.json"));
     doc.events[0].kind = "hover";
     expect(validate(doc)).toBe(false);
   });
 
   test("events: down without button is rejected", () => {
-    const validate = compile("schema/events-1.schema.json");
+    const validate = compile("schema/events-2.schema.json");
     const doc = clone(load("fixtures/basic/events.json"));
     doc.events.push({ t: 4_900_000_000, kind: "down", x: 1, y: 1 });
     expect(validate(doc)).toBe(false);
@@ -177,6 +183,48 @@ describe("v2 schemas carry the camera track and PiP geometry", () => {
     const validate = compile("schema/anchors-2.schema.json");
     const doc = clone(load("fixtures/pip/anchors.json"));
     delete doc.camera.frameIntervalNs;
+    expect(validate(doc)).toBe(false);
+  });
+
+  test("a v1 events document is not a v2 document", () => {
+    const validate = compile("schema/events-2.schema.json");
+    expect(validate(load("fixtures/real-session/events.json"))).toBe(false);
+  });
+
+  test("a v2 events document is not a v1 document", () => {
+    const validate = compile("schema/events-1.schema.json");
+    expect(validate(load("fixtures/basic/events.json"))).toBe(false);
+  });
+
+  test("events-2: a shape the compositor has no artwork for is rejected", () => {
+    const validate = compile("schema/events-2.schema.json");
+    const doc = clone(load("fixtures/basic/events.json"));
+    doc.events.push({ t: 4_900_000_000, kind: "cursor", shape: "resizeLeftRight" });
+    expect(validate(doc)).toBe(false);
+  });
+
+  test("events-2: a cursor event carries no position — one with x/y is rejected", () => {
+    // The shape is a step function between cursor events; a position on it
+    // would be a second source of cursor motion the sim does not read.
+    const validate = compile("schema/events-2.schema.json");
+    const doc = clone(load("fixtures/basic/events.json"));
+    doc.events.push({ t: 4_900_000_000, kind: "cursor", shape: "ibeam", x: 1, y: 1 });
+    expect(validate(doc)).toBe(false);
+  });
+
+  test("events-2: a cursor event without a shape is rejected", () => {
+    const validate = compile("schema/events-2.schema.json");
+    const doc = clone(load("fixtures/basic/events.json"));
+    doc.events.push({ t: 4_900_000_000, kind: "cursor" });
+    expect(validate(doc)).toBe(false);
+  });
+
+  test("project-2: cursor.style accepts the circle placeholder and refuses anything else", () => {
+    const validate = compile("schema/project-2.schema.json");
+    const doc = clone(load("fixtures/pip/project.json"));
+    doc.cursor.style = "circle";
+    expect(validate(doc), JSON.stringify(validate.errors)).toBe(true);
+    doc.cursor.style = "dot";
     expect(validate(doc)).toBe(false);
   });
 
