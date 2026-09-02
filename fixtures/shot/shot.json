@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "kind": "display-crop",
+  "capturedAtNs": "1000000000",
+  "timebase": { "numer": 125, "denom": 3 },
+  "display": {
+    "id": 1,
+    "pointWidth": 1920,
+    "pointHeight": 1080,
+    "pixelWidth": 3840,
+    "pixelHeight": 2160,
+    "backingScale": 2,
+    "originX": 0,
+    "originY": 0,
+    "colorSpace": "kCGColorSpaceDisplayP3"
+  },
+  "crop": { "x": 100, "y": 80, "width": 640, "height": 360 },
+  "frame": { "file": "frame.png", "width": 1280, "height": 720, "alpha": false },
+  "cursor": { "x": 420, "y": 300, "shape": "arrow" },
+  "decoration": {
+    "mode": "selected-area",
+    "canvas": "natural",
+    "cursor": false,
+    "redactions": [
+      { "x": 0.1, "y": 0.2, "width": 0.3, "height": 0.05 }
+    ]
+  }
+}
