@@ -44,6 +44,9 @@ export const OUTLINE_PT = 1;
  */
 export const CLICK_HIGHLIGHT_PT = 16;
 
+/** The placeholder circle's radius in points (`cursor.style: "circle"`). */
+export const CIRCLE_PT = 8;
+
 export const CURSOR_SHAPES: readonly CursorShape[] = ["arrow", "ibeam", "crosshair", "pointingHand"];
 
 /** What a take shows before any cursor event, and what the helper's v1 events imply throughout. */
@@ -136,6 +139,7 @@ export interface CursorCanvas {
   moveTo(x: number, y: number): void;
   lineTo(x: number, y: number): void;
   quadraticCurveTo(cpx: number, cpy: number, x: number, y: number): void;
+  arc(x: number, y: number, radius: number, startAngle: number, endAngle: number): void;
   closePath(): void;
   fill(): void;
   stroke(): void;
@@ -150,6 +154,22 @@ export function tracePath(ctx: CursorCanvas, path: readonly PathCommand[]): void
       case "Z": ctx.closePath(); break;
     }
   }
+}
+
+/**
+ * The phase-1 placeholder: a white disc with a black ring, centred on the
+ * hotspot. Kept as `cursor.style: "circle"` because a dot reads better than a
+ * pointer in some cuts. Same radius and ring the placeholder always had, now
+ * in points so it scales with the output like the artwork does.
+ */
+export function drawCircle(ctx: CursorCanvas, x: number, y: number, pxPerPoint: number): void {
+  ctx.beginPath();
+  ctx.arc(x, y, CIRCLE_PT * pxPerPoint, 0, Math.PI * 2);
+  ctx.fillStyle = "#ffffff";
+  ctx.fill();
+  ctx.lineWidth = 2 * pxPerPoint;
+  ctx.strokeStyle = "#000000";
+  ctx.stroke();
 }
 
 /**

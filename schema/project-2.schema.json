@@ -51,8 +51,10 @@
       "properties": {
         "style": {
           "enum": [
-            "default"
-          ]
+            "default",
+            "circle"
+          ],
+          "description": "default is the macOS pointer set (STC-239); circle is the phase-1 placeholder, kept as an option"
         },
         "scale": {
           "type": "number",

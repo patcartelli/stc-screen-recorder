@@ -106,8 +106,11 @@ export function parseProject(
   const outW = Number.isInteger(doc.output?.width) ? doc.output.width : width;
   const outH = Number.isInteger(doc.output?.height) ? doc.output.height : height;
   const scale = typeof doc.cursor?.scale === "number" && doc.cursor.scale > 0 ? doc.cursor.scale : 1;
+  // Anything but the one other style the schema names is the default pointer:
+  // an older document, or a hand edit that misspelt it, must still render.
+  const style = doc.cursor?.style === "circle" ? "circle" : "default";
   const project = defaultProject(outW, outH, undefined, hasCamera);
-  project.cursor = { style: "default", scale };
+  project.cursor = { style, scale };
 
   // Same reasoning as projectForWrite: anything this parser does not copy is
   // lost on the next write. `pip` is validated by the schema, so it is carried

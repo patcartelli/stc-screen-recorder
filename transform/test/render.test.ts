@@ -96,6 +96,14 @@ describe("render(project, session, t) → FrameState", () => {
     expect(bigger.cursor.pxPerPoint).toBe(3);
   });
 
+  test("the project's cursor style reaches the FrameState", () => {
+    const session = fixtureSession();
+    const project = fixtureProject();
+    expect(render(project, session, 1_000_000_000).cursor.style).toBe("default");
+    const circle = { ...project, cursor: { ...project.cursor, style: "circle" as const } };
+    expect(render(circle, session, 1_000_000_000).cursor.style).toBe("circle");
+  });
+
   test("the pointer's shape reaches the FrameState from the fixture's cursor events", () => {
     const session = fixtureSession();
     const shapeAt = (tNs: number) => render(fixtureProject(), session, tNs).cursor.shape;

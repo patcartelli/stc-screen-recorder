@@ -219,6 +219,15 @@ describe("v2 schemas carry the camera track and PiP geometry", () => {
     expect(validate(doc)).toBe(false);
   });
 
+  test("project-2: cursor.style accepts the circle placeholder and refuses anything else", () => {
+    const validate = compile("schema/project-2.schema.json");
+    const doc = clone(load("fixtures/pip/project.json"));
+    doc.cursor.style = "circle";
+    expect(validate(doc), JSON.stringify(validate.errors)).toBe(true);
+    doc.cursor.style = "dot";
+    expect(validate(doc)).toBe(false);
+  });
+
   test("the pip fixture (present:true, full measurements) still validates", () => {
     const validate = compile("schema/anchors-2.schema.json");
     const ok = validate(load("fixtures/pip/anchors.json"));

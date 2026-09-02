@@ -66,6 +66,9 @@ export interface Anchors {
   stop?: { t: number; reason: "user" | "display-reconfigured" | "device-lost" | "error" };
 }
 
+/** Mirrors `cursor.style` in schema/project-2.schema.json. */
+export type CursorStyle = "default" | "circle";
+
 /** Mirrors the optional `trim` block in schema/project-2.schema.json. */
 export interface Trim {
   startNs: number;
@@ -76,8 +79,11 @@ export interface Trim {
 export interface Project {
   version: 1 | 2;
   output: { fps: 60; width: number; height: number };
-  /** `default` is the macOS pointer set (cursor-art.ts); `scale` multiplies its point size. */
-  cursor: { style: "default"; scale: number };
+  /**
+   * `default` is the macOS pointer set (cursor-art.ts); `circle` is the phase-1
+   * placeholder, kept as an option. `scale` multiplies the point size of either.
+   */
+  cursor: { style: CursorStyle; scale: number };
   pip?: Pip;
   /** Absent means the full take. */
   trim?: Trim;

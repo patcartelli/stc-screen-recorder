@@ -1,4 +1,4 @@
-import type { CursorState, Project, Session } from "./types.js";
+import type { CursorState, CursorStyle, Project, Session } from "./types.js";
 import { frameIndexAt, tickOf } from "./time.js";
 import { createCursorSim, type CursorSim } from "./cursor.js";
 
@@ -24,9 +24,9 @@ export interface FrameState {
    * cursor in output pixel coordinates. `pxPerPoint` is how many output pixels
    * one cursor point covers: the display-to-output ratio times the project's
    * cursor scale, so the pointer keeps its on-screen size relative to the
-   * content at any export size.
+   * content at any export size. `style` picks the artwork set or the circle.
    */
-  cursor: CursorState & { pxPerPoint: number };
+  cursor: CursorState & { pxPerPoint: number; style: CursorStyle };
   /** camera picture-in-picture, or null when there is none to draw */
   pip: PipState | null;
 }
@@ -103,6 +103,7 @@ export function render(project: Project, session: Session, tNs: number): FrameSt
       pressed: s.pressed,
       visible: s.visible,
       shape: s.shape,
+      style: project.cursor.style,
       pxPerPoint: project.cursor.scale * sx,
     },
     pip: pipStateAt(project, session, tNs),
