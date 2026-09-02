@@ -20,8 +20,13 @@ export interface FrameState {
   frameIndex: number | null;
   /** that frame's session-relative PTS ns, or null */
   framePtsNs: number | null;
-  /** cursor in output pixel coordinates */
-  cursor: CursorState & { scale: number };
+  /**
+   * cursor in output pixel coordinates. `pxPerPoint` is how many output pixels
+   * one cursor point covers: the display-to-output ratio times the project's
+   * cursor scale, so the pointer keeps its on-screen size relative to the
+   * content at any export size.
+   */
+  cursor: CursorState & { pxPerPoint: number };
   /** camera picture-in-picture, or null when there is none to draw */
   pip: PipState | null;
 }
@@ -97,7 +102,8 @@ export function render(project: Project, session: Session, tNs: number): FrameSt
       vy: s.vy * sy,
       pressed: s.pressed,
       visible: s.visible,
-      scale: project.cursor.scale,
+      shape: s.shape,
+      pxPerPoint: project.cursor.scale * sx,
     },
     pip: pipStateAt(project, session, tNs),
   };

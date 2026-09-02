@@ -66,8 +66,10 @@ export async function loadSession(input: SessionInput): Promise<LoadedSession> {
   if (anchors?.version !== 1 && anchors?.version !== 2) {
     throw new SessionLoadError(`anchors.json version ${anchors?.version} is not supported (expected 1 or 2)`);
   }
-  if (events?.version !== 1) {
-    throw new SessionLoadError(`events.json version ${events?.version} is not supported (expected 1)`);
+  // events-2 adds the cursor-shape event; a v1 document simply has none, and
+  // the sim shows the arrow throughout — which is what v1 always meant.
+  if (events?.version !== 1 && events?.version !== 2) {
+    throw new SessionLoadError(`events.json version ${events?.version} is not supported (expected 1 or 2)`);
   }
 
   // A claimed camera with no file supplied, and a file supplied with no

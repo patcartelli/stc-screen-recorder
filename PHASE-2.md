@@ -118,7 +118,7 @@ start/stop-only — no pause.
 | preview memory | 458 MB take → +548 MB renderer RSS (~1.2x). A ~15-minute 4K take is the practical ceiling. |
 | preview memory, PiP | see "A second decoder" below — measured 2026-08-27 |
 | export speed | 11.0 ms/frame at 4K = 1.52x realtime. A 5-minute take exports in ~3.3 min. |
-| cursor | a placeholder circle, not real pointer artwork |
+| cursor | macOS pointer artwork since STC-239 (2026-09-02). Shape changes come from events-2 `cursor` events, which the helper does not emit yet, so a real take shows the arrow throughout |
 
 ## Two concurrent H.264 encodes — measured 2026-08-27
 

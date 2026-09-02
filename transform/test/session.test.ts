@@ -119,6 +119,23 @@ describe("loader accepts v1 and v2 anchors", () => {
     })).rejects.toThrow(/version 3 is not supported/);
   });
 
+  test("a version 2 events document loads, cursor events included", async () => {
+    const s = await loadSession({
+      anchors: offsetAnchors(),
+      events: { version: 2, events: [{ t: 0, kind: "move", x: 1, y: 2 }, { t: 5, kind: "cursor", shape: "ibeam" }] },
+      displayMp4: mp4("fixtures/offset/display.mp4"),
+    });
+    expect(s.events.length).toBe(2);
+  });
+
+  test("a version 3 events document is rejected by name", async () => {
+    await expect(loadSession({
+      anchors: offsetAnchors(),
+      events: { version: 3, events: [] } as any,
+      displayMp4: mp4("fixtures/offset/display.mp4"),
+    })).rejects.toThrow(/events\.json version 3 is not supported/);
+  });
+
   // "a version 2 anchors document loads" above already covers a v2 anchors
   // document WITHOUT a camera block loading fine (offsetAnchors carries none).
 

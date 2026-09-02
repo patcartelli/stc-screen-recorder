@@ -22,7 +22,8 @@ events → deterministic transform → CFR MP4 with cursor overlay.
 | `app/src/main.ts` | Electron main — owns the supervisor, spawns the helper as its child |
 | `app/build.mjs` | esbuild bundle -> `app/dist/`; `npm run app:start` builds and launches |
 | `transform/src/` | the pure transform + shared sink modules (TS; render, time, cursor, demux, decode, compositor) |
-| `schema/` | versioned session schemas (anchors-1, events-1, project-1) |
+| `schema/` | versioned session schemas (anchors-1/2, events-1/2, project-1/2) |
+| `transform/src/cursor-art.ts` | the macOS pointer set as vector paths (STC-239); the events-2 `shape` enum must equal its list |
 | `fixtures/` | hand-authored 5 s fixture session + deterministic display.mp4 generator |
 | `harness/` | vite-served browser harness hosting both sinks |
 | `scripts/gate.mjs` | increment-0 determinism gate (Playwright + real Chrome) |
@@ -75,6 +76,7 @@ belonging to a different commit).
 | STC-254 | **done** — append/teardown race fixed (part 2), SIGTRAP crash handler closed (part 3). Master CI green again | nothing; watch that master stays green |
 | STC-287 | **done** — the camera's lifecycle is no longer invisible: device name while recording, a visible reason when it fails, and each take states when its PiP starts or that the camera recorded nothing. The ~1.4 s gap itself is inherent and deliberate | nothing |
 | STC-286 | **cause found 2026-08-31, and now reported DURING the take.** In clamshell the built-in camera OPENS — `camera-started device: "FaceTime HD Camera"` — then delivers nothing: 0-byte camera.mp4, `present: false`. Not a failed open and not a wrong pick (`pickCamera` chose correctly over a virtual device and Continuity). A 3 s liveness watchdog warns while recording | nothing — both arms verified on hardware, lid shut AND lid open |
+| STC-239 | **transform half DONE 2026-09-02** — the placeholder circle is macOS pointer artwork (arrow, I-beam, crosshair, pointing hand), vector paths with the hotspot at the origin, drawn at `pxPerPoint` (display→output ratio × `project.cursor.scale`). `events-2` adds `{kind:"cursor", shape}`; the sim shows the arrow until the first one, which is what every v1 take means. **The helper still writes v1 and emits no cursor events**, so real takes show the arrow throughout | the helper half: detect pointer changes on the tap thread and emit `cursor` events. Needs macOS to build and a hardware take to verify; nothing here can run swiftc |
 | STC-247 | multi-display capture | a second display |
 | STC-251/252 | preview memory ceiling (~15 min at 4K); Node 20 actions deprecation | — |
 
@@ -127,7 +129,8 @@ npm run merge -- <pr>                              # merge a PR, but ONLY if its
   video, click highlight visible, motion smooth. Hashes prove the two sinks AGREE; only watching
   proves the agreed answer is right — a uniformly mispositioned or time-shifted cursor passes
   every automated check in this repo. `node scripts/export-one.mjs <sessionDir> [seconds]` writes
-  a watchable file. NB the cursor is a placeholder circle, not the real pointer artwork.
+  a watchable file. The cursor was a placeholder circle until STC-239 (2026-09-02); it is macOS
+  pointer artwork now, arrow by default.
 - **Increment 5 (smoke test):** DONE. 5-minute capture (9311 frames, 0 dropped, 0 non-monotonic,
   peak 60.0 fps in the second half — no throttling). Display-change stop (clean, correct
   `stop.reason`, partial mp4 parses and plays). 30 s export from 2:30 into the take watched and

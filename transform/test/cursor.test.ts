@@ -10,6 +10,8 @@ const fixtureEvents: SessionEvent[] = JSON.parse(
 ).events;
 
 const mv = (t: number, x: number, y: number): SessionEvent => ({ t, kind: "move", x, y });
+const shape = (t: number, s: "arrow" | "ibeam" | "crosshair" | "pointingHand"): SessionEvent =>
+  ({ t, kind: "cursor", shape: s });
 
 describe("cursor sim — state is a function of tick n, nothing else", () => {
   test("no events: cursor is not visible", () => {
@@ -60,6 +62,54 @@ describe("cursor sim — state is a function of tick n, nothing else", () => {
     expect(sim.stateAt(120).pressed).toBe(true);
     expect(sim.stateAt(239).pressed).toBe(true);
     expect(sim.stateAt(240).pressed).toBe(false);
+  });
+});
+
+describe("cursor sim — the pointer's shape is a step function of the cursor events", () => {
+  test("the arrow before any cursor event, so a v1 take (which has none) is the arrow throughout", () => {
+    const v1 = createCursorSim([mv(0, 10, 10), mv(1_000_000_000, 20, 20)]);
+    expect(v1.stateAt(0).shape).toBe("arrow");
+    expect(v1.stateAt(500).shape).toBe("arrow");
+    const v2 = createCursorSim([mv(0, 10, 10), shape(2_000_000_000, "ibeam")]);
+    expect(v2.stateAt(0).shape).toBe("arrow");
+    expect(v2.stateAt(239).shape).toBe("arrow");
+  });
+
+  test("follows cursor events at the tick's start time, like pressed", () => {
+    const sim = createCursorSim([
+      mv(0, 10, 10),
+      shape(1_000_000_000, "ibeam"),
+      shape(2_000_000_000, "pointingHand"),
+      shape(2_000_000_001, "crosshair"), // 1 ns into tick 240: shows from tick 241
+    ]);
+    expect(sim.stateAt(119).shape).toBe("arrow");
+    expect(sim.stateAt(120).shape).toBe("ibeam");
+    expect(sim.stateAt(239).shape).toBe("ibeam");
+    expect(sim.stateAt(240).shape).toBe("pointingHand");
+    expect(sim.stateAt(241).shape).toBe("crosshair");
+    expect(sim.stateAt(100_000).shape).toBe("crosshair");
+  });
+
+  test("a cursor event is not a spring target: the position does not move toward it", () => {
+    // A cursor event has no x/y. Folded into the target list it would become
+    // an undefined target and the spring would produce NaN from then on.
+    const sim = createCursorSim([mv(0, 10, 10), shape(1_000_000_000, "ibeam")]);
+    const s = sim.stateAt(240);
+    expect(s.x).toBe(10);
+    expect(s.y).toBe(10);
+    expect(s.shape).toBe("ibeam");
+  });
+
+  test("a take with only cursor events and no positions has nothing to draw", () => {
+    const sim = createCursorSim([shape(0, "ibeam")]);
+    expect(sim.stateAt(0).visible).toBe(false);
+  });
+
+  test("the fixture changes shape four times and the sim reports each", () => {
+    const sim = createCursorSim(fixtureEvents);
+    const at = (s: number) => sim.stateAt(tickOf(s * 1_000_000_000)).shape;
+    expect([at(0.5), at(0.8), at(1.5), at(2.7), at(4.5)])
+      .toEqual(["arrow", "crosshair", "ibeam", "pointingHand", "arrow"]);
   });
 });
 

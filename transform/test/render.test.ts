@@ -89,7 +89,22 @@ describe("render(project, session, t) → FrameState", () => {
     expect(fs.cursor.visible).toBe(true);
     expect(fs.cursor.x).toBeCloseTo(640, 3); // centre of 1280
     expect(fs.cursor.y).toBeCloseTo(360, 3); // centre of 720
-    expect(fs.cursor.scale).toBe(1);
+    // 1280 output px across 640 display points: a 16-point arrow must come out
+    // 32 px wide, or the pointer shrinks relative to the content it points at.
+    expect(fs.cursor.pxPerPoint).toBe(2);
+    const bigger = render({ ...project, cursor: { style: "default", scale: 1.5 } }, session, 2_000_000_000);
+    expect(bigger.cursor.pxPerPoint).toBe(3);
+  });
+
+  test("the pointer's shape reaches the FrameState from the fixture's cursor events", () => {
+    const session = fixtureSession();
+    const shapeAt = (tNs: number) => render(fixtureProject(), session, tNs).cursor.shape;
+    expect(shapeAt(500_000_000)).toBe("arrow");
+    expect(shapeAt(800_000_000)).toBe("crosshair");
+    expect(shapeAt(1_500_000_000)).toBe("ibeam");
+    expect(shapeAt(2_100_000_000)).toBe("ibeam"); // the click happens on the I-beam
+    expect(shapeAt(2_700_000_000)).toBe("pointingHand");
+    expect(shapeAt(4_500_000_000)).toBe("arrow");
   });
 
   test("before the first source frame, frame fields are null but cursor still renders", () => {
