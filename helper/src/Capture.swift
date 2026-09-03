@@ -39,6 +39,11 @@ final class CaptureSession: NSObject, SCStreamOutput, SCStreamDelegate {
     /// stored.
     private var camera: CameraCapture?
     private var cameraTrack: CameraTrack?
+    /// Set once, in `begin`, from `start`'s own argument. `writeSidecars` reads
+    /// it to decide whether anchors.json's `camera` block is written at all
+    /// (STC-303) — camera==nil is ambiguous between "never asked" and "asked,
+    /// got nothing", and only this flag tells the two apart.
+    private var wantCamera = false
     private var stoppingBegan = false
     /// The input and adaptor live behind the gate, not here: every access to
     /// them is either an append or a teardown, and those two must not overlap
@@ -155,6 +160,11 @@ final class CaptureSession: NSObject, SCStreamOutput, SCStreamDelegate {
     /// `finishStart`, which is call-once. Handing this a second reference to the
     /// same completion is how a request gets answered twice.
     private func begin(display: SCDisplay, camera wantCamera: Bool) {
+        // Recorded before anything can fail below: writeSidecars must know
+        // whether a camera was ever asked for, independent of whether this
+        // particular start succeeds at opening one.
+        self.wantCamera = wantCamera
+
         // CaptureDecisions.swift hardcodes this so it can be compiled without
         // ScreenCaptureKit. If the framework ever renumbers, refuse to start
         // rather than silently discarding every frame as "not complete".
@@ -664,6 +674,7 @@ final class CaptureSession: NSObject, SCStreamOutput, SCStreamDelegate {
             capture: CaptureGeometryDoc(width: captureW, height: captureH,
                                         firstFrameNs: Int(firstFramePtsNs)),
             camera: camTrack,
+            requested: wantCamera,
             stopReason: reason,
             stopTNs: Int(Clock.nowNs() - t0Ns))
         write(doc, to: "anchors.json")
