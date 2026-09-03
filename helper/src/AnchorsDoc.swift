@@ -31,28 +31,42 @@ struct CameraTrack {
 /// Pure on purpose: the shape of this document is a contract with the transform,
 /// and a contract that can only be checked by performing a real recording is a
 /// contract nothing checks on most runs.
+///
+/// `requested` decides whether the `camera` block is written at all (STC-303).
+/// schema/anchors-2.schema.json says absent means no camera was even
+/// attempted and `present:false` means one was requested (or considered) but
+/// yielded no track — before this parameter existed, the block was written
+/// unconditionally, so every display-only take carried `present:false` and
+/// the take library labelled it a camera that recorded nothing. `camera` and
+/// `requested` are independent: `requested: true, camera: nil` is exactly the
+/// STC-286 case (a camera opened and delivered zero frames), and still
+/// produces `present:false` — this fix must not silence that.
 func anchorsDocument(timebase: (numer: Int, denom: Int),
                      t0Ns: UInt64,
                      display: DisplayGeometry,
                      capture: CaptureGeometryDoc,
                      camera: CameraTrack?,
+                     requested: Bool,
                      stopReason: String,
                      stopTNs: Int) -> [String: Any] {
     var files: [String: Any] = ["display": "display.mp4"]
-    var cameraBlock: [String: Any] = ["present": false]
-    if let c = camera, c.present {
-        files["camera"] = "camera.mp4"
-        cameraBlock = [
-            "present": true,
-            "device": c.device,
-            "width": c.width,
-            "height": c.height,
-            "firstFramePtsNs": c.firstFramePtsNs,
-            "lastFramePtsNs": c.lastFramePtsNs,
-            "frameIntervalNs": c.frameIntervalNs,
-        ]
+    var cameraBlock: [String: Any]?
+    if requested {
+        cameraBlock = ["present": false]
+        if let c = camera, c.present {
+            files["camera"] = "camera.mp4"
+            cameraBlock = [
+                "present": true,
+                "device": c.device,
+                "width": c.width,
+                "height": c.height,
+                "firstFramePtsNs": c.firstFramePtsNs,
+                "lastFramePtsNs": c.lastFramePtsNs,
+                "frameIntervalNs": c.frameIntervalNs,
+            ]
+        }
     }
-    return [
+    var doc: [String: Any] = [
         "version": 2,
         "timebase": ["numer": timebase.numer, "denom": timebase.denom],
         // String on purpose: boot-relative ns crosses 2^53 at ~104 days of
@@ -67,7 +81,10 @@ func anchorsDocument(timebase: (numer: Int, denom: Int),
         "capture": ["width": capture.width, "height": capture.height, "codec": "h264",
                     "firstFrameNs": max(0, capture.firstFrameNs)] as [String: Any],
         "files": files,
-        "camera": cameraBlock,
         "stop": ["t": stopTNs, "reason": stopReason] as [String: Any],
     ]
+    if let cameraBlock {
+        doc["camera"] = cameraBlock
+    }
+    return doc
 }
