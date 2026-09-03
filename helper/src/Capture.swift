@@ -58,6 +58,18 @@ final class CaptureSession: NSObject, SCStreamOutput, SCStreamDelegate {
     private var lastPtsNs: Int64 = -1
     private var firstFramePtsNs: Int64 = -1
     private var tapReenables = 0
+    private var cursorEvents = 0
+    private var cursorSampler: CursorSampler?
+
+    /// How often the system pointer is sampled for shape changes (STC-309).
+    ///
+    /// The sample runs on the TAP's thread, so this is what it costs that
+    /// thread: one `NSCursor.currentSystem` read and a hash of a ~4 KB bitmap
+    /// per tick — microseconds, and measured rather than assumed by the
+    /// `cursor-probe` command (`sampleUsMax`). At 30 Hz a hover is seen up to
+    /// 33 ms late, two output frames at 60 fps. Do not chase it lower without
+    /// a measurement showing that lag is visible.
+    static let cursorSampleIntervalSeconds: Double = 1.0 / 30
 
     /// A start must be answered exactly once, by whichever path gets there
     /// first. SCStream can fail through `didStopWithError` INSTEAD of through
@@ -439,10 +451,31 @@ final class CaptureSession: NSObject, SCStreamOutput, SCStreamDelegate {
             self.tapRunLoop = CFRunLoopGetCurrent()
             CFRunLoopAddSource(CFRunLoopGetCurrent(), src, .commonModes)
             CGEvent.tapEnable(tap: tap, enable: true)
+
+            // STC-309: the pointer's SHAPE is sampled here too, on this same
+            // run loop, so one thread owns the order of everything appended to
+            // `events`. The references are measured now, on this machine, at
+            // its current pointer size and scale — never a baked-in table.
+            let (refs, missing) = CursorShape.references()
+            if !missing.isEmpty {
+                let names = missing.joined(separator: ", ")
+                IO.send("warning", ["code": "cursor-references-incomplete",
+                                    "detail": "no bitmap for \(names); those shapes will be written as arrow",
+                                    "missing": missing])
+            }
+            let sampler = CursorSampler(references: refs) { [weak self] shape, observedNs in
+                self?.recordCursorShape(shape, observedNs: observedNs)
+            }
+            sampler.schedule(on: CFRunLoopGetCurrent(), intervalSeconds: Self.cursorSampleIntervalSeconds)
+            self.cursorSampler = sampler
+
             // Runs until stop() calls CFRunLoopStop. Unbounded by design: this
             // is the tap's own thread, and a run loop that returned early would
             // silently stop delivering input for the rest of the recording.
             CFRunLoopRun()
+            // Nothing runs this loop again, so no tick can follow; invalidating
+            // here, on the loop's own thread, just releases the timer.
+            sampler.invalidate()
         }
         t.name = "event-tap"
         t.start()
@@ -468,12 +501,29 @@ final class CaptureSession: NSObject, SCStreamOutput, SCStreamDelegate {
         }
     }
 
+    /// A pointer-shape change, from the sampler on the tap thread (STC-309).
+    /// `observedNs` is the helper's own clock — the same mach epoch
+    /// `CGEvent.timestamp` is on — so `t` shares the moves' origin exactly.
+    private func recordCursorShape(_ shape: String, observedNs: UInt64) {
+        // Mirrors decideCursorEvent's .beforeStart: the schema requires t >= 0.
+        guard observedNs >= t0Ns else { return }
+        lock.lock()
+        events.append(["t": Int(observedNs - t0Ns), "kind": "cursor", "shape": shape])
+        cursorEvents += 1
+        lock.unlock()
+    }
+
     // MARK: - stats and stop
 
     func stats() -> [String: Any] {
         lock.lock(); defer { lock.unlock() }
+        // `events` counts everything in the file, cursor events included;
+        // `cursorEvents` is the shape changes alone, so the app can show the
+        // two side by side and a take with no pointer motion still reads as
+        // such.
         return ["frames": framesAppended, "dropped": framesDropped,
                 "nonMonotonic": framesNonMonotonic, "events": events.count,
+                "cursorEvents": cursorEvents,
                 "tapReenables": tapReenables]
     }
 
@@ -598,7 +648,10 @@ final class CaptureSession: NSObject, SCStreamOutput, SCStreamDelegate {
         let camTrack = cameraTrack
         lock.unlock()
 
-        write(["version": 1, "events": evs], to: "events.json")
+        // events-2 since STC-309: v1 plus `{t, kind: "cursor", shape}`. The
+        // loader accepts both; fixtures/basic was already v2. Time-ordered on
+        // the way out because two clocks feed `events` (see orderedEvents).
+        write(["version": 2, "events": orderedEvents(evs)], to: "events.json")
         // Exact, from the helper's own clock. The same offset survives in the
         // file only as a timescale-quantised empty edit, so this is what a
         // reader checks its recovered value against.
