@@ -18,6 +18,7 @@ declare const recorder: {
   readTakeChunk(name: string, offset: number, length: number): Promise<ArrayBuffer>;
   writeProject(bytes: ArrayBuffer): Promise<boolean>;
   writeExport(name: string, bytes: ArrayBuffer): Promise<string>;
+  copyFrame(bytes: ArrayBuffer): Promise<{ width: number; height: number }>;
   start(): Promise<{ ok: boolean; dir?: string; code?: string; detail?: string }>;
   stop(): Promise<{ ok: boolean; info?: any }>;
   reveal(dir: string): Promise<void>;
@@ -402,6 +403,7 @@ async function openPreviewOrThrow(take: Take): Promise<void> {
 
 async function closePreview(): Promise<void> {
   exportAbort?.abort();
+  $("framestatus").setAttribute("hidden", "");
   player?.close();
   player = undefined;
   openSession = undefined;
@@ -539,6 +541,54 @@ async function runExport(): Promise<void> {
 }
 
 $("export").addEventListener("click", () => void runExport());
+
+// ---- the current frame as a still (STC-298) -------------------------------
+//
+// Deliberately small: no shot.json, no still take, no editor. The frame the
+// playhead is on — composited by the same render() and compositor the video
+// export uses, on the export's own 60 fps grid — copied or saved as a PNG.
+// Named "frame" everywhere so it cannot be mistaken for exporting the video.
+
+function frameStatus(text: string): void {
+  const el = $("framestatus");
+  el.textContent = text;
+  el.removeAttribute("hidden");
+}
+
+/** `frame-<take>-<ms>ms.png`: the take it came from and where in it, in the filename. */
+function frameFileName(tNs: number): string {
+  return `frame-${openTakeName}-${Math.round(tNs / 1e6)}ms.png`;
+}
+
+let frameBusy = false;
+async function withFrame(action: "copy" | "save"): Promise<void> {
+  if (!player || frameBusy) return;
+  frameBusy = true;
+  try {
+    const { tNs, png } = await player.captureFrame();
+    if (action === "copy") {
+      const { width, height } = await recorder.copyFrame(png);
+      frameStatus(`Copied frame at ${fmtClock(tNs)} (${width}×${height})`);
+    } else {
+      const dest = await recorder.writeExport(frameFileName(tNs), png);
+      frameStatus(`Saved frame at ${fmtClock(tNs)} → ${dest.split("/").pop()}`);
+    }
+  } catch (e: any) {
+    alertUser(`Could not ${action} the frame: ${e?.message ?? e}`);
+  } finally {
+    frameBusy = false;
+  }
+}
+$("copyframe").addEventListener("click", () => void withFrame("copy"));
+$("saveframe").addEventListener("click", () => void withFrame("save"));
+// ⌘⇧C / ⌘⇧S (Ctrl on other platforms), only while a take is open and the
+// keystroke is not inside a text field — the label input must keep its own.
+document.addEventListener("keydown", (e) => {
+  if (!player || !(e.metaKey || e.ctrlKey) || !e.shiftKey) return;
+  if ((e.target as HTMLElement | null)?.tagName === "INPUT") return;
+  if (e.key === "C" || e.key === "c") { e.preventDefault(); void withFrame("copy"); }
+  if (e.key === "S" || e.key === "s") { e.preventDefault(); void withFrame("save"); }
+});
 $("cancelexport").addEventListener("click", () => exportAbort?.abort());
 
 // ---- library -------------------------------------------------------------

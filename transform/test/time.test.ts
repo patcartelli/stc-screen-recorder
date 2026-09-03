@@ -81,3 +81,33 @@ describe("frameIndexAt — greatest source PTS <= t, hold, never interpolate", (
     expect(frameIndexAt(fixtureFrames, b)).toBe(gi + 1);
   });
 });
+
+import { exportFrameOf, exportFrameTimeNs, EXPORT_FPS } from "../src/time.js";
+
+describe("exportFrameOf — the output frame containing t, on the export's own grid", () => {
+  test("frame k is rendered at every other 120 Hz tick", () => {
+    for (const k of [0, 1, 2, 59, 60, 1799]) expect(exportFrameTimeNs(k)).toBe(tickTimeNs(2 * k));
+  });
+  test("a time inside frame k's interval maps to frame k and its render time", () => {
+    const k = 195;                                   // 3.25 s at 60 fps
+    const start = exportFrameTimeNs(k);
+    for (const t of [start, start + 1, start + 8_000_000, exportFrameTimeNs(k + 1) - 1]) {
+      expect(exportFrameOf(t)).toEqual({ frame: k, tNs: start });
+    }
+    expect(exportFrameOf(exportFrameTimeNs(k + 1)).frame).toBe(k + 1);
+  });
+  test("an odd 120 Hz tick — where a paused preview can sit — snaps DOWN to the export frame", () => {
+    const odd = tickTimeNs(2 * 41 + 1);
+    expect(tickOf(odd) % 2).toBe(1);
+    expect(exportFrameOf(odd)).toEqual({ frame: 41, tNs: exportFrameTimeNs(41) });
+  });
+  test("agrees with exportWindow's frame arithmetic for a trim start", () => {
+    // exportWindow: fromFrame = floor(startNs * fps / 1e9); the still must land on the same frame.
+    const startNs = 1_234_567_890;
+    expect(exportFrameOf(startNs).frame).toBe(Math.floor((startNs * EXPORT_FPS) / 1e9));
+  });
+  test("negative or zero time is frame 0", () => {
+    expect(exportFrameOf(-5)).toEqual({ frame: 0, tNs: 0 });
+    expect(exportFrameOf(0)).toEqual({ frame: 0, tNs: 0 });
+  });
+});

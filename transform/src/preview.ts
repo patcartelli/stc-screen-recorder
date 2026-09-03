@@ -1,5 +1,5 @@
 import { render } from "./render.js";
-import { tickTimeNs, tickOf, SIM_HZ } from "./time.js";
+import { tickTimeNs, tickOf, SIM_HZ, exportFrameOf } from "./time.js";
 import { SeekingFrameSource } from "./seeking-frame-source.js";
 import { composite } from "./compositor.js";
 import type { LoadedSession } from "./session.js";
@@ -22,6 +22,8 @@ export class PreviewPlayer {
   private rendering = false;
   /** A draw asked for while one was in flight; served once that one lands. */
   private redrawWanted = false;
+  /** The draw in flight, redraw included, so a coalesced caller can await the paint. */
+  private inFlight: Promise<void> | null = null;
   private closed = false;
   private lateFrames = 0;
   private renderedFrames = 0;
@@ -29,7 +31,7 @@ export class PreviewPlayer {
 
   onTime: ((tNs: number, playing: boolean) => void) | undefined;
 
-  constructor(canvas: HTMLCanvasElement,
+  constructor(private readonly canvas: HTMLCanvasElement,
               private readonly session: LoadedSession,
               private readonly project: Project) {
     canvas.width = project.output.width;
@@ -126,9 +128,17 @@ export class PreviewPlayer {
    * from `currentNs` — said the later one. During playback the next tick
    * papered over it, which is why it only showed when scrubbing paused.
    */
-  private async draw(): Promise<void> {
-    if (this.closed) return;
-    if (this.rendering) { this.lateFrames++; this.redrawWanted = true; return; }
+  private draw(): Promise<void> {
+    if (this.closed) return Promise.resolve();
+    // A coalesced caller waits for the in-flight draw AND the redraw it
+    // queues, so that when seek() resolves the frame for its t has been
+    // painted — captureFrame() depends on exactly that.
+    if (this.rendering) { this.lateFrames++; this.redrawWanted = true; return this.inFlight!; }
+    this.inFlight = this.drawNow();
+    return this.inFlight;
+  }
+
+  private async drawNow(): Promise<void> {
     this.rendering = true;
     try {
       const tick = tickOf(this.tNs);
@@ -156,8 +166,35 @@ export class PreviewPlayer {
     }
     if (this.redrawWanted && !this.closed) {
       this.redrawWanted = false;
-      await this.draw();
+      await this.drawNow();
     }
+  }
+
+  /**
+   * The composited frame the playhead is on, as PNG bytes — STC-298.
+   *
+   * Snapped to the export grid: a paused preview can sit on an odd 120 Hz tick
+   * that no export visits, and a still taken there would differ from the video
+   * export's frame at the same timestamp by half a tick of cursor motion. So
+   * this seeks to the output frame containing `currentNs`, waits for it to be
+   * painted, and reads the stage back. While playing it pauses for the seek
+   * and resumes from that frame; the hiccup is one frame.
+   *
+   * It is the frame the viewer sees, produced by the same render() and
+   * composite() the export uses, on the export's own grid — which is the
+   * whole of the identity claim.
+   */
+  async captureFrame(): Promise<{ frame: number; tNs: number; png: ArrayBuffer }> {
+    if (this.closed) throw new Error("preview is closed");
+    const wasPlaying = this.playing;
+    if (wasPlaying) this.pause();
+    const { frame, tNs } = exportFrameOf(this.tNs);
+    await this.seek(tNs);
+    const blob = await new Promise<Blob | null>((res) => this.canvas.toBlob(res, "image/png"));
+    if (!blob) throw new Error("the stage could not be encoded as PNG");
+    const png = await blob.arrayBuffer();
+    if (wasPlaying) this.play();
+    return { frame, tNs, png };
   }
 
   close(): void {
