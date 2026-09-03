@@ -26,7 +26,7 @@ func arg(_ name: String) -> String? {
 }
 
 guard let outPath = arg("--out") else {
-    FileHandle.standardError.write("usage: --out <result.json> [--probe | --camera-request | --camera-probe --helper <bin> | --helper <bin> --dir <sessionDir> --ms <n> [--camera]]\n".data(using: .utf8)!)
+    FileHandle.standardError.write("usage: --out <result.json> [--probe | --camera-request | --camera-probe --helper <bin> | --cursor-probe --helper <bin> [--ms <n>] [--on-main] | --helper <bin> --dir <sessionDir> --ms <n> [--camera]]\n".data(using: .utf8)!)
     exit(2)
 }
 let outURL = URL(fileURLWithPath: outPath)
@@ -282,8 +282,102 @@ func runCameraProbe(helper: String) {
     exit(0)
 }
 
+// MARK: - cursor-probe mode (STC-309 increment 0)
+
+/// Launches the helper as a child of THIS bundle and runs its `cursor-probe`
+/// command: the spike that answers whether `NSCursor.currentSystem` sees other
+/// apps' pointers from a background process, under the TCC identity that
+/// ships. The helper does the sampling with its production code; this only
+/// asks and records. Hover a text field, a link, the desktop, a window edge
+/// and a Finder drag while it runs — the reply lists every signature change.
+///
+/// A third copy of runSession's pipe reader would be the "one thing, two
+/// copies" trap this repo keeps paying for, so the reader is a class here;
+/// the two older modes are left as they were, verified on hardware.
+final class HelperChild {
+    private let p = Process()
+    private let inPipe = Pipe(), outPipe = Pipe()
+    private let lock = NSLock()
+    private var lines: [[String: Any]] = []
+    private var buf = Data()
+
+    init(helper: String) {
+        p.executableURL = URL(fileURLWithPath: helper)
+        p.standardInput = inPipe
+        p.standardOutput = outPipe
+        p.standardError = FileHandle.nullDevice
+        outPipe.fileHandleForReading.readabilityHandler = { [self] fh in
+            let d = fh.availableData
+            if d.isEmpty { return }
+            lock.lock()
+            buf.append(d)
+            while let nl = buf.firstIndex(of: 0x0A) {
+                let lineData = buf[buf.startIndex..<nl]
+                buf = buf[buf.index(after: nl)...]
+                if let o = try? JSONSerialization.jsonObject(with: Data(lineData)) as? [String: Any] {
+                    lines.append(o)
+                }
+            }
+            lock.unlock()
+        }
+    }
+    func run() throws { try p.run() }
+    func terminate() { p.terminate() }
+    var transcript: [[String: Any]] { lock.lock(); defer { lock.unlock() }; return lines }
+    func waitFor(_ test: @escaping ([String: Any]) -> Bool, timeout: Double) -> [String: Any]? {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            lock.lock()
+            let m = lines.first(where: test)
+            lock.unlock()
+            if let m { return m }
+            usleep(20_000)
+        }
+        return nil
+    }
+    func send(_ o: [String: Any]) {
+        guard let d = try? JSONSerialization.data(withJSONObject: o) else { return }
+        inPipe.fileHandleForWriting.write(d + Data("\n".utf8))
+    }
+}
+
+func runCursorProbe(helper: String, ms: Int, onMain: Bool) {
+    let child = HelperChild(helper: helper)
+    do { try child.run() } catch {
+        writeResult(["verdict": "spawn-failed", "error": "\(error)"]); exit(4)
+    }
+    guard child.waitFor({ $0["ev"] as? String == "ready" }, timeout: 10) != nil else {
+        writeResult(["verdict": "no-ready"]); child.terminate(); exit(5)
+    }
+    child.send(["cmd": "cursor-probe", "seq": 1, "ms": ms, "onMain": onMain])
+    // seq alone, as camera-probe does: an error reply still answers seq 1.
+    guard let reply = child.waitFor({ ($0["seq"] as? Int) == 1 }, timeout: Double(ms) / 1000 + 15) else {
+        writeResult(["verdict": "timeout", "transcript": child.transcript])
+        child.terminate(); exit(1)
+    }
+    child.send(["cmd": "quit", "seq": 2])
+    _ = child.waitFor({ $0["ev"] as? String == "bye" }, timeout: 5)
+    child.terminate()
+    let ev = reply["ev"] as? String ?? "missing"
+    let ok = ev == "cursor-probe"
+    writeResult(["verdict": ok ? "probed" : "unexpected-reply:\(ev)",
+                 "probe": reply, "transcript": child.transcript])
+    exit(ok ? 0 : 1)
+}
+
 DispatchQueue.main.async {
     if args.contains("--probe") { runProbe(); return }
+    if args.contains("--cursor-probe") {
+        guard let helper = arg("--helper") else {
+            writeResult(["verdict": "bad-args", "detail": "--cursor-probe needs --helper <bin>"])
+            exit(2)
+        }
+        DispatchQueue.global().async {
+            runCursorProbe(helper: helper, ms: Int(arg("--ms") ?? "20000") ?? 20000,
+                           onMain: args.contains("--on-main"))
+        }
+        return
+    }
     if args.contains("--camera-request") { runCameraRequest(); return }
     if args.contains("--camera-probe") {
         guard let helper = arg("--helper") else {

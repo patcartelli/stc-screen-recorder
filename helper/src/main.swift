@@ -63,6 +63,19 @@ final class App {
                 deviceTypes: [.builtInWideAngleCamera, .externalUnknown],
                 mediaType: .video, position: .unspecified).devices.map { $0.localizedName }
             IO.send("camera-probe", seq: seq, ["auth": auth, "devices": devices])
+        case "cursor-probe":
+            // STC-309 increment 0: the spike, as a command, so it measures the
+            // production sampler in the production process. Idle only — a
+            // recording's own sampler already owns the tap thread.
+            guard state == .idle else {
+                IO.send("error", seq: seq, ["code": "bad-state", "detail": "cursor-probe needs an idle helper"]); return
+            }
+            let ms = cmd["ms"] as? Int ?? 20_000
+            let onMain = cmd["onMain"] as? Bool ?? false
+            let interval = (cmd["intervalMs"] as? Double).map { $0 / 1000 } ?? CaptureSession.cursorSampleIntervalSeconds
+            CursorProbe.run(ms: ms, intervalSeconds: interval, onMain: onMain) { report in
+                IO.send("cursor-probe", seq: seq, report)
+            }
         case "start":
             start(cmd, seq: seq)
         case "stop":

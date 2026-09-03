@@ -21,8 +21,13 @@ const events = load("fixtures/real-session/events.json").events as any[];
 describe("real captured session — sidecar semantics", () => {
   test("both sidecars validate against their schemas", () => {
     const ajv = new Ajv({ allErrors: true, strict: true });
+    // events-2 since STC-309: the helper now writes version 2. This session
+    // predates that and carries no cursor events, which is a valid v2 document
+    // — the pinned session WITH shape changes is fixtures/real-session-cursor
+    // (increment 4, needs a hardware take); until it exists the v2 claim here
+    // is only that v1 content is a subset.
     for (const [doc, schema] of [
-      [{ version: 1, events }, "schema/events-1.schema.json"],
+      [{ version: 2, events }, "schema/events-2.schema.json"],
       [anchors, "schema/anchors-1.schema.json"],
     ] as const) {
       const v = ajv.compile(load(schema));

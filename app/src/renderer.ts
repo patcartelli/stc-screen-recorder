@@ -122,6 +122,9 @@ recorder.on("helper:stats", (s) => {
   $("frames").textContent = s.frames ?? "—";
   $("dropped").textContent = s.dropped ?? "—";
   $("events").textContent = s.events ?? "—";
+  // STC-309: shape changes are counted inside `events` too; shown apart so a
+  // take with no pointer motion still reads as one.
+  $("cursorEvents").textContent = s.cursorEvents ?? "—";
   $("elapsed").textContent = s.elapsedMs != null ? `${(s.elapsedMs / 1000).toFixed(1)}s` : "—";
 });
 

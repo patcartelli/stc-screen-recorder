@@ -114,6 +114,36 @@ describe("reliable channel — fd3, request/response with sequence numbers", () 
     expect(r.code).toBe("unknown-command");
   });
 
+  test("cursor-probe answers on fd3 with references, a sample count and a cost (STC-309)", async () => {
+    // Runs the production sampler for a moment. No assertion on WHICH shape:
+    // a CI VM may have no pointer at all (nilSamples), and that is a valid
+    // answer — what must hold is that the reply has the shape a spike reader
+    // needs, and that the reply arrives at all. A helper that never answered
+    // would be the unbounded wait this codebase keeps finding.
+    const h = spawnHelper();
+    await waitFor(() => find(h.fd3, "ready"));
+    h.send({ cmd: "cursor-probe", seq: 7, ms: 300 });
+    const r = await waitFor(() => h.fd3.find((l) => l.seq === 7), 5000, "cursor-probe reply");
+    expect(r.ev).toBe("cursor-probe");
+    expect(r.thread).toBe("sampler");
+    expect((r.references as any[]).map((x) => x.shape)).toEqual(["arrow", "ibeam", "crosshair", "pointingHand"]);
+    expect(r.missingReferences).toEqual([]);
+    expect(r.samples as number).toBeGreaterThan(0);
+    expect(r.sampleUsMax as number).toBeGreaterThanOrEqual(0);
+    expect(Array.isArray(r.changes)).toBe(true);
+    expect(Array.isArray(r.emitted)).toBe(true);
+  });
+
+  test("cursor-probe on the main run loop answers too", async () => {
+    const h = spawnHelper();
+    await waitFor(() => find(h.fd3, "ready"));
+    h.send({ cmd: "cursor-probe", seq: 8, ms: 300, onMain: true });
+    const r = await waitFor(() => h.fd3.find((l) => l.seq === 8), 5000, "cursor-probe reply");
+    expect(r.ev).toBe("cursor-probe");
+    expect(r.thread).toBe("main");
+    expect(r.samples as number).toBeGreaterThan(0);
+  });
+
   test("malformed JSON produces a reliable error without wedging the stream", async () => {
     const h = spawnHelper();
     await waitFor(() => find(h.fd3, "ready"));
