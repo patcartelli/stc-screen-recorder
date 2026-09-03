@@ -33,6 +33,7 @@ import {
   parseProject, projectForWrite, exportWindow, estimateExportMs,
   clampTrim, isFullTake, minTrimNs,
 } from "@transform/trim";
+import { TRANSFORM_VERSION } from "@transform/transform-version";
 
 const $ = (id: string) => document.getElementById(id)!;
 const recordBtn = $("record") as HTMLButtonElement;
@@ -521,6 +522,9 @@ async function runExport(): Promise<void> {
     const lastNs = openSession.frames[openSession.frames.length - 1] ?? 0;
     await recorder.writeExport(`export-${openTakeName}.json`, new TextEncoder().encode(JSON.stringify({
       version: 1,
+      // Which transform computed the hash below. Without it the manifest could
+      // verify an export against itself and never say what made it (STC-308).
+      transform: { version: TRANSFORM_VERSION },
       frames: result.frames,
       preEncodeHash: result.hash,
       encodedBytes: result.encodedBytes,

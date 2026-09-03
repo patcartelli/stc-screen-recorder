@@ -18,8 +18,12 @@ import { DEFAULT_CURSOR_SHAPE } from "./cursor-art.js";
  */
 
 const DT = 1 / SIM_HZ;
-/** Spring stiffness, rad/s. ~150 ms settle. Phase-1 feel constant, tune here only. */
-const OMEGA = 30;
+/**
+ * Spring stiffness, rad/s. ~150 ms settle. Phase-1 feel constant, tune here
+ * only — and bump TRANSFORM_VERSION when you do (transform-version.ts): it
+ * decides every cursor pixel in every export.
+ */
+export const OMEGA = 30;
 export const CHECKPOINT_INTERVAL = 1024;
 
 export interface CursorSim {

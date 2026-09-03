@@ -189,7 +189,7 @@ ipcMain.handle("preview:writeProject", async (_e, bytes: ArrayBuffer) => {
   // constant with the transform's; it was missed when project-2 was minted and
   // rejected every document the renderer wrote, so project.json silently never
   // appeared. Same shape as STC-262's anchors gate in takes.ts.
-  if (doc?.version !== 1 && doc?.version !== 2) {
+  if (doc?.version !== 1 && doc?.version !== 2 && doc?.version !== 3) {
     throw new Error(`project.json version ${doc?.version} is not supported`);
   }
   await writeFile(join(openTake, "project.json"), text);

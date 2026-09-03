@@ -1,0 +1,133 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "stc:project-3",
+  "title": "stc project (edit document), v3",
+  "description": "Everything the user can change after recording. render(project, session, t) is a pure function of this document plus the session data. Adds PiP geometry in phase 3, and in v3 the transform version the edit was authored against (STC-308).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "output",
+    "cursor",
+    "transform"
+  ],
+  "properties": {
+    "version": {
+      "const": 3
+    },
+    "output": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "fps",
+        "width",
+        "height"
+      ],
+      "properties": {
+        "fps": {
+          "enum": [
+            60
+          ],
+          "description": "export samples every other 120 Hz sim tick; only 60 supported in phase 1"
+        },
+        "width": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 3840
+        },
+        "height": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2160
+        }
+      }
+    },
+    "cursor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "style",
+        "scale"
+      ],
+      "properties": {
+        "style": {
+          "enum": [
+            "default",
+            "circle"
+          ],
+          "description": "default is the macOS pointer set (STC-239); circle is the phase-1 placeholder, kept as an option"
+        },
+        "scale": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 8
+        }
+      }
+    },
+    "pip": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "enabled",
+        "corner",
+        "widthPct",
+        "marginPx"
+      ],
+      "description": "Fixed-corner picture-in-picture. Absent means no PiP.",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "corner": {
+          "enum": [
+            "bottom-right"
+          ],
+          "description": "only corner implemented in phase 3"
+        },
+        "widthPct": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 1,
+          "description": "fraction of output width; 0.125 gives 480px on a 3840px canvas"
+        },
+        "marginPx": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "trim": {
+      "type": "object",
+      "description": "Non-destructive in/out. Absent means the full take. Session-relative integer ns; endNs must be greater than startNs.",
+      "additionalProperties": false,
+      "required": [
+        "startNs",
+        "endNs"
+      ],
+      "properties": {
+        "startNs": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "endNs": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "transform": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version"
+      ],
+      "description": "Which transform renders this edit. TRANSFORM_HISTORY in transform/src/transform-version.ts says what each number drew; a change to any constant that reaches the pixels bumps it.",
+      "properties": {
+        "version": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    }
+  }
+}

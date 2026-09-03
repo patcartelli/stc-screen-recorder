@@ -29,7 +29,7 @@ started, and must never let a take that is missing something look like a take th
 | Cursor state is a function of tick `n`, never of render-call count. `stateAt(n)` is identical stepped or sought | **holds** | `transform/src/cursor.ts`: checkpoints *are* the stepped state, so a seek replays the exact float sequence |
 | Frame selection at `t`: the source frame with the greatest PTS ≤ `t`; hold, never interpolate; per track | **holds** | `frameIndexAt`; camera track bounded by `anchors.camera.{firstFramePtsNs, lastFramePtsNs + frameIntervalNs}` so a dead camera does not freeze a face on screen |
 | "Export ≠ preview" is the defining bug class. Pre-encode RGBA is what the gates hash; encoded bytes are never compared | **holds** | `scripts/gate*.mjs`; the hash is compared only within one browser and one raster backend |
-| Anything that changes rendered pixels lives in the project document or is a versioned constant | **confirm** | `OMEGA` and `CHECKPOINT_INTERVAL` in `cursor.ts` are neither recorded in the project nor versioned; a re-render after an easing change is unexplainable (review P5) |
+| Anything that changes rendered pixels lives in the project document or is a versioned constant | **holds since STC-308** | `transform/src/transform-version.ts`: `TRANSFORM_VERSION` is stamped into `project.json` (project-3) and every export manifest; a fingerprint test over every pixel-deciding constant fails until the version is bumped and `TRANSFORM_HISTORY` says what changed |
 
 ### Data model
 
