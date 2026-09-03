@@ -45,6 +45,7 @@ describe("the stop chain (STC-259 step 3)", () => {
   // rather than as the named assertion that caught it.
   const cameraMs = () => swiftConstant("helper/src/CameraCapture.swift", "stopTimeoutSeconds");
   const displayMs = () => swiftConstant("helper/src/Capture.swift", "stopTimeoutSeconds");
+  const shutdownMarginMs = () => swiftConstant("helper/src/main.swift", "shutdownBackstopMarginSeconds");
 
   // CaptureSession.stop() waits on a DispatchGroup the camera teardown is
   // entered into. If the camera's backstop were the later one the display side
@@ -63,5 +64,19 @@ describe("the stop chain (STC-259 step 3)", () => {
   // bound's own slack will otherwise hide a missing term.
   test("the helper answers a stop before the client stops listening", () => {
     expect(displayMs() + SIDECARS_AND_IPC_MS).toBeLessThanOrEqual(DEFAULT_REQUEST_TIMEOUT_MS);
+  });
+
+  // STC-304's new outermost link. App.shutdown's own backstop exists only to
+  // catch `stop` never answering at all — not on time, but literally never,
+  // meaning even stop's OWN backstop (displayMs) failed to fire. It is
+  // expressed as displayMs + this margin, in Swift, so the two numbers
+  // cannot independently drift apart the way cameraMs/displayMs could; the
+  // one thing left to guard is the margin staying a REAL margin. Zero would
+  // put both backstops on the same nominal deadline — the exact "an inner
+  // bound set exactly equal to the outer one, so the informative message
+  // always lost the race" trap this codebase already hit once (STC-259's
+  // ATTEMPT_MS).
+  test("shutdown's backstop clears stop's own backstop by a deliberate margin, not by luck", () => {
+    expect(shutdownMarginMs()).toBeGreaterThan(0);
   });
 });
