@@ -258,7 +258,10 @@ enum CursorProbe {
         // The same arrangement as the tap thread: a plain Thread running its
         // own CFRunLoop, stopped by a one-shot timer on that loop.
         let t = Thread {
-            let rl = CFRunLoopGetCurrent()
+            // Annotated: CFRunLoopGetCurrent() is CFRunLoop! and a bare `let`
+            // turns that into CFRunLoop?, which schedule(on:) refuses (CI's
+            // first compile of this file said exactly that).
+            let rl: CFRunLoop = CFRunLoopGetCurrent()
             sampler.schedule(on: rl, intervalSeconds: intervalSeconds)
             let end = CFRunLoopTimerCreateWithHandler(
                 kCFAllocatorDefault, CFAbsoluteTimeGetCurrent() + Double(ms) / 1000, 0, 0, 0
