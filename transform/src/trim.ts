@@ -1,4 +1,5 @@
 import type { Pip, Project, Trim } from "./types.js";
+import { TRANSFORM_VERSION } from "./transform-version.js";
 
 const NS_PER_S = 1_000_000_000;
 
@@ -68,11 +69,13 @@ export function defaultProject(
   width: number, height: number, trim?: Trim, hasCamera = false,
 ): Project {
   const project: Project = {
-    // v2: `trim` lives in project-2 alongside `pip`. Emitting v1 would produce
-    // a document carrying a field its own schema does not declare.
-    version: 2,
+    // v3: `transform` lives in project-3 alongside `pip` and `trim`. Emitting
+    // an older version would produce a document carrying a field its own
+    // schema does not declare.
+    version: 3,
     output: { fps: 60, width, height },
     cursor: { style: "default", scale: 1 },
+    transform: { version: TRANSFORM_VERSION },
   };
   // A recorded camera track is part of the take, so a take that has one shows
   // its PiP without needing an edit document to say so.
@@ -98,10 +101,11 @@ export function parseProject(
   const fallback = defaultProject(width, height, undefined, hasCamera);
   if (!raw || typeof raw !== "object") return fallback;
   const doc = raw as Record<string, any>;
-  // v1 and v2 both load: v1 documents predate trim and pip and simply have
-  // neither. Refusing v1 here would discard every project written before this
-  // change and silently replace it with a default.
-  if (doc.version !== 1 && doc.version !== 2) return fallback;
+  // v1, v2 and v3 all load: v1 documents predate trim and pip and simply have
+  // neither; v2 predates the transform stamp. Refusing an older version here
+  // would discard every project written before the change and silently
+  // replace it with a default.
+  if (doc.version !== 1 && doc.version !== 2 && doc.version !== 3) return fallback;
 
   const outW = Number.isInteger(doc.output?.width) ? doc.output.width : width;
   const outH = Number.isInteger(doc.output?.height) ? doc.output.height : height;
@@ -111,6 +115,12 @@ export function parseProject(
   const style = doc.cursor?.style === "circle" ? "circle" : "default";
   const project = defaultProject(outW, outH, undefined, hasCamera);
   project.cursor = { style, scale };
+  // The document's own stamp is carried, so a caller can tell an edit authored
+  // against an older transform from one authored against this one. A document
+  // with no stamp is rendered by the current transform either way, and that is
+  // what it is recorded as.
+  const tv = doc.transform?.version;
+  project.transform = { version: Number.isInteger(tv) && tv >= 1 ? tv : TRANSFORM_VERSION };
 
   // Same reasoning as projectForWrite: anything this parser does not copy is
   // lost on the next write. `pip` is validated by the schema, so it is carried
@@ -126,9 +136,12 @@ export function parseProject(
 
 export function projectForWrite(project: Project, durationNs: number): Project {
   const out: Project = {
-    version: 2,
+    version: 3,
     output: project.output,
     cursor: project.cursor,
+    // Re-stamped, not carried: what is written is what the CURRENT transform
+    // will render, and the manifest of any export made from it says the same.
+    transform: { version: TRANSFORM_VERSION },
   };
   // Carried, not rebuilt from scratch. This function predates `pip`, and a
   // document reconstructed from a fixed field list silently drops anything

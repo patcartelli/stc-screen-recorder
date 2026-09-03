@@ -77,8 +77,15 @@ export interface Trim {
 
 /** Mirrors schema/project-1.schema.json and schema/project-2.schema.json. */
 export interface Project {
-  version: 1 | 2;
+  version: 1 | 2 | 3;
   output: { fps: 60; width: number; height: number };
+  /**
+   * Which transform this edit was authored against (project-3, STC-308).
+   * Filled by parseProject on older documents; re-stamped with the current
+   * transform on every write, because the current transform is what renders
+   * it. TRANSFORM_HISTORY says what each number drew.
+   */
+  transform?: { version: number };
   /**
    * `default` is the macOS pointer set (cursor-art.ts); `circle` is the phase-1
    * placeholder, kept as an option. `scale` multiplies the point size of either.
