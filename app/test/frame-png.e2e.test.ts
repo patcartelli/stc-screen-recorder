@@ -84,8 +84,13 @@ describe("the current preview frame as a PNG", () => {
     await win.click("#saveframe");
     await expect.poll(() => win.textContent("#framestatus"), { timeout: 20_000 }).toMatch(/^Saved frame at/);
     expect(readdirSync(takeDir).filter((f) => f.startsWith("frame-"))).toHaveLength(1);
-    // Resumed, not left paused.
-    expect(await win.textContent("#playpause")).toBe("Pause");
+    // Resumed, not left paused. Polled, like the play above: captureFrame()
+    // pauses (which relabels the button "Play" through onTime) and then calls
+    // play(), which flips the state at once but relabels only on its first
+    // animation frame — so read immediately after the save, the label can
+    // still say "Play" while the player is already playing. CI run
+    // 33910489117 caught exactly that gap on a loaded runner.
+    await expect.poll(() => win.textContent("#playpause"), { timeout: 10_000 }).toBe("Pause");
     const a = await win.textContent("#clock");
     await expect.poll(() => win.textContent("#clock"), { timeout: 10_000 }).not.toBe(a);
   }, 120_000);
