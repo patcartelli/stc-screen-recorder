@@ -75,12 +75,15 @@ check("right down carries button 1",
 check("right up carries button 1",
       decideCursorEvent(type: .rightMouseUp, timestampNs: t0, t0Ns: t0),
       CursorEventDecision.event(t: 0, kind: "up", button: 1))
-check("a tap disabled by timeout asks to be re-enabled",
+// The two disable events are told apart: a timeout is starvation, which
+// STC-309's sampler must never cause; user-input is what CoreGraphics reports
+// back for tapEnable(false), the helper's own stop() included.
+check("a tap disabled by timeout asks to be re-enabled, and says it was a timeout",
       decideCursorEvent(type: .tapDisabledByTimeout, timestampNs: t0, t0Ns: t0),
-      CursorEventDecision.reenableTap)
-check("a tap disabled by user input asks to be re-enabled",
+      CursorEventDecision.reenableTap(reason: .timeout))
+check("a tap disabled by user input asks to be re-enabled, and says so",
       decideCursorEvent(type: .tapDisabledByUserInput, timestampNs: t0, t0Ns: t0),
-      CursorEventDecision.reenableTap)
+      CursorEventDecision.reenableTap(reason: .userInput))
 check("an event before the session start is discarded (schema requires t >= 0)",
       decideCursorEvent(type: .mouseMoved, timestampNs: t0 - 1, t0Ns: t0),
       CursorEventDecision.beforeStart)

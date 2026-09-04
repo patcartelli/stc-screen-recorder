@@ -63,6 +63,11 @@ final class CaptureSession: NSObject, SCStreamOutput, SCStreamDelegate {
     private var lastPtsNs: Int64 = -1
     private var firstFramePtsNs: Int64 = -1
     private var tapReenables = 0
+    /// Every disable the tap reported, by reason, and separately those that
+    /// arrived after stop() had disabled it on purpose (which are expected
+    /// and are neither counted as re-enables nor acted on).
+    private var tapDisables: [String: Int] = [:]
+    private var tapDisablesAfterStop = 0
     private var cursorEvents = 0
     private var cursorSampler: CursorSampler?
     private var cursorRunLoop: CFRunLoop?
@@ -79,6 +84,10 @@ final class CaptureSession: NSObject, SCStreamOutput, SCStreamDelegate {
     /// hover is seen up to 33 ms late, two output frames at 60 fps. Do not
     /// chase it lower without a measurement showing that lag is visible.
     static let cursorSampleIntervalSeconds: Double = 1.0 / 30
+
+    /// `STC_NO_CURSOR_SAMPLER=1`: see startCursorSampler.
+    static let cursorSamplerDisabledForDiagnosis: Bool =
+        ProcessInfo.processInfo.environment["STC_NO_CURSOR_SAMPLER"].map { !$0.isEmpty && $0 != "0" } ?? false
 
     /// A start must be answered exactly once, by whichever path gets there
     /// first. SCStream can fail through `didStopWithError` INSTEAD of through
@@ -489,6 +498,16 @@ final class CaptureSession: NSObject, SCStreamOutput, SCStreamDelegate {
     /// The references are measured now, on this machine, at its current
     /// pointer size and scale — never a baked-in table.
     private func startCursorSampler() {
+        // DIAGNOSTIC control, not a feature: a take that differs from a normal
+        // one ONLY by having no sampler, so a fault seen with it running can
+        // be compared against one without. Read once at launch, like
+        // --stats-interval-ms. Announced so a take recorded this way can
+        // never pass for one where the pointer simply never changed.
+        if Self.cursorSamplerDisabledForDiagnosis {
+            IO.send("warning", ["code": "cursor-sampler-disabled",
+                                "detail": "STC_NO_CURSOR_SAMPLER is set; this take will carry no cursor-shape events"])
+            return
+        }
         let t = Thread { [weak self] in
             guard let self else { return }
             let (refs, missing) = CursorShape.references()
@@ -532,9 +551,21 @@ final class CaptureSession: NSObject, SCStreamOutput, SCStreamDelegate {
         // converted displayTime — converting it would be a 41.667x error in the
         // other direction. The mapping lives in CaptureDecisions.swift.
         switch decideCursorEvent(type: type, timestampNs: event.timestamp, t0Ns: t0Ns) {
-        case .reenableTap:
-            if let tap { CGEvent.tapEnable(tap: tap, enable: true) }
-            lock.lock(); tapReenables += 1; lock.unlock()
+        case .reenableTap(let reason):
+            // stop() disables the tap itself, and CoreGraphics reports that
+            // back here as a user-input disable. Re-enabling it would undo the
+            // stop, and counting it made every take look as if the tap had
+            // been starved once. So: after stop began, note it and do nothing.
+            lock.lock()
+            let stopping = stoppingBegan
+            if stopping {
+                tapDisablesAfterStop += 1
+            } else {
+                tapReenables += 1
+                tapDisables[reason.rawValue, default: 0] += 1
+            }
+            lock.unlock()
+            if !stopping, let tap { CGEvent.tapEnable(tap: tap, enable: true) }
         case .ignore, .beforeStart:
             return
         case .event(let t, let kind, let button):
@@ -570,7 +601,11 @@ final class CaptureSession: NSObject, SCStreamOutput, SCStreamDelegate {
         return ["frames": framesAppended, "dropped": framesDropped,
                 "nonMonotonic": framesNonMonotonic, "events": events.count,
                 "cursorEvents": cursorEvents,
-                "tapReenables": tapReenables]
+                "tapReenables": tapReenables,
+                // Which kind, so a re-enable can be read as starvation or not.
+                "tapDisabled": ["timeout": tapDisables["timeout"] ?? 0,
+                                "userInput": tapDisables["userInput"] ?? 0,
+                                "afterStop": tapDisablesAfterStop]]
     }
 
     /// No camera field here on purpose: the camera opens asynchronously (see
@@ -596,20 +631,22 @@ final class CaptureSession: NSObject, SCStreamOutput, SCStreamDelegate {
     /// the video may still be readable, and if it is not, the sidecars say what
     /// was attempted.
     func stop(reason: String, completion: @escaping ([String: Any]) -> Void) {
-        if let tap { CGEvent.tapEnable(tap: tap, enable: false) }
-        if let tapRunLoop { CFRunLoopStop(tapRunLoop) }
-
         // Set BEFORE reading `camera`: this is the other half of the HIGH 1
         // race. A camera that finishes opening after this point checks the
         // flag (in `startCameraAsync`) and closes itself instead of being
         // stored, so it is not simply skipped and left running. The cursor
         // sampler's run loop is read in the same section for the same reason
-        // (startCursorSampler).
+        // (startCursorSampler). And it is set BEFORE the tap is disabled, so
+        // the disable CoreGraphics reports back (handleTapEvent) is seen as
+        // ours and not re-enabled or counted.
         lock.lock()
         stoppingBegan = true
         let cam = camera
         let cursorRL = cursorRunLoop
         lock.unlock()
+
+        if let tap { CGEvent.tapEnable(tap: tap, enable: false) }
+        if let tapRunLoop { CFRunLoopStop(tapRunLoop) }
         if let cursorRL { CFRunLoopStop(cursorRL) }
 
         let answerLock = NSLock()
