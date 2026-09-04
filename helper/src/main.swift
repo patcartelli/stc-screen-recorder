@@ -86,6 +86,7 @@ final class App {
                     case .failure(let e): IO.send("error", seq: seq, ["code": e.code, "detail": e.description])
                     }
                 }
+            }
         case "cursor-probe":
             // STC-309 increment 0: the spike, as a command, so it measures the
             // production sampler in the production process. Idle only — a
