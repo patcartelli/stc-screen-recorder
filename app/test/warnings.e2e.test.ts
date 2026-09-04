@@ -19,13 +19,13 @@ const FAKE_HELPER = join(root, "app", "test", "_fake-helper.mjs");
 let app: ElectronApplication | undefined;
 afterEach(async () => { await app?.close().catch(() => {}); app = undefined; });
 
-async function recordWithWarning(code: string) {
+async function recordWithWarning(code: string, extraEnv: Record<string, string> = {}) {
   const { dir: recordings } = makeTakeFolder();
   app = await electron.launch({
     args: [root, `--user-data-dir=${mkdtempSync(join(tmpdir(), "stc-ud-"))}`],
     cwd: root,
     env: { ...process.env, STC_RECORDINGS_DIR: recordings, STC_HELPER_BIN: FAKE_HELPER,
-           STC_FAKE_WARNING: code },
+           STC_FAKE_WARNING: code, ...extraEnv },
   });
   const win = await app.firstWindow();
   await win.waitForLoadState("domcontentloaded");
@@ -50,6 +50,24 @@ describe("helper warnings during a take", () => {
     const win = await recordWithWarning("some-new-fault");
     await expect.poll(() => win.locator("#alert").isVisible(), { timeout: 10_000 }).toBe(true);
     expect(await win.textContent("#alert")).toContain("some-new-fault");
+  }, 120_000);
+
+  test("a display stream that dies ends the take, and the UI says so (STC-306)", async () => {
+    // Long enough for the poll above to see "recording" before the stand-in
+    // ends the take on its own; the assertions below then wait for the end.
+    const win = await recordWithWarning("event-tap-unavailable", { STC_FAKE_STREAM_DEATH_MS: "2500" });
+    // The helper stopped by itself: an unsolicited `stopped` with reason
+    // stream-stopped, which the supervisor reports as recording-ended. The
+    // button must not go on saying "Stop" for a take that has already ended.
+    await expect.poll(() => win.textContent("#state"), { timeout: 15_000 }).toBe("idle");
+    await expect.poll(() => win.textContent("#record"), { timeout: 10_000 }).toBe("Record");
+    await expect.poll(() => win.locator("#alert").isVisible(), { timeout: 10_000 }).toBe(true);
+    // The LAST word is the end of the take, not the tap warning that preceded
+    // it, and it says what happened rather than quoting a reason code.
+    await expect.poll(() => win.textContent("#alert"), { timeout: 10_000 })
+      .toMatch(/display capture stopped unexpectedly, so the recording was stopped/);
+    expect(await win.textContent("#alert")).toMatch(/up to that point was saved/);
+    expect(await win.textContent("#alert")).not.toMatch(/press Stop/);
   }, 120_000);
 
   test("an idle display reconfiguration is not an alert", async () => {

@@ -93,6 +93,23 @@ process.stdin.on("data", (chunk) => {
             code: process.env.STC_FAKE_WARNING, detail: "fake: a warning the UI must show",
           }), 60);
         }
+        // STC-306. The real helper's display stream can die under a live
+        // take (`didStopWithError` after `started`). It warns, then ends the
+        // take itself: an UNSOLICITED `stopped` — no seq, because no request
+        // asked for it — with reason "stream-stopped", and the heartbeat goes
+        // idle. The order is the subject: the warning alone used to be all the
+        // user got, with the helper still claiming to record.
+        const deathMs = Number(process.env.STC_FAKE_STREAM_DEATH_MS) || 0;
+        if (deathMs > 0) {
+          setTimeout(() => {
+            if (state !== "recording") return;
+            send("warning", { code: "stream-stopped", detail: "fake: the display stream died" });
+            const dir = session;
+            state = "idle";
+            session = null;
+            send("stopped", { dir, elapsedMs: deathMs, reason: "stream-stopped" });
+          }, deathMs);
+        }
         break;
       case "stop": {
         // A real stop takes hundreds of milliseconds to seconds (finishWriting),
