@@ -176,7 +176,9 @@ final class App {
                     // display.mp4 behind, so "is the directory empty?" is not
                     // the right question — "does it hold anything worth
                     // keeping?" is. Only ever removes a directory we created
-                    // whose contents are all empty files.
+                    // whose contents are all empty files. Scoped to THIS
+                    // closure's own `url`/`dirExistedBefore`, so it is correct
+                    // regardless of which session is currently tracked.
                     if !dirExistedBefore, let fm = Optional(FileManager.default),
                        let entries = try? fm.contentsOfDirectory(atPath: url.path),
                        entries.allSatisfy({ name in
@@ -185,6 +187,19 @@ final class App {
                        }) {
                         try? fm.removeItem(at: url)
                     }
+                    // `self.capture === session`, not unconditional (STC-310,
+                    // the sibling of STC-305's identical fix a few lines up):
+                    // a stop-then-restart can leave THIS closure's session
+                    // stale by the time its failure finally arrives — e.g. the
+                    // 15 s `startTimeoutSeconds` backstop firing well after a
+                    // newer session has since started and is actively
+                    // recording. Resetting state unconditionally would tell
+                    // `App` it is idle with no session while that newer one is
+                    // still live and unreachable — the exact "leaked running
+                    // capture" bug class STC-305 fixed in the `.success`
+                    // branch, reached here through a stale `.failure` instead
+                    // of a stale success.
+                    guard self.capture === session else { return }
                     // Leave the helper usable: a denied permission must not
                     // wedge the process, it must be retryable after granting.
                     self.capture = nil
