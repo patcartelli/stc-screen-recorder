@@ -130,16 +130,27 @@ recorder.on("helper:stats", (s) => {
   $("elapsed").textContent = s.elapsedMs != null ? `${(s.elapsedMs / 1000).toFixed(1)}s` : "—";
 });
 
+/**
+ * Why the helper ended a take on its own, in the user's terms. Anything not
+ * named here is shown by its reason code rather than dropped.
+ */
+const ENDED_BY_HELPER: Record<string, string> = {
+  "display-reconfigured": "Display configuration changed, so the recording was stopped.",
+  // STC-306: SCStream reported itself dead under a live take. The helper
+  // stops cleanly rather than sitting in "recording" with no frames arriving.
+  "stream-stopped": "The display capture stopped unexpectedly, so the recording was stopped.",
+};
+
 recorder.on("helper:recording-ended", (i) => {
-  // The helper stopped by itself — most often a display change. The file is
-  // valid; what would be wrong is leaving the button saying "Stop".
+  // The helper stopped by itself — a display change, or a display stream that
+  // died. The file is valid; what would be wrong is leaving the button saying
+  // "Stop".
   recording = false;
   recordBtn.textContent = "Record";
   setState("idle");
   refreshTakes();
-  alertUser(i.reason === "display-reconfigured"
-    ? "Display configuration changed, so the recording was stopped.\nWhat was captured up to that point was saved."
-    : `Recording stopped by the recorder (${i.reason}).\nWhat was captured up to that point was saved.`);
+  const why = ENDED_BY_HELPER[String(i.reason)] ?? `Recording stopped by the recorder (${i.reason}).`;
+  alertUser(`${why}\nWhat was captured up to that point was saved.`);
   if (i.dir) recorder.reveal(i.dir);
 });
 
@@ -204,9 +215,10 @@ const CAMERA_FAULTS: Record<string, string> = {
  * events.json), so a take recorded without the tap has NO cursor anywhere and
  * looked identical to a good one — the rule that the cursor is never only in
  * the video was being broken silently, and the library's "0 events" was the
- * only trace. `stream-stopped` is a display stream that died mid-take: the
- * helper stays in "recording", frames simply stop, and until Stop is pressed
- * nothing said so.
+ * only trace. `stream-stopped` is a display stream that died mid-take. It used
+ * to leave the helper in "recording" with frames simply stopping until Stop
+ * was pressed; since STC-306 the helper ends the take itself, so this warning
+ * is followed by a `recording-ended` with the same reason.
  */
 const RECORDING_FAULTS: Record<string, string> = {
   "event-tap-unavailable":
@@ -214,8 +226,8 @@ const RECORDING_FAULTS: Record<string, string> = {
     "so this take will have no cursor at all. Grant Input Monitoring in System Settings › " +
     "Privacy & Security, then record again.",
   "stream-stopped":
-    "The display capture stopped unexpectedly. No more frames are being recorded — " +
-    "press Stop; what was captured up to this point is kept.",
+    "The display capture stopped unexpectedly, so the recording is being stopped. " +
+    "What was captured up to this point is kept.",
   "av-runtime-error": "A capture device reported an error during the recording.",
 };
 

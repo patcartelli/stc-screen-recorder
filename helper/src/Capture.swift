@@ -112,6 +112,14 @@ final class CaptureSession: NSObject, SCStreamOutput, SCStreamDelegate {
     /// forever. A protocol where some requests are never answered is worse than
     /// one that answers with an error.
     private var startCompletion: ((Result<[String: Any], Error>) -> Void)?
+    /// Fired when the stream dies AFTER the start was answered (STC-306).
+    /// `App` sets it, the way it sets `Watchers.onDisplayChange`, to end the
+    /// take: SCK does not resume a stopped stream, so a session left in
+    /// `recording` after `didStopWithError` keeps the writer open and the
+    /// heartbeat saying `recording` while no frame will ever arrive again, and
+    /// nothing ends the take until the user presses Stop. Called on SCK's
+    /// delegate queue; the handler dispatches to main itself.
+    var onStreamDied: ((Error) -> Void)?
     /// How long a `start` may take before it is answered with `start-timeout`.
     /// Covers the WHOLE request — content enumeration included (STC-258).
     /// `helper/test/capture.test.ts` bounds its own waits above this; if this
@@ -248,6 +256,7 @@ final class CaptureSession: NSObject, SCStreamOutput, SCStreamDelegate {
                         self.startCameraAsync()
                     }
                     self.finishStart(.success(self.describe()))
+                    self.armStreamDeathFault()
                 }
             }
         } catch {
@@ -257,12 +266,39 @@ final class CaptureSession: NSObject, SCStreamOutput, SCStreamDelegate {
 
     /// Call-once. Later callers are no-ops, so a stream that fails after a
     /// successful start reports as a warning rather than a second response.
-    private func finishStart(_ result: Result<[String: Any], Error>) {
+    /// Returns whether THIS call answered the start — `didStopWithError` uses
+    /// that to tell a stream that died on the way up (the start's answer) from
+    /// one that died under a live take (the take's end, STC-306).
+    @discardableResult
+    private func finishStart(_ result: Result<[String: Any], Error>) -> Bool {
         startLock.lock()
         let c = startCompletion
         startCompletion = nil
         startLock.unlock()
         c?(result)
+        return c != nil
+    }
+
+    /// `STC_CAPTURE_FAULT=stream-died`: shortly after a successful start, the
+    /// stream reports itself dead through the same delegate method SCK uses,
+    /// so the helper's reaction to a stream death is watched firing rather
+    /// than reasoned about — a path nobody has seen taken is indistinguishable
+    /// from one that cannot be. The SCStream itself is left running: the
+    /// subject is the reaction (warning, unsolicited `stopped`, finalised
+    /// sidecars), and `stop()` tears the real stream down either way — on a
+    /// genuine death `stopCapture` answers with an error that is ignored, on
+    /// the fault it answers cleanly; both reach `finishWriting`.
+    /// Driven by helper/test/stream-died.grant.test.ts.
+    static let streamDeathFaultDelaySeconds: Double = 0.5
+    private func armStreamDeathFault() {
+        guard ProcessInfo.processInfo.environment["STC_CAPTURE_FAULT"] == "stream-died",
+              let s = stream else { return }
+        IO.log("STC_CAPTURE_FAULT=stream-died: the stream will report itself dead in \(Self.streamDeathFaultDelaySeconds) s")
+        DispatchQueue.global().asyncAfter(deadline: .now() + Self.streamDeathFaultDelaySeconds) { [weak self] in
+            self?.stream(s, didStopWithError: NSError(
+                domain: "stc.fault", code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "injected by STC_CAPTURE_FAULT=stream-died"]))
+        }
     }
 
     /// Opens the camera off the critical path (MEDIUM 3): `start` already
@@ -447,8 +483,14 @@ final class CaptureSession: NSObject, SCStreamOutput, SCStreamDelegate {
     func stream(_ stream: SCStream, didStopWithError error: Error) {
         // If the start is still pending this IS its answer — the stream died on
         // the way up rather than reporting through startCapture's completion.
-        finishStart(.failure(CaptureError.streamFailed(error)))
+        let answeredStart = finishStart(.failure(CaptureError.streamFailed(error)))
         IO.send("warning", ["code": "stream-stopped", "detail": "\(error)"])
+        // Otherwise the take was live and has just lost its source (STC-306).
+        // Nothing here can revive the stream, so the owner ends the take —
+        // the same clean stop a display change gets — instead of sitting in
+        // `recording` with frames that will never arrive. The take is intact
+        // up to the failure, which is what a clean stop preserves.
+        if !answeredStart { onStreamDied?(error) }
     }
 
     // MARK: - event tap

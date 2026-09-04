@@ -120,6 +120,19 @@ final class App {
         let wantCamera = cmd["camera"] as? Bool ?? false
         let session = CaptureSession(dir: url, t0Ns: startedAtNs)
         capture = session
+        // STC-306: a stream that dies after `started` ends the take the way a
+        // display change does (`Watchers.onDisplayChange` in boot()). Set per
+        // session rather than once, because the session is per take; the
+        // identity check keeps a stale session's late callback from stopping
+        // a later take. `didStopWithError` has already sent the
+        // `stream-stopped` warning by the time this runs.
+        session.onStreamDied = { [weak self, weak session] _ in
+            DispatchQueue.main.async {
+                guard let self, let session,
+                      self.state == .recording, self.capture === session else { return }
+                self.stop(reason: "stream-stopped")
+            }
+        }
         session.start(displayId: displayId, camera: wantCamera) { [weak self] result in
             DispatchQueue.main.async {
                 guard let self else { return }
