@@ -9,6 +9,9 @@ import Foundation
 import CoreGraphics
 
 var failures = 0
+// Compares descriptions, so `got` must be unwrapped (`?? sentinel`) — an
+// Optional describes as `Optional("x")` and never equals `"x"`. CI's first
+// run of this file failed 8 checks that way while the code was right.
 func check(_ label: String, _ got: some Equatable, _ want: some Equatable) {
     if String(describing: got) == String(describing: want) {
         print("ok   \(label)")
@@ -50,9 +53,9 @@ check("file can be renamed", parse(["dir": "/tmp/x", "file": "grab.png"]), "ok:d
 
 if case .success(let r) = parseStillRequest(["dir": "/tmp/x", "displayId": 3,
                                               "crop": ["x": 10, "y": 20.5, "width": 300, "height": 200]]) {
-    check("displayId is carried", r.displayId, UInt32(3))
+    check("displayId is carried", r.displayId ?? 0, UInt32(3))
     check("integral and fractional coordinates both parse",
-          r.crop, StillRect(x: 10, y: 20.5, width: 300, height: 200))
+          r.crop ?? StillRect(x: 0, y: 0, width: 0, height: 0), StillRect(x: 10, y: 20.5, width: 300, height: 200))
 } else {
     print("FAIL a full display-crop request did not parse"); failures += 1
 }
@@ -144,8 +147,8 @@ let a = shotDocument(kind: .displayCrop, capturedAtNs: 1_000_000_000, timebase: 
                      frame: StillFrameInfo(file: "frame.png", width: 1280, height: 720, alpha: false),
                      cursor: StillCursorSample(x: 420, y: 300, shape: "arrow"))
 check("(a) display-crop carries crop and no window", a["window"] == nil && a["crop"] != nil, true)
-check("(a) decoration is selected-area", (a["decoration"] as? [String: Any])?["mode"] as? String, "selected-area")
-check("(a) capturedAtNs is a decimal string", a["capturedAtNs"] as? String, "1000000000")
+check("(a) decoration is selected-area", (a["decoration"] as? [String: Any])?["mode"] as? String ?? "missing", "selected-area")
+check("(a) capturedAtNs is a decimal string", a["capturedAtNs"] as? String ?? "missing", "1000000000")
 emit("display-crop", a)
 
 // (b) a whole-display shot, pointer elsewhere: no crop asked for, no cursor block
@@ -154,7 +157,7 @@ let b = shotDocument(kind: .displayCrop, capturedAtNs: 42, timebase: (numer: 1, 
                      frame: StillFrameInfo(file: "frame.png", width: 3840, height: 2160, alpha: false),
                      cursor: nil)
 check("(b) no crop means the crop block IS the whole display",
-      (b["crop"] as? [String: Any])?["width"] as? Double, 1920.0)
+      (b["crop"] as? [String: Any])?["width"] as? Double ?? -1, 1920.0)
 check("(b) cursor elsewhere means NO cursor block, not a zeroed one", b["cursor"] == nil, true)
 check("(b) no colour space means no key", (b["display"] as? [String: Any])?["colorSpace"] == nil, true)
 emit("full-display", b)
@@ -167,7 +170,7 @@ let c = shotDocument(kind: .window, capturedAtNs: 7, timebase: (numer: 125, deno
                      frame: StillFrameInfo(file: "frame.png", width: 1600, height: 1200, alpha: true),
                      cursor: StillCursorSample(x: 500, y: 400, shape: "pointingHand"))
 check("(c) window carries window and no crop", c["crop"] == nil && c["window"] != nil, true)
-check("(c) decoration is window-only", (c["decoration"] as? [String: Any])?["mode"] as? String, "window-only")
+check("(c) decoration is window-only", (c["decoration"] as? [String: Any])?["mode"] as? String ?? "missing", "window-only")
 emit("window", c)
 
 // (d) a window whose pixels came back opaque: honest decoration, no title
@@ -178,7 +181,7 @@ let d = shotDocument(kind: .window, capturedAtNs: 7, timebase: (numer: 125, deno
                      frame: StillFrameInfo(file: "frame.png", width: 20, height: 20, alpha: false),
                      cursor: nil)
 check("(d) an opaque window frame is selected-area, which parseShot accepts",
-      (d["decoration"] as? [String: Any])?["mode"] as? String, "selected-area")
+      (d["decoration"] as? [String: Any])?["mode"] as? String ?? "missing", "selected-area")
 check("(d) an empty title is omitted, not written empty",
       (d["window"] as? [String: Any])?["title"] == nil, true)
 emit("window-opaque", d)
