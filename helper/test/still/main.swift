@@ -16,7 +16,12 @@ func check(_ label: String, _ got: some Equatable, _ want: some Equatable) {
     if String(describing: got) == String(describing: want) {
         print("ok   \(label)")
     } else {
-        print("FAIL \(label): got \(got), want \(want)")
+        let line = "FAIL \(label): got \(got), want \(want)"
+        print(line)
+        // Also to stderr: on a failure the runner reports only the TAIL of
+        // each stream, and sixty `ok` lines push the one FAIL out of stdout's.
+        // CI run 33909995248 said "1 FAILURES" and could not say which.
+        FileHandle.standardError.write((line + "\n").data(using: .utf8)!)
         failures += 1
     }
 }
