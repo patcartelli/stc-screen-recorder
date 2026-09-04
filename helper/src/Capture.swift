@@ -65,15 +65,19 @@ final class CaptureSession: NSObject, SCStreamOutput, SCStreamDelegate {
     private var tapReenables = 0
     private var cursorEvents = 0
     private var cursorSampler: CursorSampler?
+    private var cursorRunLoop: CFRunLoop?
 
     /// How often the system pointer is sampled for shape changes (STC-309).
     ///
-    /// The sample runs on the TAP's thread, so this is what it costs that
-    /// thread: one `NSCursor.currentSystem` read and a hash of a ~4 KB bitmap
-    /// per tick — microseconds, and measured rather than assumed by the
-    /// `cursor-probe` command (`sampleUsMax`). At 30 Hz a hover is seen up to
-    /// 33 ms late, two output frames at 60 fps. Do not chase it lower without
-    /// a measurement showing that lag is visible.
+    /// MEASURED 2026-09-03 with the `cursor-probe` command on real hardware:
+    /// a sample costs 1.04 ms on average and 41 ms at worst (599 samples), so
+    /// it is NOT microseconds and does NOT run on the tap's thread — a 41 ms
+    /// stall on the run loop that answers WindowServer is how a tap gets
+    /// disabled (`tapDisabledByTimeout`). The sampler has its own thread
+    /// (`startCursorSampler`); ordering against the moves is restored at
+    /// write time by `orderedEvents`. At 30 Hz that is ~3% of one core, and a
+    /// hover is seen up to 33 ms late, two output frames at 60 fps. Do not
+    /// chase it lower without a measurement showing that lag is visible.
     static let cursorSampleIntervalSeconds: Double = 1.0 / 30
 
     /// A start must be answered exactly once, by whichever path gets there
@@ -204,6 +208,7 @@ final class CaptureSession: NSObject, SCStreamOutput, SCStreamDelegate {
                     self.finishStart(.failure(CaptureError.streamFailed(err)))
                 } else {
                     self.startEventTap()
+                    self.startCursorSampler()
                     // Optional subsystem: it must not sit on the critical path. PHASE-0
                     // recorded camera/mic setup blocking startup once already, and
                     // `AVCaptureSession.startRunning()` is documented as blocking — a
@@ -461,11 +466,31 @@ final class CaptureSession: NSObject, SCStreamOutput, SCStreamDelegate {
             self.tapRunLoop = CFRunLoopGetCurrent()
             CFRunLoopAddSource(CFRunLoopGetCurrent(), src, .commonModes)
             CGEvent.tapEnable(tap: tap, enable: true)
+            // Runs until stop() calls CFRunLoopStop. Unbounded by design: this
+            // is the tap's own thread, and a run loop that returned early would
+            // silently stop delivering input for the rest of the recording.
+            CFRunLoopRun()
+        }
+        t.name = "event-tap"
+        t.start()
+    }
 
-            // STC-309: the pointer's SHAPE is sampled here too, on this same
-            // run loop, so one thread owns the order of everything appended to
-            // `events`. The references are measured now, on this machine, at
-            // its current pointer size and scale — never a baked-in table.
+    /// STC-309: samples the pointer's SHAPE on a thread of its own.
+    ///
+    /// The first draft put the timer on the tap's run loop so one thread would
+    /// own the order of everything appended to `events`. The probe then
+    /// measured a sample at 1 ms typical and 41 ms worst — enough to hold up
+    /// the tap's answer to WindowServer — so the sampler lives here instead,
+    /// and `orderedEvents` restores time order when the file is written.
+    /// Nothing else runs on this loop, so a slow sample costs nobody but the
+    /// sampler. Mirrors the tap thread: a plain Thread, its own CFRunLoop,
+    /// stopped by `stop()`.
+    ///
+    /// The references are measured now, on this machine, at its current
+    /// pointer size and scale — never a baked-in table.
+    private func startCursorSampler() {
+        let t = Thread { [weak self] in
+            guard let self else { return }
             let (refs, missing) = CursorShape.references()
             if !missing.isEmpty {
                 let names = missing.joined(separator: ", ")
@@ -476,18 +501,29 @@ final class CaptureSession: NSObject, SCStreamOutput, SCStreamDelegate {
             let sampler = CursorSampler(references: refs) { [weak self] shape, observedNs in
                 self?.recordCursorShape(shape, observedNs: observedNs)
             }
-            sampler.schedule(on: CFRunLoopGetCurrent(), intervalSeconds: Self.cursorSampleIntervalSeconds)
+            let rl: CFRunLoop = CFRunLoopGetCurrent()
+            sampler.schedule(on: rl, intervalSeconds: Self.cursorSampleIntervalSeconds)
+            // Published under `lock` in the same critical section stop() reads
+            // it in, with `stoppingBegan` as the tie-break: a stop that lands
+            // before this thread gets here would otherwise find no loop to
+            // stop, and the sampler would run for the rest of the process's
+            // life — the same shape as the camera's HIGH 1 race.
+            self.lock.lock()
+            if self.stoppingBegan {
+                self.lock.unlock()
+                sampler.invalidate()
+                return
+            }
             self.cursorSampler = sampler
-
-            // Runs until stop() calls CFRunLoopStop. Unbounded by design: this
-            // is the tap's own thread, and a run loop that returned early would
-            // silently stop delivering input for the rest of the recording.
+            self.cursorRunLoop = rl
+            self.lock.unlock()
+            // Unbounded by design, like the tap's: stop() ends it.
             CFRunLoopRun()
             // Nothing runs this loop again, so no tick can follow; invalidating
             // here, on the loop's own thread, just releases the timer.
             sampler.invalidate()
         }
-        t.name = "event-tap"
+        t.name = "cursor-sampler"
         t.start()
     }
 
@@ -566,11 +602,15 @@ final class CaptureSession: NSObject, SCStreamOutput, SCStreamDelegate {
         // Set BEFORE reading `camera`: this is the other half of the HIGH 1
         // race. A camera that finishes opening after this point checks the
         // flag (in `startCameraAsync`) and closes itself instead of being
-        // stored, so it is not simply skipped and left running.
+        // stored, so it is not simply skipped and left running. The cursor
+        // sampler's run loop is read in the same section for the same reason
+        // (startCursorSampler).
         lock.lock()
         stoppingBegan = true
         let cam = camera
+        let cursorRL = cursorRunLoop
         lock.unlock()
+        if let cursorRL { CFRunLoopStop(cursorRL) }
 
         let answerLock = NSLock()
         var answered = false
@@ -661,7 +701,7 @@ final class CaptureSession: NSObject, SCStreamOutput, SCStreamDelegate {
         // events-2 since STC-309: v1 plus `{t, kind: "cursor", shape}`. The
         // loader accepts both; fixtures/basic was already v2. Time-ordered on
         // the way out because two clocks feed `events` (see orderedEvents).
-        write(["version": 2, "events": orderedEvents(evs)], to: "events.json")
+        write(["version": 2, "events": orderedEvents(evs)] as [String: Any], to: "events.json")
         // Exact, from the helper's own clock. The same offset survives in the
         // file only as a timescale-quantised empty edit, so this is what a
         // reader checks its recovered value against.

@@ -133,8 +133,9 @@ describe("capture — a real recording (requires Screen Recording)", () => {
     for (let i = 1; i < cursor.length; i++) {
       expect(cursor[i].shape, `cursor event ${i} repeats ${cursor[i - 1].shape}`).not.toBe(cursor[i - 1].shape);
     }
-    // The sampler shares the tap's run loop; if it starved the tap the system
-    // would have disabled it and the helper would have counted a re-enable.
+    // The sampler has its own thread precisely so it cannot starve the tap
+    // (a sample measured 1-41 ms); if it did, the system would have disabled
+    // the tap and the helper would have counted a re-enable.
     expect(stopped.tapReenables, "tap re-enabled while sampling the pointer").toBe(0);
     // Two clocks feed one file; the helper orders it on the way out.
     const ts = events.events.map((e: any) => e.t as number);
