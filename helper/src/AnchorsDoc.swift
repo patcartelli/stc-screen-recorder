@@ -1,10 +1,39 @@
 import Foundation
+import CoreGraphics
 
-/// Display geometry as the anchors document records it.
+/// Display geometry as the anchors document records it — and, since STC-289,
+/// as shot.json records it: the two formats share this one block so a still
+/// and a recording of the same display cannot disagree about it.
 struct DisplayGeometry {
     let id: Int, pointWidth: Int, pointHeight: Int
     let pixelWidth: Int, pixelHeight: Int
     let originX: Double, originY: Double
+
+    /// Pixels per point. 1 when the point size is unknown rather than a
+    /// division by zero.
+    var backingScale: Double {
+        pointWidth > 0 ? Double(pixelWidth) / Double(pointWidth) : 1.0
+    }
+}
+
+/// Measures a display the way both the recording and the still path record
+/// it: points from ScreenCaptureKit's `SCDisplay`, pixels from the current
+/// display mode, origin from `CGDisplayBounds` (global CG points, top-left).
+/// One place, because the two paths used to carry separate copies of these
+/// nine lines and a still that measured a display differently from the
+/// recording beside it would be the quiet kind of wrong.
+func displayGeometry(id: CGDirectDisplayID, pointWidth: Int, pointHeight: Int) -> DisplayGeometry {
+    let bounds = CGDisplayBounds(id)
+    let pixelW: Int, pixelH: Int
+    if let mode = CGDisplayCopyDisplayMode(id) {
+        pixelW = mode.pixelWidth
+        pixelH = mode.pixelHeight
+    } else {
+        pixelW = pointWidth; pixelH = pointHeight
+    }
+    return DisplayGeometry(id: Int(id), pointWidth: pointWidth, pointHeight: pointHeight,
+                           pixelWidth: pixelW, pixelHeight: pixelH,
+                           originX: Double(bounds.origin.x), originY: Double(bounds.origin.y))
 }
 
 /// The display track's captured size plus the helper's own measurement of when
@@ -75,8 +104,7 @@ func anchorsDocument(timebase: (numer: Int, denom: Int),
         "display": ["id": display.id,
                     "pointWidth": display.pointWidth, "pointHeight": display.pointHeight,
                     "pixelWidth": display.pixelWidth, "pixelHeight": display.pixelHeight,
-                    "backingScale": display.pointWidth > 0
-                        ? Double(display.pixelWidth) / Double(display.pointWidth) : 1.0,
+                    "backingScale": display.backingScale,
                     "originX": display.originX, "originY": display.originY] as [String: Any],
         "capture": ["width": capture.width, "height": capture.height, "codec": "h264",
                     "firstFrameNs": max(0, capture.firstFrameNs)] as [String: Any],
