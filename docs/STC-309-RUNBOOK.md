@@ -44,11 +44,10 @@ sampler moved to its own thread (`Capture.startCursorSampler`) and
 `orderedEvents` restores time order at write time. The rest of this section is
 kept as the procedure for re-measuring.
 
-**Still open from this spike:** `pointingHand` was never observed. Either no
-link was hovered, or the browser draws its own hand cursor rather than
-`NSCursor.pointingHand`. Re-run over a link in Safari and in the browser you
-use; if the hand shows up as an unknown signature, its bytes go in the table
-above and the classifier needs a second reference for it.
+**`pointingHand` confirmed on a second run (2026-09-04):** hovering a link
+emitted `pointingHand`, so all four shapes match their `NSCursor` built-ins
+byte-for-byte on this machine. The first run never saw it only because no
+link was hovered.
 
 The spike is the helper's own `cursor-probe` command, run from the signed test
 host so it carries the bundle's TCC identity and the production process shape
