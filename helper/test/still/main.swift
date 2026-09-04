@@ -117,17 +117,12 @@ check("display above main: a pointer on main is absent for it", loc(700, 500, on
 check("exactly on the far edge is outside (half-open, like CGRect.contains)",
       loc(1920, 500, on: main), "absent")
 
-// ── shape classification ────────────────────────────────────────────────────
-let refs: [(shape: String, bytes: Data)] = [
-    (shape: "arrow", bytes: Data([1, 1])), (shape: "ibeam", bytes: Data([2, 2])),
-    (shape: "crosshair", bytes: Data([3])), (shape: "pointingHand", bytes: Data([4, 4, 4])),
-]
-check("an exact byte match names the shape", classifyStillCursor(sample: Data([2, 2]), references: refs), "ibeam")
-check("no match is the arrow, never a guess", classifyStillCursor(sample: Data([9]), references: refs), "arrow")
-check("no pointer image is the arrow", classifyStillCursor(sample: nil, references: refs), "arrow")
-check("no references at all is the arrow", classifyStillCursor(sample: Data([2, 2]), references: []), "arrow")
-print("shapes " + stillCursorShapes.joined(separator: ","))
-check("the default is in the list", stillCursorShapes.contains(defaultStillCursorShape), true)
+// ── shape names ─────────────────────────────────────────────────────────────
+// Classification itself is STC-309's (`classifyCursor`, covered by
+// decisions/main.swift); a still only needs the list it writes from to be the
+// schema's, which still-decisions.test.ts checks against this line.
+print("shapes " + cursorShapeNames.joined(separator: ","))
+check("the default is in the list", cursorShapeNames.contains(defaultCursorShape), true)
 
 // ── the document ────────────────────────────────────────────────────────────
 let display = DisplayGeometry(id: 1, pointWidth: 1920, pointHeight: 1080,

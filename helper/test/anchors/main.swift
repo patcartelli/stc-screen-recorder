@@ -25,28 +25,43 @@ let display = DisplayGeometry(id: 1, pointWidth: 1920, pointHeight: 1080,
                               originX: 0, originY: 0)
 let capture = CaptureGeometryDoc(width: 3840, height: 2160, firstFrameNs: 200_000_000)
 
-// 1. Always version 2, and a camera block is always present.
+// 1. Always version 2. No camera requested: the block is ABSENT, not
+//    present:false (STC-303) — present:false is a claim that a camera was
+//    asked for and yielded nothing, which is untrue for a display-only take.
 do {
     let d = anchorsDocument(timebase: (125, 3), t0Ns: 1000, display: display,
-                            capture: capture, camera: nil,
+                            capture: capture, camera: nil, requested: false,
                             stopReason: "user", stopTNs: 20_000_000_000)
     check(d["version"] as? Int == 2, "version must be 2")
-    let cam = d["camera"] as? [String: Any]
-    check(cam != nil, "camera block must always be written")
-    check(cam?["present"] as? Bool == false, "absent camera must record present:false")
-    check(cam?["device"] == nil, "an absent camera must not invent measurements")
+    check(d["camera"] == nil, "camera block must be absent when no camera was requested")
     let files = d["files"] as? [String: Any]
     check(files?["camera"] == nil, "files.camera must be absent when there is no camera")
     printJSON(d, marker: "JSON-NO-CAMERA:")
 }
 
-// 2. A present camera records its measurements and its file.
+// 2. Requested, but no track — STC-286: a camera that opened and delivered
+//    zero frames. This is the one case present:false must still say, so
+//    fixing check 1 must not silence it.
+do {
+    let d = anchorsDocument(timebase: (125, 3), t0Ns: 1000, display: display,
+                            capture: capture, camera: nil, requested: true,
+                            stopReason: "user", stopTNs: 20_000_000_000)
+    let cam = d["camera"] as? [String: Any]
+    check(cam != nil, "a requested camera must always write a camera block")
+    check(cam?["present"] as? Bool == false, "a requested camera with no track must record present:false")
+    check(cam?["device"] == nil, "a camera with no track must not invent measurements")
+    let files = d["files"] as? [String: Any]
+    check(files?["camera"] == nil, "files.camera must be absent when the camera produced no track")
+    printJSON(d, marker: "JSON-CAMERA-REQUESTED-NO-FRAMES:")
+}
+
+// 3. A present camera records its measurements and its file.
 do {
     let track = CameraTrack(present: true, device: "Fixture Camera", width: 1280, height: 720,
                             firstFramePtsNs: 1_035_500_000, lastFramePtsNs: 3_024_500_000,
                             frameIntervalNs: 17_000_000)
     let d = anchorsDocument(timebase: (125, 3), t0Ns: 1000, display: display,
-                            capture: capture, camera: track,
+                            capture: capture, camera: track, requested: true,
                             stopReason: "user", stopTNs: 20_000_000_000)
     let cam = d["camera"] as? [String: Any]
     check(cam?["present"] as? Bool == true, "present camera must record present:true")
@@ -60,11 +75,11 @@ do {
     printJSON(d, marker: "JSON-WITH-CAMERA:")
 }
 
-// 3. t0Ns stays a STRING: boot-relative ns crosses 2^53 at ~104 days of uptime
+// 4. t0Ns stays a STRING: boot-relative ns crosses 2^53 at ~104 days of uptime
 //    and a JSON number would round.
 do {
     let d = anchorsDocument(timebase: (125, 3), t0Ns: 18_446_744_073, display: display,
-                            capture: capture, camera: nil,
+                            capture: capture, camera: nil, requested: false,
                             stopReason: "user", stopTNs: 1)
     check(d["t0Ns"] as? String == "18446744073", "t0Ns must be a string")
 }

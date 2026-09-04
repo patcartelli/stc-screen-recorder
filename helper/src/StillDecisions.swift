@@ -10,8 +10,8 @@ import CoreGraphics
 /// What is decided here: what a `capture-still` request means and whether it
 /// is well-formed; which region of the display a crop resolves to; where the
 /// pointer is in the source display's own coordinates, or that it is elsewhere;
-/// which of the four drawable shapes the pointer is; and the exact `shot.json`
-/// the helper writes. That last one is the contract with `transform/src/shot.ts`
+/// and the exact `shot.json` the helper writes (which shape the pointer is comes
+/// from STC-309's classifier, shared with the recording path). That last one is the contract with `transform/src/shot.ts`
 /// (schema/shot-1.schema.json), and `still-decisions.test.ts` validates every
 /// document this produces against both — the writer half of STC-301 gate 5,
 /// checked on every `npm test` rather than only on a Mac with a grant.
@@ -198,26 +198,9 @@ func localizeCursor(mouseX: Double, mouseY: Double,
     return (mouseX - Double(display.minX), cgY - Double(display.minY))
 }
 
-/// The shapes a still may record. MUST equal the `cursor.shape` enum in
-/// schema/shot-1.schema.json, which is the events-2 set — exactly what
-/// transform/src/cursor-art.ts can draw. `still-decisions.test.ts` holds this
-/// list to the schema. STC-309 carries the same list for events.json; when it
-/// lands, one of the two goes.
-let stillCursorShapes = ["arrow", "ibeam", "crosshair", "pointingHand"]
-
-/// What an unrecognised pointer is recorded as. The same rule STC-309 uses
-/// for the recording path: a shape the compositor cannot draw must never
-/// reach the file, and a wrong specific shape is worse than the default.
-let defaultStillCursorShape = "arrow"
-
-/// Which built-in the live pointer is, by exact bytes against references
-/// rendered in the same process at the same pointer size and backing scale —
-/// so those cancel out instead of needing a table that drifts. nil (no
-/// pointer image available) and no match both classify as the default.
-func classifyStillCursor(sample: Data?, references: [(shape: String, bytes: Data)]) -> String {
-    guard let sample else { return defaultStillCursorShape }
-    return references.first { $0.bytes == sample }?.shape ?? defaultStillCursorShape
-}
+/// The cursor's `shape` is one of `cursorShapeNames` (CaptureDecisions.swift),
+/// classified by STC-309's `classifyCursor`; shot-1's enum is the same set as
+/// events-2's, and `still-decisions.test.ts` holds the Swift list to it.
 
 struct StillWindowInfo: Equatable {
     let id: Int

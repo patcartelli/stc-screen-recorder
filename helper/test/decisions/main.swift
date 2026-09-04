@@ -147,5 +147,88 @@ check("a real pick is not flagged as a fallback",
 check("no devices at all is nil, not a crash",
       pickCamera([]) == nil, true)
 
+// ── which pointer is showing (STC-309) ──────────────────────────────────────
+// The references are what NSCursor.arrow/.iBeam/.crosshair/.pointingHand look
+// like on the machine doing the recording, measured at tap start; the numbers
+// here are stand-ins with the SHAPE of real ones (points, hotspot, a hash).
+let sigArrow = CursorSignature(width: 17, height: 23, hotX: 4, hotY: 4, hash: 0xA1)
+let sigIBeam = CursorSignature(width: 9, height: 18, hotX: 4, hotY: 9, hash: 0xB2)
+let sigCross = CursorSignature(width: 17, height: 17, hotX: 8, hotY: 8, hash: 0xC3)
+let sigHand  = CursorSignature(width: 17, height: 21, hotX: 6, hotY: 1, hash: 0xD4)
+let refs = [CursorReference(shape: "arrow", signature: sigArrow),
+            CursorReference(shape: "ibeam", signature: sigIBeam),
+            CursorReference(shape: "crosshair", signature: sigCross),
+            CursorReference(shape: "pointingHand", signature: sigHand)]
+
+check("the reference list covers exactly the schema's shapes",
+      refs.map { $0.shape }, cursorShapeNames)
+for r in refs {
+    check("an exact match classifies as \(r.shape)", classifyCursor(r.signature, references: refs), r.shape)
+}
+check("a signature matching nothing is the arrow — the schema refuses unknown names",
+      classifyCursor(CursorSignature(width: 32, height: 32, hotX: 16, hotY: 16, hash: 0xEE), references: refs),
+      "arrow")
+// A representation change moves the hash while size and hotspot hold. The
+// geometry is unique among the references, so it still identifies the shape.
+check("same geometry, different bytes, unique among references: geometry decides",
+      classifyCursor(CursorSignature(width: 9, height: 18, hotX: 4, hotY: 9, hash: 0x99), references: refs),
+      "ibeam")
+// Two references that share a geometry can only be told apart by bytes.
+let refsTwins = refs + [CursorReference(shape: "pointingHand",
+                                        signature: CursorSignature(width: 9, height: 18, hotX: 4, hotY: 9, hash: 0xF0))]
+check("shared geometry, exact bytes: the byte match wins",
+      classifyCursor(CursorSignature(width: 9, height: 18, hotX: 4, hotY: 9, hash: 0xF0), references: refsTwins),
+      "pointingHand")
+check("shared geometry, no byte match: ambiguous, so the arrow",
+      classifyCursor(CursorSignature(width: 9, height: 18, hotX: 4, hotY: 9, hash: 0x99), references: refsTwins),
+      "arrow")
+check("with no references at all everything is the arrow",
+      classifyCursor(sigIBeam, references: []), "arrow")
+
+// Emit only on change; nothing emitted yet reads as the arrow.
+check("the first sample being the arrow emits nothing",
+      decideCursorShape(sample: sigArrow, references: refs, previous: nil),
+      CursorShapeDecision.unchanged)
+check("the first sample being an I-beam emits it",
+      decideCursorShape(sample: sigIBeam, references: refs, previous: nil),
+      CursorShapeDecision.emit(shape: "ibeam"))
+check("a repeated sample emits nothing",
+      decideCursorShape(sample: sigIBeam, references: refs, previous: "ibeam"),
+      CursorShapeDecision.unchanged)
+check("a flip emits",
+      decideCursorShape(sample: sigHand, references: refs, previous: "ibeam"),
+      CursorShapeDecision.emit(shape: "pointingHand"))
+check("and the flip back emits again",
+      decideCursorShape(sample: sigIBeam, references: refs, previous: "pointingHand"),
+      CursorShapeDecision.emit(shape: "ibeam"))
+check("an unknown pointer after an I-beam emits the arrow, not nothing",
+      decideCursorShape(sample: CursorSignature(width: 32, height: 32, hotX: 16, hotY: 16, hash: 0xEE),
+                        references: refs, previous: "ibeam"),
+      CursorShapeDecision.emit(shape: "arrow"))
+check("an unknown pointer after an arrow is still the arrow, so nothing",
+      decideCursorShape(sample: CursorSignature(width: 32, height: 32, hotX: 16, hotY: 16, hash: 0xEE),
+                        references: refs, previous: nil),
+      CursorShapeDecision.unchanged)
+
+// FNV-1a 64, against the published test vectors.
+check("fnv1a of nothing is the offset basis",
+      [UInt8]().withUnsafeBytes { fnv1a($0) },
+      UInt64(0xcbf29ce484222325))
+check("fnv1a of \"a\"",
+      Array("a".utf8).withUnsafeBytes { fnv1a($0) }, UInt64(0xaf63dc4c8601ec8c))
+check("fnv1a of \"foobar\"",
+      Array("foobar".utf8).withUnsafeBytes { fnv1a($0) }, UInt64(0x85944171f73967e8))
+
+// Two clocks feed one array (CGEvent.timestamp for moves, the sampler's own
+// reading for cursor events), so append order is not time order.
+let unordered: [[String: Any]] = [["t": 5, "kind": "cursor", "shape": "ibeam"],
+                                  ["t": 3, "kind": "move"],
+                                  ["t": 5, "kind": "move"],
+                                  ["t": 9, "kind": "move"]]
+let ordered = orderedEvents(unordered)
+check("events are written in time order", ordered.map { $0["t"] as? Int ?? -1 }, [3, 5, 5, 9])
+check("ties keep append order (stable)", ordered.map { $0["kind"] as? String ?? "" }, ["move", "cursor", "move", "move"])
+check("ordering an empty list is fine", orderedEvents([]).count, 0)
+
 print(failures == 0 ? "ALL PASS" : "\(failures) FAILURES")
 exit(failures == 0 ? 0 : 1)

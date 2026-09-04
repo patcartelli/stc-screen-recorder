@@ -74,9 +74,9 @@ Open `frame.png` from a full-display shot taken with the pointer in the middle o
   position and shape instead. Move the pointer to another display and take another: the
   `cursor` key must be ABSENT, not zeroed.
 - **cursor shape**: over a text field expect `ibeam`, over a link `pointingHand`, elsewhere
-  `arrow`. If it is always `arrow`, `NSCursor.currentSystem` is blind from a background process
-  on a non-main thread — the same open question STC-309's probe measures; the position is still
-  right, and the shape falls back honestly.
+  `arrow`. The classifier is STC-309's (`CursorShape.swift`), so its probe's verdict applies here
+  too: if it is always `arrow`, `NSCursor.currentSystem` is blind from a background process on a
+  non-main thread; the position is still right, and the shape falls back honestly.
 - **window shot**: open `frame.png` in Preview — the corners outside the window's rounded shape
   must be transparent (checkerboard), with no desktop and no shadow. A shadow in the pixels
   means `ignoreShadowsSingleWindow` did not take.

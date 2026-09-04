@@ -20,6 +20,16 @@ final class App {
     /// the control plane for the queue that dispatches commands.
     private let statsQueue = DispatchQueue(label: "stc.stats")
     private var sigSources: [DispatchSourceSignal] = []
+    /// Guards `shutdown` itself, not just the wait inside one call of it.
+    /// `SIGINT`/`SIGTERM`/`SIGHUP` handlers run on a CONCURRENT global queue
+    /// (STC-304), so two signals arriving close together can call `shutdown`
+    /// from two different threads at once. Without this, a second call would
+    /// see `state` already `.stopping` from the first, take the immediate
+    /// bye-and-exit path, and exit while the first call's stop — the one
+    /// actually writing the sidecars — was still in flight: this fix's own
+    /// invariant, broken by the fix itself under a double signal.
+    private let shutdownLock = NSLock()
+    private var shuttingDown = false
 
     func boot() {
         installSignalHandlers()
@@ -76,6 +86,18 @@ final class App {
                     case .failure(let e): IO.send("error", seq: seq, ["code": e.code, "detail": e.description])
                     }
                 }
+        case "cursor-probe":
+            // STC-309 increment 0: the spike, as a command, so it measures the
+            // production sampler in the production process. Idle only — a
+            // recording's own sampler already owns the tap thread.
+            guard state == .idle else {
+                IO.send("error", seq: seq, ["code": "bad-state", "detail": "cursor-probe needs an idle helper"]); return
+            }
+            let ms = cmd["ms"] as? Int ?? 20_000
+            let onMain = cmd["onMain"] as? Bool ?? false
+            let interval = (cmd["intervalMs"] as? Double).map { $0 / 1000 } ?? CaptureSession.cursorSampleIntervalSeconds
+            CursorProbe.run(ms: ms, intervalSeconds: interval, onMain: onMain) { report in
+                IO.send("cursor-probe", seq: seq, report)
             }
         case "start":
             start(cmd, seq: seq)
@@ -189,9 +211,16 @@ final class App {
         }
     }
 
-    private func stop(seq: Int? = nil, reason: String = "user") {
+    /// `completion` fires after the stop has fully answered — after
+    /// `IO.send("stopped", ...)`, not before — so a caller that needs to know
+    /// the take is actually finished (shutdown, STC-304) has something to
+    /// wait on. Every existing caller ignores it and behaves exactly as
+    /// before.
+    private func stop(seq: Int? = nil, reason: String = "user", completion: (() -> Void)? = nil) {
         guard state == .recording || state == .starting else {
-            IO.send("error", seq: seq, ["code": "bad-state", "detail": "not recording"]); return
+            IO.send("error", seq: seq, ["code": "bad-state", "detail": "not recording"])
+            completion?()
+            return
         }
         state = .stopping
         let dir = sessionDir?.path
@@ -200,6 +229,7 @@ final class App {
         guard let session = capture else {
             IO.send("stopped", seq: seq, ["dir": dir as Any, "elapsedMs": elapsed, "reason": reason])
             sessionDir = nil; state = .idle
+            completion?()
             return
         }
         session.stop(reason: reason) { [weak self] stats in
@@ -210,6 +240,7 @@ final class App {
                 self?.capture = nil
                 self?.sessionDir = nil
                 self?.state = .idle
+                completion?()
             }
         }
     }
@@ -303,11 +334,63 @@ final class App {
         }
     }
 
+    /// Margin above `CaptureSession.stopTimeoutSeconds`: that is the bound on
+    /// `stop`'s OWN backstop, which writes the sidecars before it answers.
+    /// Setting this shutdown backstop to the same number, not a larger one,
+    /// is the exact trap CLAUDE.md already names elsewhere in this codebase —
+    /// two bounds racing on the same nominal deadline mean the informative
+    /// one can lose. This one exists only to catch `stop` never answering at
+    /// all (both its own callback AND its own backstop silent); it must not
+    /// be what usually fires.
+    static let shutdownBackstopMarginSeconds: Double = 5
+
+    /// Before STC-304: this called `stop(reason:)` — asynchronous, answered
+    /// via a `DispatchGroup.notify` or `CaptureSession`'s own 20 s backstop —
+    /// and exited on the very next line. The process was gone before the
+    /// sidecars it triggered were ever written: no `anchors.json`, no
+    /// `events.json`, and `display.mp4` with no `moov`. The library called
+    /// the result "not a recording". Reached by SIGTERM/SIGINT/SIGHUP,
+    /// stdin closing because the parent died, or a `quit` from a client that
+    /// did not stop first — the supervisor already stops before sending
+    /// `quit` (#64), but nothing upstream of a bare signal or a dead parent
+    /// can do that, which is why this is fixed here too.
+    ///
+    /// Answers exactly once, same shape as `CaptureSession.start`/`stop`:
+    /// whichever of `stop`'s own completion or this backstop runs first
+    /// wins. `stop` cannot legitimately take longer than
+    /// `CaptureSession.stopTimeoutSeconds` to answer — it has that same
+    /// bound on itself — so this backstop is not the normal path, only what
+    /// keeps the process from hanging forever if `stop` is wedged badly
+    /// enough that even ITS OWN backstop cannot run.
     func shutdown(reason: String, exitCode: Int32, seq: Int? = nil) {
         IO.log("shutdown: \(reason)")
-        if state == .recording || state == .starting { stop(reason: reason) }
-        IO.send("bye", seq: seq, ["reason": reason])
-        exit(exitCode)
+        shutdownLock.lock()
+        let first = !shuttingDown
+        shuttingDown = true
+        shutdownLock.unlock()
+        // A second overlapping call is silently absorbed by the first: this
+        // process is exiting exactly once, on the first call's own terms.
+        guard first else { return }
+
+        guard state == .recording || state == .starting else {
+            IO.send("bye", seq: seq, ["reason": reason])
+            exit(exitCode)
+        }
+
+        let answerLock = NSLock()
+        var answered = false
+        let finish: () -> Void = {
+            answerLock.lock()
+            if answered { answerLock.unlock(); return }
+            answered = true
+            answerLock.unlock()
+            IO.send("bye", seq: seq, ["reason": reason])
+            exit(exitCode)
+        }
+        DispatchQueue.global().asyncAfter(
+            deadline: .now() + CaptureSession.stopTimeoutSeconds + Self.shutdownBackstopMarginSeconds
+        ) { finish() }
+        stop(reason: reason) { finish() }
     }
 }
 

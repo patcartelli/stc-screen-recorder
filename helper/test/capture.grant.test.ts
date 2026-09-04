@@ -107,7 +107,8 @@ describe("capture — a real recording (requires Screen Recording)", () => {
     const ajv = new Ajv({ allErrors: true, strict: true });
     const load = (p: string) => JSON.parse(readFileSync(p, "utf8"));
     for (const [file, schema] of [
-      ["events.json", "schema/events-1.schema.json"],
+      // events-2 since STC-309: cursor-shape events beside the moves.
+      ["events.json", "schema/events-2.schema.json"],
       // v2 since STC-232 increment 3: the helper always emits version 2 and
       // always writes a camera block, present:false when there is no camera.
       // This file is grant-gated, so `npm test` cannot catch it drifting —
@@ -118,6 +119,26 @@ describe("capture — a real recording (requires Screen Recording)", () => {
       const ok = validate(load(join(dir, file)));
       expect(ok, `${file}: ${JSON.stringify(validate.errors, null, 2)}`).toBe(true);
     }
+
+    // STC-309: the shape changes in the file are what the helper counted, and
+    // each one is a CHANGE — two consecutive cursor events with the same shape
+    // would mean the sampler is emitting per tick, not per change. Zero is a
+    // legitimate count (nothing but the arrow was shown), so the assertion is
+    // consistency, not presence: the terminal running this may well be showing
+    // an I-beam, and a test that demanded zero would fail for being right.
+    const events = load(join(dir, "events.json"));
+    expect(events.version).toBe(2);
+    const cursor = events.events.filter((e: any) => e.kind === "cursor");
+    expect(stopped.cursorEvents, "stop reply carries cursorEvents").toBe(cursor.length);
+    for (let i = 1; i < cursor.length; i++) {
+      expect(cursor[i].shape, `cursor event ${i} repeats ${cursor[i - 1].shape}`).not.toBe(cursor[i - 1].shape);
+    }
+    // The sampler shares the tap's run loop; if it starved the tap the system
+    // would have disabled it and the helper would have counted a re-enable.
+    expect(stopped.tapReenables, "tap re-enabled while sampling the pointer").toBe(0);
+    // Two clocks feed one file; the helper orders it on the way out.
+    const ts = events.events.map((e: any) => e.t as number);
+    expect(ts.every((t: number, i: number) => i === 0 || t >= ts[i - 1]!), "events.json is not time-ordered").toBe(true);
 
     // anchors must describe a capture that respects the hardware-encode cliff
     const anchors = load(join(dir, "anchors.json"));

@@ -152,3 +152,110 @@ func pickCamera(_ devices: [(name: String, transportType: Int32)]) -> CameraChoi
     }!.element
     return CameraChoice(name: best.name, isVirtual: best.transportType == kTransportVirtual)
 }
+
+
+// ── which pointer is showing (STC-309) ──────────────────────────────────────
+
+/// The shapes the helper may write into events.json.
+///
+/// MUST equal the `shape` enum in schema/events-2.schema.json, which in turn
+/// equals what transform/src/cursor-art.ts can draw. Three lists in three
+/// languages; helper/test/cursor-shape-names.test.ts holds this one to the
+/// schema the way cursor-art.test.ts holds the schema to the artwork. A name
+/// the compositor cannot draw must never reach the file, so anything not in
+/// this list classifies as the arrow.
+let cursorShapeNames = ["arrow", "ibeam", "crosshair", "pointingHand"]
+
+/// What the compositor shows before the first cursor event (events-2), so a
+/// take that never leaves the arrow emits nothing and the default holds.
+let defaultCursorShape = "arrow"
+
+/// A pointer reduced to what tells the built-ins apart.
+///
+/// Computed the same way for the live pointer and for each reference
+/// (CursorShape.swift), in the same process, at the same pointer-size setting
+/// and backing scale — so those cancel out instead of needing a table of
+/// measured values that drifts the first time either changes.
+struct CursorSignature: Equatable {
+    /// Image size in points, as NSImage.size reports it.
+    let width: Double
+    let height: Double
+    /// Hotspot in points, from NSCursor.hotSpot.
+    let hotX: Double
+    let hotY: Double
+    /// FNV-1a over the bitmap's bytes. Geometry decides first; this breaks ties.
+    let hash: UInt64
+
+    func sameGeometry(as o: CursorSignature) -> Bool {
+        width == o.width && height == o.height && hotX == o.hotX && hotY == o.hotY
+    }
+}
+
+/// One of `cursorShapeNames`, as it looks on this machine right now.
+struct CursorReference: Equatable {
+    let shape: String
+    let signature: CursorSignature
+}
+
+enum CursorShapeDecision: Equatable {
+    /// Same shape as the last sample (or the arrow, for the first one).
+    case unchanged
+    /// The pointer changed shape; append `{t, kind: "cursor", shape}`.
+    case emit(shape: String)
+}
+
+/// 64-bit FNV-1a. Not cryptographic, and does not need to be: it decides
+/// whether two ~4 KB pointer bitmaps in one process are the same bytes.
+func fnv1a(_ bytes: UnsafeRawBufferPointer) -> UInt64 {
+    var h: UInt64 = 0xcbf2_9ce4_8422_2325
+    for b in bytes {
+        h ^= UInt64(b)
+        h = h &* 0x0000_0100_0000_01b3
+    }
+    return h
+}
+
+/// Which of the references a sample is.
+///
+/// Order matters and is the mapping rule the ticket asked for:
+///   1. exact match (geometry AND bytes) — the normal case, since sample and
+///      references come from the same process at the same settings;
+///   2. a UNIQUE geometry match — survives a representation change (a
+///      different rep chosen for the live pointer, say) that moves the hash
+///      while size and hotspot hold;
+///   3. otherwise the arrow. Several built-ins sharing a geometry with no byte
+///      match is ambiguous, and a wrong shape is worse than the default.
+func classifyCursor(_ s: CursorSignature, references: [CursorReference]) -> String {
+    if let exact = references.first(where: { $0.signature == s }) { return exact.shape }
+    let geometric = references.filter { $0.signature.sameGeometry(as: s) }
+    if geometric.count == 1 { return geometric[0].shape }
+    return defaultCursorShape
+}
+
+/// Emit only on change: the file holds a compact reference to which pointer
+/// is showing from t onward, never a bitmap and never one entry per tick.
+/// `previous == nil` means "nothing emitted yet", which the compositor reads
+/// as the arrow, so the first sample being an arrow produces no event.
+func decideCursorShape(sample: CursorSignature, references: [CursorReference],
+                       previous: String?) -> CursorShapeDecision {
+    let shape = classifyCursor(sample, references: references)
+    return shape == (previous ?? defaultCursorShape) ? .unchanged : .emit(shape: shape)
+}
+
+/// events.json in time order, stable on ties.
+///
+/// Appending order is not time order once two clocks feed one array: a
+/// move carries CGEvent.timestamp (when the event was generated) and a cursor
+/// event carries the sampler's own reading of the same mach clock (when the
+/// pointer was seen), and a move can be DELIVERED after a sampler tick that
+/// observed later than the move was generated. The transform sorts for
+/// itself (cursor.ts), so this is about the file being honest, not about
+/// correctness downstream — and about real-events.test.ts's monotonic check
+/// meaning what it says.
+func orderedEvents(_ events: [[String: Any]]) -> [[String: Any]] {
+    events.enumerated().sorted { a, b in
+        let ta = a.element["t"] as? Int ?? 0
+        let tb = b.element["t"] as? Int ?? 0
+        return ta != tb ? ta < tb : a.offset < b.offset
+    }.map { $0.element }
+}

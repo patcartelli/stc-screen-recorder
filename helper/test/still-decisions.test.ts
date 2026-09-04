@@ -29,6 +29,9 @@ describe("still decisions (STC-289)", () => {
       sources: [
         "helper/src/StillDecisions.swift",
         "helper/src/AnchorsDoc.swift",
+        // For cursorShapeNames — the still writes the same list the recording
+        // path classifies into (STC-309), so it is not declared twice.
+        "helper/src/CaptureDecisions.swift",
         "helper/test/still/main.swift",
       ],
     });
@@ -65,9 +68,9 @@ describe("still decisions (STC-289)", () => {
     expect(byLabel["window"].frame.alpha).toBe(true);
     expect(byLabel["window-opaque"].decoration.mode).toBe("selected-area");
 
-    // The helper's shape list must be the schema's enum, which is what the
-    // compositor can draw. Three lists in three languages; this holds the
-    // Swift one to the other two.
+    // The list the still writes its cursor shape from must be shot-1's enum,
+    // which is what the compositor can draw. cursor-shape-names.test.ts holds
+    // the same Swift list to events-2; this holds it to shot-1.
     const shapesLine = out.split("\n").find((l) => l.startsWith("shapes "));
     expect(shapesLine, "harness did not print its shape list").toBeDefined();
     const swiftShapes = shapesLine!.slice("shapes ".length).split(",");

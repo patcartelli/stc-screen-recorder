@@ -56,6 +56,10 @@
     #triminfo { opacity: .7; font-variant-numeric: tabular-nums; }
     #exportbar { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
     #exportbar[hidden] { display: none; }
+    .framebar { display: flex; align-items: center; gap: 8px; margin-top: 6px; font-size: 12px; }
+    .framebar button { padding: 3px 10px; font-size: 12px; }
+    #framestatus { opacity: .75; font-variant-numeric: tabular-nums; }
+    #framestatus[hidden] { display: none; }
     #exportprogress { flex: 1; }
     #exportstatus { font-size: 12px; opacity: .75; min-width: 150px; font-variant-numeric: tabular-nums; }
   </style>
@@ -76,6 +80,7 @@
       <tr><td>frames</td><td id="frames">—</td></tr>
       <tr><td>dropped</td><td id="dropped">—</td></tr>
       <tr><td>events</td><td id="events">—</td></tr>
+      <tr><td>cursor shapes</td><td id="cursorEvents">—</td></tr>
       <tr><td>elapsed</td><td id="elapsed">—</td></tr>
     </tbody>
   </table>
@@ -92,6 +97,11 @@
       <span id="clock">0:00 / 0:00</span>
       <button id="export">Export</button>
       <button id="closepreview">Close</button>
+    </div>
+    <div class="framebar">
+      <button id="copyframe" title="Copy the current frame as an image (⌘⇧C)">Copy frame</button>
+      <button id="saveframe" title="Save the current frame as a PNG beside the recording (⌘⇧S)">Save frame</button>
+      <span id="framestatus" hidden></span>
     </div>
     <div class="trimbar">
       <button id="markin">In</button>

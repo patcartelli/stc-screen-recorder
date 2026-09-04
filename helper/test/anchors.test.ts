@@ -41,6 +41,10 @@ describe("anchors document", () => {
 
     const noCamera = extractJSON(out, "JSON-NO-CAMERA:");
     expect(validate(noCamera), JSON.stringify(validate.errors, null, 2)).toBe(true);
+    expect((noCamera as { camera?: unknown }).camera, "a display-only take must not carry a camera block at all").toBeUndefined();
+
+    const requestedNoFrames = extractJSON(out, "JSON-CAMERA-REQUESTED-NO-FRAMES:");
+    expect(validate(requestedNoFrames), JSON.stringify(validate.errors, null, 2)).toBe(true);
 
     const withCamera = extractJSON(out, "JSON-WITH-CAMERA:");
     expect(validate(withCamera), JSON.stringify(validate.errors, null, 2)).toBe(true);

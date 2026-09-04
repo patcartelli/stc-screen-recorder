@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "segments": [
+    {
+      "id": "seg-0",
+      "media": {
+        "display": { "id": "disp-0", "file": "display-0.mp4" }
+      },
+      "startNs": 0,
+      "endNs": 3000000000
+    },
+    {
+      "id": "seg-1",
+      "media": {
+        "display": { "id": "disp-1", "file": "display-1.mp4" },
+        "camera": { "id": "cam-1", "file": "camera-1.mp4" }
+      },
+      "startNs": 3000000000,
+      "endNs": 6000000000
+    }
+  ]
+}

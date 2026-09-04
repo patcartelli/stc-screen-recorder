@@ -123,36 +123,23 @@ enum StillError: Error, CustomStringConvertible {
     }
 }
 
-/// The AppKit side of the cursor sample: which built-in pointer is showing.
+/// Which built-in pointer is showing, through STC-309's classifier
+/// (`CursorShape.swift` + `classifyCursor` in CaptureDecisions.swift): the same
+/// signatures, references and mapping rule the recording path uses, so a
+/// still and a take never disagree about what a pointer was. References are
+/// rendered here rather than cached — one still is one sample, and the
+/// pointer-size setting or backing scale may have changed since the last one.
 ///
-/// `NSCursor.currentSystem` is documented to return the current cursor
-/// "regardless of which application set it"; whether that holds from a
-/// background process is what STC-309's probe measures, and the same answer
-/// applies here. Until it is measured this samples the shape and falls back
-/// to the arrow, which is what every v1 take shows anyway. The position is
-/// the part a still cannot do without, and it comes from `NSEvent.mouseLocation`.
+/// Whether `NSCursor.currentSystem` sees other apps' pointers from a
+/// background process is what STC-309's probe measures; until then an unseen
+/// pointer classifies as the arrow, and the position — the part a still cannot
+/// do without — comes from `NSEvent.mouseLocation` regardless.
 enum StillCursor {
-    static func builtIn(_ name: String) -> NSCursor? {
-        switch name {
-        case "arrow":        return .arrow
-        case "ibeam":        return .iBeam
-        case "crosshair":    return .crosshair
-        case "pointingHand": return .pointingHand
-        default:             return nil
-        }
-    }
-
-    /// One representation's bytes. Sample and references go through the same
-    /// call in the same process, so which representation is chosen cancels out.
-    static func bytes(_ c: NSCursor) -> Data? { c.image.tiffRepresentation }
-
     static func currentShape() -> String {
-        let sample = NSCursor.currentSystem.flatMap(bytes)
-        let references = stillCursorShapes.compactMap { name -> (shape: String, bytes: Data)? in
-            guard let c = builtIn(name), let b = bytes(c) else { return nil }
-            return (shape: name, bytes: b)
+        guard let cur = NSCursor.currentSystem, let sig = CursorShape.signature(of: cur) else {
+            return defaultCursorShape
         }
-        return classifyStillCursor(sample: sample, references: references)
+        return classifyCursor(sig, references: CursorShape.references().refs)
     }
 }
 

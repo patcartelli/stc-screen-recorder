@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, dialog, shell } from "electron";
+import { app, BrowserWindow, ipcMain, dialog, shell, clipboard, nativeImage } from "electron";
 import { readSettings, writeSettings, type Settings } from "./settings.js";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -189,7 +189,7 @@ ipcMain.handle("preview:writeProject", async (_e, bytes: ArrayBuffer) => {
   // constant with the transform's; it was missed when project-2 was minted and
   // rejected every document the renderer wrote, so project.json silently never
   // appeared. Same shape as STC-262's anchors gate in takes.ts.
-  if (doc?.version !== 1 && doc?.version !== 2) {
+  if (doc?.version !== 1 && doc?.version !== 2 && doc?.version !== 3) {
     throw new Error(`project.json version ${doc?.version} is not supported`);
   }
   await writeFile(join(openTake, "project.json"), text);
@@ -200,7 +200,7 @@ ipcMain.handle("export:write", async (_e, name: string, bytes: ArrayBuffer) => {
   if (!openTake) throw new Error("no take is open");
   // The renderer chooses a filename; constrain it to a leaf name with a known
   // extension so it cannot traverse out of the take directory.
-  if (!/^[A-Za-z0-9._-]+\.(mp4|json)$/.test(name) || name.includes("..")) {
+  if (!/^[A-Za-z0-9._-]+\.(mp4|json|png)$/.test(name) || name.includes("..")) {
     throw new Error(`refusing to write "${name}"`);
   }
   // Source media is never mutated. The leaf-name rule above still admitted
@@ -212,6 +212,17 @@ ipcMain.handle("export:write", async (_e, name: string, bytes: ArrayBuffer) => {
   const dest = join(openTake, name);
   await writeFile(dest, Buffer.from(bytes));
   return dest;
+});
+
+/**
+ * A still onto the pasteboard (STC-298). Main owns the clipboard as it owns
+ * every other OS surface; the renderer hands over PNG bytes and nothing else.
+ */
+ipcMain.handle("frame:copy", async (_e, bytes: ArrayBuffer) => {
+  const image = nativeImage.createFromBuffer(Buffer.from(bytes));
+  if (image.isEmpty()) throw new Error("the frame could not be decoded as an image");
+  clipboard.writeImage(image);
+  return image.getSize();
 });
 
 ipcMain.handle("preview:read", async (_e, name: string) => {

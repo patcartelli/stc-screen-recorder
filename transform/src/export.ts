@@ -1,5 +1,5 @@
 import { render } from "./render.js";
-import { tickTimeNs } from "./time.js";
+import { exportFrameTimeNs } from "./time.js";
 import { ForwardFrameSource } from "./frame-source.js";
 import { composite } from "./compositor.js";
 import type { LoadedSession } from "./session.js";
@@ -87,7 +87,7 @@ export async function exportSession(
   // An exported clip is its own file and its timeline starts at zero. render()
   // still receives SESSION time — cursor state depends on where we are in the
   // recording, not where this clip begins.
-  const originNs = tickTimeNs(2 * from);
+  const originNs = exportFrameTimeNs(from);
 
   const encode = opts.encode ?? true;
   let muxer: Muxer<ArrayBufferTarget> | undefined;
@@ -112,7 +112,7 @@ export async function exportSession(
       if (opts.signal?.aborted) { cancelled = true; break; }
       if (encoderError) throw encoderError;
 
-      const tNs = tickTimeNs(2 * (from + k));
+      const tNs = exportFrameTimeNs(from + k);
       const fs = render(project, session, tNs);
       // Frame selection is render()'s answer, not the sink's to re-derive: a
       // sink that recomputed it would keep the old rule if render()'s ever
