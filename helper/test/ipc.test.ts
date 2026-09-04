@@ -243,3 +243,65 @@ describe("camera opt-in", () => {
     }
   }, 90_000);
 });
+
+describe("capture-still — validation answers on fd3 before anything touches ScreenCaptureKit (STC-289)", () => {
+  // These need no grant: every case is refused by parseStillRequest, which
+  // runs before content enumeration. Each answer must carry the seq, name a
+  // code, and never appear on the lossy channel.
+  const cases: Array<[string, object, string]> = [
+    ["no dir", { cmd: "capture-still" }, "missing-dir"],
+    ["unknown kind", { cmd: "capture-still", dir: tmpSession(), kind: "region" }, "bad-kind"],
+    ["window without windowId", { cmd: "capture-still", dir: tmpSession(), kind: "window" }, "missing-window-id"],
+    ["window with a crop", { cmd: "capture-still", dir: tmpSession(), kind: "window", windowId: 1,
+                             crop: { x: 0, y: 0, width: 1, height: 1 } }, "crop-on-window"],
+    ["zero-size crop", { cmd: "capture-still", dir: tmpSession(), crop: { x: 0, y: 0, width: 0, height: 10 } }, "bad-crop"],
+    ["file that is a path", { cmd: "capture-still", dir: tmpSession(), file: "../out.png" }, "bad-file"],
+  ];
+  for (const [name, cmd, code] of cases) {
+    test(`${name} -> ${code}`, async () => {
+      const h = spawnHelper();
+      await waitFor(() => find(h.fd3, "ready"));
+      h.send({ ...cmd, seq: 31 });
+      const r = await waitFor(() => h.fd3.find((l) => l.seq === 31), 5000, `seq 31 (${name})`);
+      expect(r.ev).toBe("error");
+      expect(r.code).toBe(code);
+      expect(typeof r.detail).toBe("string");
+      expect(h.out.some((l) => l.seq === 31)).toBe(false);
+    });
+  }
+
+  test("a well-formed still's outcome is always reliable and correlated, granted or not", async () => {
+    // Agnostic about the grant, like the `start` case above: without Screen
+    // Recording it answers `error` (no-displays), on a pre-14 OS
+    // `still-unsupported`, and with a grant `still`. Whichever it is, the
+    // answer is on fd3 with the seq, the helper is still idle afterwards
+    // (a still never touches recording state), and it answered within its
+    // own bound — StillCapture.timeoutSeconds — rather than the client's.
+    const h = spawnHelper();
+    await waitFor(() => find(h.fd3, "ready"));
+    const dir = tmpSession();
+    h.send({ cmd: "capture-still", dir, seq: 32 });
+    const r = await waitFor(() => h.fd3.find((l) => l.seq === 32), 12_000, "still outcome");
+    expect(["still", "error"]).toContain(r.ev);
+    if (r.ev === "error") {
+      expect(["no-displays", "still-unsupported", "capture-failed"]).toContain(r.code);
+    } else {
+      expect(r.file).toBe("frame.png");
+      expect((r.shot as any).version).toBe(1);
+    }
+    expect(h.out.some((l) => l.seq === 32)).toBe(false);
+    h.send({ cmd: "status", seq: 33 });
+    const s = await waitFor(() => h.fd3.find((l) => l.seq === 33), 5000, "status after still");
+    expect(s.state).toBe("idle");
+  }, 20_000);
+
+  test("windows answers reliably, granted or not", async () => {
+    const h = spawnHelper();
+    await waitFor(() => find(h.fd3, "ready"));
+    h.send({ cmd: "windows", seq: 34 });
+    const r = await waitFor(() => h.fd3.find((l) => l.seq === 34), 12_000, "windows outcome");
+    expect(["windows", "error"]).toContain(r.ev);
+    if (r.ev === "windows") expect(Array.isArray(r.windows)).toBe(true);
+    else expect(r.code).toBe("no-displays");
+  }, 20_000);
+});

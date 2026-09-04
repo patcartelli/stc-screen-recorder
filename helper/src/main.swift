@@ -13,6 +13,9 @@ final class App {
     private var startedAtNs: UInt64 = 0
     private var statsTimer: DispatchSourceTimer?
     private var capture: CaptureSession?
+    /// In-flight stills (STC-289), retained until each answers. A still never
+    /// reads or writes `state`: it is not a recording and must not disturb one.
+    private var stills: [ObjectIdentifier: StillCapture] = [:]
     /// Stats run off the main queue on purpose: telemetry must never compete with
     /// the control plane for the queue that dispatches commands.
     private let statsQueue = DispatchQueue(label: "stc.stats")
@@ -63,6 +66,17 @@ final class App {
                 deviceTypes: [.builtInWideAngleCamera, .externalUnknown],
                 mediaType: .video, position: .unspecified).devices.map { $0.localizedName }
             IO.send("camera-probe", seq: seq, ["auth": auth, "devices": devices])
+        case "capture-still":
+            captureStill(cmd, seq: seq)
+        case "windows":
+            WindowList.enumerate { result in
+                DispatchQueue.main.async {
+                    switch result {
+                    case .success(let o): IO.send("windows", seq: seq, o)
+                    case .failure(let e): IO.send("error", seq: seq, ["code": e.code, "detail": e.description])
+                    }
+                }
+            }
         case "start":
             start(cmd, seq: seq)
         case "stop":
@@ -113,24 +127,63 @@ final class App {
                     IO.send("error", seq: seq,
                             ["code": ce?.code ?? "start-failed",
                              "detail": ce.map { $0.description } ?? "\(err)"])
-                    // A failed start still leaves the writer's zero-byte
-                    // display.mp4 behind, so "is the directory empty?" is not
-                    // the right question — "does it hold anything worth
-                    // keeping?" is. Only ever removes a directory we created
-                    // whose contents are all empty files.
-                    if !dirExistedBefore, let fm = Optional(FileManager.default),
-                       let entries = try? fm.contentsOfDirectory(atPath: url.path),
-                       entries.allSatisfy({ name in
-                           let attrs = try? fm.attributesOfItem(atPath: url.appendingPathComponent(name).path)
-                           return (attrs?[.size] as? Int ?? 1) == 0
-                       }) {
-                        try? fm.removeItem(at: url)
-                    }
+                    if !dirExistedBefore { App.removeIfNothingWorthKeeping(url) }
                     // Leave the helper usable: a denied permission must not
                     // wedge the process, it must be retryable after granting.
                     self.capture = nil
                     self.sessionDir = nil
                     self.state = .idle
+                }
+            }
+        }
+    }
+
+    /// A failed start still leaves the writer's zero-byte display.mp4 behind,
+    /// so "is the directory empty?" is not the right question — "does it hold
+    /// anything worth keeping?" is. Only ever removes a directory we created
+    /// whose contents are all empty files; a pre-existing one is never passed
+    /// in. Shared by `start` and `capture-still`, so a denied grant litters
+    /// neither the recordings folder nor a stills folder with empty takes.
+    static func removeIfNothingWorthKeeping(_ url: URL) {
+        let fm = FileManager.default
+        guard let entries = try? fm.contentsOfDirectory(atPath: url.path),
+              entries.allSatisfy({ name in
+                  let attrs = try? fm.attributesOfItem(atPath: url.appendingPathComponent(name).path)
+                  return (attrs?[.size] as? Int ?? 1) == 0
+              })
+        else { return }
+        try? fm.removeItem(at: url)
+    }
+
+    /// `capture-still` (STC-289): one frame, its own directory, its own
+    /// document. Allowed in EVERY state, recording included — that is the
+    /// point — and it neither reads nor changes `state`. Validation answers
+    /// before anything touches ScreenCaptureKit, so a bad request costs no
+    /// grant and no time (ipc.test.ts covers those on a machine with neither).
+    private func captureStill(_ cmd: [String: Any], seq: Int?) {
+        let req: StillRequest
+        switch parseStillRequest(cmd) {
+        case .failure(let e):
+            IO.send("error", seq: seq, ["code": e.code, "detail": e.description]); return
+        case .success(let r):
+            req = r
+        }
+        let url = URL(fileURLWithPath: req.dir)
+        let dirExistedBefore = FileManager.default.fileExists(atPath: url.path)
+        do { try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true) }
+        catch { IO.send("error", seq: seq, ["code": "mkdir-failed", "detail": "\(error)"]); return }
+
+        let still = StillCapture(request: req, dir: url)
+        stills[ObjectIdentifier(still)] = still
+        still.run { [weak self] result in
+            DispatchQueue.main.async {
+                self?.stills[ObjectIdentifier(still)] = nil
+                switch result {
+                case .success(let o):
+                    IO.send("still", seq: seq, o)
+                case .failure(let e):
+                    IO.send("error", seq: seq, ["code": e.code, "detail": e.description])
+                    if !dirExistedBefore { App.removeIfNothingWorthKeeping(url) }
                 }
             }
         }

@@ -157,17 +157,12 @@ final class CaptureSession: NSObject, SCStreamOutput, SCStreamDelegate {
             return
         }
         displayID = display.displayID
-        pointW = display.width
-        pointH = display.height
-        let bounds = CGDisplayBounds(displayID)
-        originX = Double(bounds.origin.x)
-        originY = Double(bounds.origin.y)
-        if let mode = CGDisplayCopyDisplayMode(displayID) {
-            pixelW = mode.pixelWidth
-            pixelH = mode.pixelHeight
-        } else {
-            pixelW = pointW; pixelH = pointH
-        }
+        // Measured by the same function the still path uses (AnchorsDoc.swift),
+        // so anchors.json and shot.json describe one display the same way.
+        let g = displayGeometry(id: displayID, pointWidth: display.width, pointHeight: display.height)
+        pointW = g.pointWidth; pointH = g.pointHeight
+        pixelW = g.pixelWidth; pixelH = g.pixelHeight
+        originX = g.originX; originY = g.originY
         (captureW, captureH) = captureSize(pixelW, pixelH)
 
         // No backstop is armed here: start() armed one covering this whole

@@ -24,6 +24,10 @@ events → deterministic transform → CFR MP4 with cursor overlay.
 | `transform/src/` | the pure transform + shared sink modules (TS; render, time, cursor, demux, decode, compositor) |
 | `schema/` | versioned session schemas (anchors-1/2, events-1/2, project-1/2) |
 | `transform/src/cursor-art.ts` | the macOS pointer set as vector paths (STC-239); the events-2 `shape` enum must equal its list |
+| `helper/src/Still.swift` | `capture-still` and `windows` (STC-289): one frame through `SCScreenshotManager`, reached via the ObjC runtime because the 13.3 SDK has no header for it; display filter for regions, window filter for windows |
+| `helper/src/StillDecisions.swift` | the still path's pure decisions — request parsing, crop, cursor localisation, `shotDocument` — tested without a display by `helper/test/still/` |
+| `schema/shot-1.schema.json`, `transform/src/shot.ts` | the still document and its loader (`parseShot` refuses rather than defaults); `fixtures/shot/` |
+| `docs/STC-289-RUNBOOK.md` | what to run on the Mac for the still path, and what each result means |
 | `fixtures/` | hand-authored 5 s fixture session + deterministic display.mp4 generator |
 | `harness/` | vite-served browser harness hosting both sinks |
 | `scripts/gate.mjs` | increment-0 determinism gate (Playwright + real Chrome) |
@@ -78,6 +82,7 @@ belonging to a different commit).
 | STC-286 | **cause found 2026-08-31, and now reported DURING the take.** In clamshell the built-in camera OPENS — `camera-started device: "FaceTime HD Camera"` — then delivers nothing: 0-byte camera.mp4, `present: false`. Not a failed open and not a wrong pick (`pickCamera` chose correctly over a virtual device and Continuity). A 3 s liveness watchdog warns while recording | nothing — both arms verified on hardware, lid shut AND lid open |
 | STC-239 | **transform half DONE 2026-09-02** — the placeholder circle is macOS pointer artwork (arrow, I-beam, crosshair, pointing hand), vector paths with the hotspot at the origin, drawn at `pxPerPoint` (display→output ratio × `project.cursor.scale`). `events-2` adds `{kind:"cursor", shape}`; the sim shows the arrow until the first one, which is what every v1 take means. `project.cursor.style: "circle"` keeps the old placeholder as an option (project.json only — no UI for it). **The helper still writes v1 and emits no cursor events**, so real takes show the arrow throughout. Merged as #65; closed 2026-09-02 | nothing — the helper half is STC-309 |
 | STC-309 | **helper emits cursor-shape events** — the producer half of STC-239: detect pointer changes on the tap thread, append `{kind:"cursor", shape}` on the session clock, write events.json v2. The transform, schema and fixtures are already in place; `helper/test/real-events.test.ts` and `capture.grant.test.ts` switch to `events-2` when the helper flips | macOS to build (nothing on a Linux session can run swiftc) and a hardware take to verify: I-beam over a text field, hand over a link, arrow elsewhere |
+| STC-289 | **helper still capture — written 2026-09-04 on a Linux session, UNCOMPILED.** `capture-still` returns one frame via `SCScreenshotManager` with no stream and no recording lifecycle; `windows` lists what a window shot can name. Display filter + `sourceRect` for region/full shots, `desktopIndependentWindow` filter for window shots with alpha end to end; `frame.png` + `shot.json` (shot-1, cherry-picked from the review branch) in the request's dir; cursor sampled from `NSEvent.mouseLocation`, absent when on another display; 10 s answer-once backstop. The pure half is tested without a grant and every document it writes is validated against the schema AND `parseShot` on every `npm test` | a Mac: `docs/STC-289-RUNBOOK.md`. The ObjC-runtime call is the one line no test on Linux can vouch for; `still.grant.test.ts` is the proof |
 | STC-247 | multi-display capture | a second display |
 | STC-251/252 | preview memory ceiling (~15 min at 4K); Node 20 actions deprecation | — |
 
@@ -948,3 +953,18 @@ reachable via KVC (`setValue(3, forKey: "captureResolution")`, verified in phase
   The dev `Electron.app` is ad-hoc signed (`TeamIdentifier=not set`), so per the signing trap above
   the grant is fragile across reinstalls. `tools/test-host` remains the stable-identity bundle for
   permission work.
+
+- **A macOS 14+ class the 13.3 SDK cannot name is still callable — by name, through the runtime
+  (STC-289).** `SCScreenshotManager` has no header in the SDK `helper/build.sh` compiles against, and
+  the ticket's first note concluded that meant waiting for Xcode. It does not: the class exists on
+  the running OS, `NSClassFromString` finds it, and `class_getClassMethod` + `unsafeBitCast` to a
+  `@convention(c)` type calls the one class method with a real block — `ScreenshotAPI` in
+  `Still.swift`. It is the same family as the `captureResolution` KVC in `Capture.swift`, one step
+  further. The cost is stated where the code is: a misspelt selector is `still-unsupported` at
+  RUNTIME, not a compile error, so `ScreenshotAPI.available` checks class AND selector before any
+  request, and `still.grant.test.ts` is the only thing that proves the call. The 14+ configuration
+  knobs a still needs (`ignoreShadowsSingleWindow`, `shouldBeOpaque`) go through KVC guarded by
+  `responds(to:)`, and the reply reports whether each was taken rather than assuming.
+  NB `captureResolution` in `Capture.swift` is set to 3; `SCCaptureResolutionType` is
+  automatic 0 / best 1 / nominal 2. Explicit width/height govern, so it has never mattered — the
+  still path sets 1. Not changed in the recording path here; it is not this ticket's.
