@@ -185,14 +185,16 @@
           "enum": [
             "user",
             "display-reconfigured",
+            "stream-stopped",
             "device-lost",
             "error",
             "user-timeout",
             "display-reconfigured-timeout",
+            "stream-stopped-timeout",
             "device-lost-timeout",
             "error-timeout"
           ],
-          "description": "Why the recording ended. A '-timeout' suffix means the writer did not finalise in time and the sidecars were written anyway — display.mp4 may be incomplete."
+          "description": "Why the recording ended. 'stream-stopped' is a display stream that died mid-take (SCStream's didStopWithError after a successful start); the helper ends the take itself, and it is intact up to the failure. A '-timeout' suffix means the writer did not finalise in time and the sidecars were written anyway — display.mp4 may be incomplete."
         }
       }
     }

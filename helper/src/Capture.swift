@@ -45,6 +45,22 @@ final class CaptureSession: NSObject, SCStreamOutput, SCStreamDelegate {
     /// got nothing", and only this flag tells the two apart.
     private var wantCamera = false
     private var stoppingBegan = false
+    /// Guards RE-ENTRY into `stop()` itself (STC-305). `App.start`'s success
+    /// handler can call `stop()` a second time on a session whose teardown is
+    /// already in flight — a stray success racing a `stop` that arrived while
+    /// `startStream()` had already assigned a real `stream` but before
+    /// `startCapture`'s own completion had fired. Both `stream.stopCapture`
+    /// and `writer.finishWriting` are only safe to invoke once per session:
+    /// `WriterGate.closeAndMarkFinished()` already refuses a second
+    /// `markAsFinished`, but its caller never checked that return value, so a
+    /// second `stop()` reaching `finishWriting` a second time was the exact
+    /// AVAssetWriter teardown race this codebase already fixed once (STC-254),
+    /// reachable again through a second call site. `stopStarted` /
+    /// `stopCompletions` / `stopStats` make every caller past the first
+    /// coalesce onto the ONE real teardown instead of starting another.
+    private var stopStarted = false
+    private var stopCompletions: [([String: Any]) -> Void] = []
+    private var stopStats: [String: Any]?
     /// The input and adaptor live behind the gate, not here: every access to
     /// them is either an append or a teardown, and those two must not overlap
     /// (STC-254). Holding them as plain properties is what allowed the overlap.
@@ -63,18 +79,31 @@ final class CaptureSession: NSObject, SCStreamOutput, SCStreamDelegate {
     private var lastPtsNs: Int64 = -1
     private var firstFramePtsNs: Int64 = -1
     private var tapReenables = 0
+    /// Every disable the tap reported, by reason, and separately those that
+    /// arrived after stop() had disabled it on purpose (which are expected
+    /// and are neither counted as re-enables nor acted on).
+    private var tapDisables: [String: Int] = [:]
+    private var tapDisablesAfterStop = 0
     private var cursorEvents = 0
     private var cursorSampler: CursorSampler?
+    private var cursorRunLoop: CFRunLoop?
 
     /// How often the system pointer is sampled for shape changes (STC-309).
     ///
-    /// The sample runs on the TAP's thread, so this is what it costs that
-    /// thread: one `NSCursor.currentSystem` read and a hash of a ~4 KB bitmap
-    /// per tick — microseconds, and measured rather than assumed by the
-    /// `cursor-probe` command (`sampleUsMax`). At 30 Hz a hover is seen up to
-    /// 33 ms late, two output frames at 60 fps. Do not chase it lower without
-    /// a measurement showing that lag is visible.
+    /// MEASURED 2026-09-03 with the `cursor-probe` command on real hardware:
+    /// a sample costs 1.04 ms on average and 41 ms at worst (599 samples), so
+    /// it is NOT microseconds and does NOT run on the tap's thread — a 41 ms
+    /// stall on the run loop that answers WindowServer is how a tap gets
+    /// disabled (`tapDisabledByTimeout`). The sampler has its own thread
+    /// (`startCursorSampler`); ordering against the moves is restored at
+    /// write time by `orderedEvents`. At 30 Hz that is ~3% of one core, and a
+    /// hover is seen up to 33 ms late, two output frames at 60 fps. Do not
+    /// chase it lower without a measurement showing that lag is visible.
     static let cursorSampleIntervalSeconds: Double = 1.0 / 30
+
+    /// `STC_NO_CURSOR_SAMPLER=1`: see startCursorSampler.
+    static let cursorSamplerDisabledForDiagnosis: Bool =
+        ProcessInfo.processInfo.environment["STC_NO_CURSOR_SAMPLER"].map { !$0.isEmpty && $0 != "0" } ?? false
 
     /// A start must be answered exactly once, by whichever path gets there
     /// first. SCStream can fail through `didStopWithError` INSTEAD of through
@@ -83,6 +112,14 @@ final class CaptureSession: NSObject, SCStreamOutput, SCStreamDelegate {
     /// forever. A protocol where some requests are never answered is worse than
     /// one that answers with an error.
     private var startCompletion: ((Result<[String: Any], Error>) -> Void)?
+    /// Fired when the stream dies AFTER the start was answered (STC-306).
+    /// `App` sets it, the way it sets `Watchers.onDisplayChange`, to end the
+    /// take: SCK does not resume a stopped stream, so a session left in
+    /// `recording` after `didStopWithError` keeps the writer open and the
+    /// heartbeat saying `recording` while no frame will ever arrive again, and
+    /// nothing ends the take until the user presses Stop. Called on SCK's
+    /// delegate queue; the handler dispatches to main itself.
+    var onStreamDied: ((Error) -> Void)?
     /// How long a `start` may take before it is answered with `start-timeout`.
     /// Covers the WHOLE request — content enumeration included (STC-258).
     /// `helper/test/capture.test.ts` bounds its own waits above this; if this
@@ -199,6 +236,7 @@ final class CaptureSession: NSObject, SCStreamOutput, SCStreamDelegate {
                     self.finishStart(.failure(CaptureError.streamFailed(err)))
                 } else {
                     self.startEventTap()
+                    self.startCursorSampler()
                     // Optional subsystem: it must not sit on the critical path. PHASE-0
                     // recorded camera/mic setup blocking startup once already, and
                     // `AVCaptureSession.startRunning()` is documented as blocking — a
@@ -213,6 +251,7 @@ final class CaptureSession: NSObject, SCStreamOutput, SCStreamDelegate {
                         self.startCameraAsync()
                     }
                     self.finishStart(.success(self.describe()))
+                    self.armStreamDeathFault()
                 }
             }
         } catch {
@@ -222,12 +261,39 @@ final class CaptureSession: NSObject, SCStreamOutput, SCStreamDelegate {
 
     /// Call-once. Later callers are no-ops, so a stream that fails after a
     /// successful start reports as a warning rather than a second response.
-    private func finishStart(_ result: Result<[String: Any], Error>) {
+    /// Returns whether THIS call answered the start — `didStopWithError` uses
+    /// that to tell a stream that died on the way up (the start's answer) from
+    /// one that died under a live take (the take's end, STC-306).
+    @discardableResult
+    private func finishStart(_ result: Result<[String: Any], Error>) -> Bool {
         startLock.lock()
         let c = startCompletion
         startCompletion = nil
         startLock.unlock()
         c?(result)
+        return c != nil
+    }
+
+    /// `STC_CAPTURE_FAULT=stream-died`: shortly after a successful start, the
+    /// stream reports itself dead through the same delegate method SCK uses,
+    /// so the helper's reaction to a stream death is watched firing rather
+    /// than reasoned about — a path nobody has seen taken is indistinguishable
+    /// from one that cannot be. The SCStream itself is left running: the
+    /// subject is the reaction (warning, unsolicited `stopped`, finalised
+    /// sidecars), and `stop()` tears the real stream down either way — on a
+    /// genuine death `stopCapture` answers with an error that is ignored, on
+    /// the fault it answers cleanly; both reach `finishWriting`.
+    /// Driven by helper/test/stream-died.grant.test.ts.
+    static let streamDeathFaultDelaySeconds: Double = 0.5
+    private func armStreamDeathFault() {
+        guard ProcessInfo.processInfo.environment["STC_CAPTURE_FAULT"] == "stream-died",
+              let s = stream else { return }
+        IO.log("STC_CAPTURE_FAULT=stream-died: the stream will report itself dead in \(Self.streamDeathFaultDelaySeconds) s")
+        DispatchQueue.global().asyncAfter(deadline: .now() + Self.streamDeathFaultDelaySeconds) { [weak self] in
+            self?.stream(s, didStopWithError: NSError(
+                domain: "stc.fault", code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "injected by STC_CAPTURE_FAULT=stream-died"]))
+        }
     }
 
     /// Opens the camera off the critical path (MEDIUM 3): `start` already
@@ -412,8 +478,14 @@ final class CaptureSession: NSObject, SCStreamOutput, SCStreamDelegate {
     func stream(_ stream: SCStream, didStopWithError error: Error) {
         // If the start is still pending this IS its answer — the stream died on
         // the way up rather than reporting through startCapture's completion.
-        finishStart(.failure(CaptureError.streamFailed(error)))
+        let answeredStart = finishStart(.failure(CaptureError.streamFailed(error)))
         IO.send("warning", ["code": "stream-stopped", "detail": "\(error)"])
+        // Otherwise the take was live and has just lost its source (STC-306).
+        // Nothing here can revive the stream, so the owner ends the take —
+        // the same clean stop a display change gets — instead of sitting in
+        // `recording` with frames that will never arrive. The take is intact
+        // up to the failure, which is what a clean stop preserves.
+        if !answeredStart { onStreamDied?(error) }
     }
 
     // MARK: - event tap
@@ -456,11 +528,41 @@ final class CaptureSession: NSObject, SCStreamOutput, SCStreamDelegate {
             self.tapRunLoop = CFRunLoopGetCurrent()
             CFRunLoopAddSource(CFRunLoopGetCurrent(), src, .commonModes)
             CGEvent.tapEnable(tap: tap, enable: true)
+            // Runs until stop() calls CFRunLoopStop. Unbounded by design: this
+            // is the tap's own thread, and a run loop that returned early would
+            // silently stop delivering input for the rest of the recording.
+            CFRunLoopRun()
+        }
+        t.name = "event-tap"
+        t.start()
+    }
 
-            // STC-309: the pointer's SHAPE is sampled here too, on this same
-            // run loop, so one thread owns the order of everything appended to
-            // `events`. The references are measured now, on this machine, at
-            // its current pointer size and scale — never a baked-in table.
+    /// STC-309: samples the pointer's SHAPE on a thread of its own.
+    ///
+    /// The first draft put the timer on the tap's run loop so one thread would
+    /// own the order of everything appended to `events`. The probe then
+    /// measured a sample at 1 ms typical and 41 ms worst — enough to hold up
+    /// the tap's answer to WindowServer — so the sampler lives here instead,
+    /// and `orderedEvents` restores time order when the file is written.
+    /// Nothing else runs on this loop, so a slow sample costs nobody but the
+    /// sampler. Mirrors the tap thread: a plain Thread, its own CFRunLoop,
+    /// stopped by `stop()`.
+    ///
+    /// The references are measured now, on this machine, at its current
+    /// pointer size and scale — never a baked-in table.
+    private func startCursorSampler() {
+        // DIAGNOSTIC control, not a feature: a take that differs from a normal
+        // one ONLY by having no sampler, so a fault seen with it running can
+        // be compared against one without. Read once at launch, like
+        // --stats-interval-ms. Announced so a take recorded this way can
+        // never pass for one where the pointer simply never changed.
+        if Self.cursorSamplerDisabledForDiagnosis {
+            IO.send("warning", ["code": "cursor-sampler-disabled",
+                                "detail": "STC_NO_CURSOR_SAMPLER is set; this take will carry no cursor-shape events"])
+            return
+        }
+        let t = Thread { [weak self] in
+            guard let self else { return }
             let (refs, missing) = CursorShape.references()
             if !missing.isEmpty {
                 let names = missing.joined(separator: ", ")
@@ -471,18 +573,29 @@ final class CaptureSession: NSObject, SCStreamOutput, SCStreamDelegate {
             let sampler = CursorSampler(references: refs) { [weak self] shape, observedNs in
                 self?.recordCursorShape(shape, observedNs: observedNs)
             }
-            sampler.schedule(on: CFRunLoopGetCurrent(), intervalSeconds: Self.cursorSampleIntervalSeconds)
+            let rl: CFRunLoop = CFRunLoopGetCurrent()
+            sampler.schedule(on: rl, intervalSeconds: Self.cursorSampleIntervalSeconds)
+            // Published under `lock` in the same critical section stop() reads
+            // it in, with `stoppingBegan` as the tie-break: a stop that lands
+            // before this thread gets here would otherwise find no loop to
+            // stop, and the sampler would run for the rest of the process's
+            // life — the same shape as the camera's HIGH 1 race.
+            self.lock.lock()
+            if self.stoppingBegan {
+                self.lock.unlock()
+                sampler.invalidate()
+                return
+            }
             self.cursorSampler = sampler
-
-            // Runs until stop() calls CFRunLoopStop. Unbounded by design: this
-            // is the tap's own thread, and a run loop that returned early would
-            // silently stop delivering input for the rest of the recording.
+            self.cursorRunLoop = rl
+            self.lock.unlock()
+            // Unbounded by design, like the tap's: stop() ends it.
             CFRunLoopRun()
             // Nothing runs this loop again, so no tick can follow; invalidating
             // here, on the loop's own thread, just releases the timer.
             sampler.invalidate()
         }
-        t.name = "event-tap"
+        t.name = "cursor-sampler"
         t.start()
     }
 
@@ -491,9 +604,21 @@ final class CaptureSession: NSObject, SCStreamOutput, SCStreamDelegate {
         // converted displayTime — converting it would be a 41.667x error in the
         // other direction. The mapping lives in CaptureDecisions.swift.
         switch decideCursorEvent(type: type, timestampNs: event.timestamp, t0Ns: t0Ns) {
-        case .reenableTap:
-            if let tap { CGEvent.tapEnable(tap: tap, enable: true) }
-            lock.lock(); tapReenables += 1; lock.unlock()
+        case .reenableTap(let reason):
+            // stop() disables the tap itself, and CoreGraphics reports that
+            // back here as a user-input disable. Re-enabling it would undo the
+            // stop, and counting it made every take look as if the tap had
+            // been starved once. So: after stop began, note it and do nothing.
+            lock.lock()
+            let stopping = stoppingBegan
+            if stopping {
+                tapDisablesAfterStop += 1
+            } else {
+                tapReenables += 1
+                tapDisables[reason.rawValue, default: 0] += 1
+            }
+            lock.unlock()
+            if !stopping, let tap { CGEvent.tapEnable(tap: tap, enable: true) }
         case .ignore, .beforeStart:
             return
         case .event(let t, let kind, let button):
@@ -529,7 +654,11 @@ final class CaptureSession: NSObject, SCStreamOutput, SCStreamDelegate {
         return ["frames": framesAppended, "dropped": framesDropped,
                 "nonMonotonic": framesNonMonotonic, "events": events.count,
                 "cursorEvents": cursorEvents,
-                "tapReenables": tapReenables]
+                "tapReenables": tapReenables,
+                // Which kind, so a re-enable can be read as starvation or not.
+                "tapDisabled": ["timeout": tapDisables["timeout"] ?? 0,
+                                "userInput": tapDisables["userInput"] ?? 0,
+                                "afterStop": tapDisablesAfterStop]]
     }
 
     /// No camera field here on purpose: the camera opens asynchronously (see
@@ -555,17 +684,41 @@ final class CaptureSession: NSObject, SCStreamOutput, SCStreamDelegate {
     /// the video may still be readable, and if it is not, the sidecars say what
     /// was attempted.
     func stop(reason: String, completion: @escaping ([String: Any]) -> Void) {
-        if let tap { CGEvent.tapEnable(tap: tap, enable: false) }
-        if let tapRunLoop { CFRunLoopStop(tapRunLoop) }
-
+        // Re-entry (STC-305): a second call while the first is already
+        // tearing down is coalesced onto it rather than starting a second
+        // teardown of the same stream/writer. A second call that arrives
+        // AFTER the first has already finished is answered immediately with
+        // what was already recorded — the take is not re-stopped, and its
+        // reason is not rewritten by a later, incidental caller.
+        lock.lock()
+        if let stats = stopStats {
+            lock.unlock()
+            completion(stats)
+            return
+        }
+        if stopStarted {
+            stopCompletions.append(completion)
+            lock.unlock()
+            return
+        }
+        stopStarted = true
         // Set BEFORE reading `camera`: this is the other half of the HIGH 1
         // race. A camera that finishes opening after this point checks the
         // flag (in `startCameraAsync`) and closes itself instead of being
-        // stored, so it is not simply skipped and left running.
-        lock.lock()
+        // stored, so it is not simply skipped and left running. The cursor
+        // sampler's run loop is read in the same section for the same reason
+        // (startCursorSampler) — still under the one lock acquisition the
+        // STC-305 re-entry guard above already holds. And it is set BEFORE
+        // the tap is disabled below, so the disable CoreGraphics reports back
+        // (handleTapEvent) is seen as ours and not re-enabled or counted.
         stoppingBegan = true
         let cam = camera
+        let cursorRL = cursorRunLoop
         lock.unlock()
+
+        if let tap { CGEvent.tapEnable(tap: tap, enable: false) }
+        if let tapRunLoop { CFRunLoopStop(tapRunLoop) }
+        if let cursorRL { CFRunLoopStop(cursorRL) }
 
         let answerLock = NSLock()
         var answered = false
@@ -578,7 +731,13 @@ final class CaptureSession: NSObject, SCStreamOutput, SCStreamDelegate {
             var s = self.stats()
             if actualReason != reason { s["stopWarning"] = "writer did not finalise in time" }
             self.writeSidecars(reason: actualReason)
+            self.lock.lock()
+            self.stopStats = s
+            let extra = self.stopCompletions
+            self.stopCompletions = []
+            self.lock.unlock()
             completion(s)
+            for c in extra { c(s) }
         }
 
         // HIGH 2 — bound arithmetic. The client (app/src/helper-client.ts,
@@ -656,7 +815,7 @@ final class CaptureSession: NSObject, SCStreamOutput, SCStreamDelegate {
         // events-2 since STC-309: v1 plus `{t, kind: "cursor", shape}`. The
         // loader accepts both; fixtures/basic was already v2. Time-ordered on
         // the way out because two clocks feed `events` (see orderedEvents).
-        write(["version": 2, "events": orderedEvents(evs)], to: "events.json")
+        write(["version": 2, "events": orderedEvents(evs)] as [String: Any], to: "events.json")
         // Exact, from the helper's own clock. The same offset survives in the
         // file only as a timescale-quantised empty edit, so this is what a
         // reader checks its recovered value against.

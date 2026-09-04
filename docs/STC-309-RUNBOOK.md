@@ -21,6 +21,34 @@ If `swiftc` rejects anything, the likely spots are `helper/src/CursorShape.swift
 
 ## 1. Spike — does `NSCursor.currentSystem` see other apps' pointers?
 
+**ANSWERED 2026-09-03, on real hardware: yes.** 599 samples in 20 s, 0 nil, on
+the sampler's own thread (no main-thread requirement). The I-beam over a text
+field matched `NSCursor.iBeam` byte-for-byte (hash `19fb277f344bcd43`,
+23x22 pt, hotspot 12,11 at 2x), 14 changes emitted, every one a real flip.
+Four distinct references, all at scale 2 on this display:
+
+| shape | pt | hotspot | reps | hash |
+|---|---|---|---|---|
+| arrow | 28x40 | 5,5 | 4 | `24354067dc3c353e` |
+| ibeam | 23x22 | 12,11 | 4 | `19fb277f344bcd43` |
+| crosshair | 24x24 | 11,11 | 2 | `527f2d226d18ddbd` |
+| pointingHand | 32x32 | 12,8 | 2 | `1e8904d0d3385a7` |
+
+Five unknown pointers were seen and correctly written as `arrow` (window-edge
+and corner resize cursors: 18x28 @ 9,14; 22x22 @ 11,11 twice with different
+bytes; 30x24 @ 15,12). Those are events-3 material.
+
+**What the measurement changed:** a sample costs **1.04 ms mean, 41 ms max**,
+not microseconds. That is not a cost the tap's run loop can carry, so the
+sampler moved to its own thread (`Capture.startCursorSampler`) and
+`orderedEvents` restores time order at write time. The rest of this section is
+kept as the procedure for re-measuring.
+
+**`pointingHand` confirmed on a second run (2026-09-04):** hovering a link
+emitted `pointingHand`, so all four shapes match their `NSCursor` built-ins
+byte-for-byte on this machine. The first run never saw it only because no
+link was hovered.
+
 The spike is the helper's own `cursor-probe` command, run from the signed test
 host so it carries the bundle's TCC identity and the production process shape
 (background, `NSApplication` accessory policy, sampling on a plain `Thread`
@@ -69,9 +97,30 @@ npm run test:capture
 `capture.grant.test.ts` now asserts, on a real 3 s take: `events.json` is v2,
 the stop reply's `cursorEvents` equals the cursor events in the file, no two
 consecutive cursor events share a shape, the file is time-ordered, and
-`tapReenables` is 0 with the sampler on the tap's run loop.
+`tapReenables` is 0 with the sampler running (on its own thread). It prints
+the tap-disable counts on success; `afterStop` is the helper's own disable
+being reported back, `timeout` would be starvation.
+
+**Ran 2026-09-04: passes, with and without `STC_NO_CURSOR_SAMPLER=1`.** The
+first run reported `tapReenables: 1` on both builds; that was `stop()`'s own
+`tapEnable(false)` coming back as a `tapDisabledByUserInput` event and being
+counted (and re-enabled). Fixed by setting `stoppingBegan` before the disable
+and ignoring disables after it. `lossy-under-capture.grant.test.ts` also
+passes on this build (276 stalled vs 264 drained frames).
 
 ## 3. Hardware verification (increment 4)
+
+**DONE 2026-09-04.** An 11 s take from the app (`~/Desktop/stc/2026-09-04_09-12-59`:
+726 moves, 6 clicks, 37 shape changes over ibeam / pointingHand / arrow) was
+exported with `scripts/export-one.mjs` and watched: I-beam over the field, hand
+over the links, arrow elsewhere, click highlight under the I-beam, in step with
+the video. Sidecars pinned as `fixtures/real-session-cursor/`, semantics in
+`helper/test/real-events-cursor.test.ts`.
+
+NB the first report was "no cursor at all in the video" — that was the raw
+`display.mp4`, which never has one (`showsCursor` is off; the pointer exists
+only in an export). Ask which file was watched before chasing a regression.
+
 
 Record from the app (`npm run app:start`): hover a text field, a link, the
 desktop, then click in the field. Export and **watch**: I-beam over the field,
@@ -86,9 +135,8 @@ and interleaved with moves.
 
 ## 4. Close out
 
-CLAUDE.md's STC-309 row → done with the date and what was watched; PHASE-2's
-cursor row loses "which the helper does not emit yet"; Linear → Done with the
-PR attached.
+**DONE 2026-09-04** — CLAUDE.md's STC-309 row, PHASE-2's cursor row, and the
+Linear ticket all updated with what was watched.
 
 ## What changed, and why it is shaped this way
 
@@ -98,11 +146,12 @@ PR attached.
 - `helper/src/CursorShape.swift` — the AppKit bridge (`signature(of:)`,
   `references()`), `CursorSampler` (a `CFRunLoopTimer` on whichever loop it is
   handed), and `CursorProbe` (the spike).
-- `helper/src/Capture.swift` — the sampler is scheduled on the tap thread's run
-  loop after the tap is enabled; `recordCursorShape` appends under `lock` with
+- `helper/src/Capture.swift` — the sampler runs on its own thread, started
+  beside the tap; `recordCursorShape` appends under `lock` with
   `t` from the helper's own clock minus `t0Ns`; `stats()` gains `cursorEvents`;
   `writeSidecars` writes version 2, time-ordered. `cursorSampleIntervalSeconds`
-  is the one named constant (30 Hz; up to 33 ms lag, two frames at 60 fps).
+  is the one named constant (30 Hz; up to 33 ms lag, two frames at 60 fps;
+  ~3% of a core at the measured 1 ms per sample).
 - **References are measured at tap start, not baked in.** The ticket's plan was
   a table from the spike; a table drifts the first time the pointer-size
   setting or the display scale changes, and both change the bytes. Measuring

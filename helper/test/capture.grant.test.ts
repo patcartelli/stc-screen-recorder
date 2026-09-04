@@ -133,9 +133,19 @@ describe("capture — a real recording (requires Screen Recording)", () => {
     for (let i = 1; i < cursor.length; i++) {
       expect(cursor[i].shape, `cursor event ${i} repeats ${cursor[i - 1].shape}`).not.toBe(cursor[i - 1].shape);
     }
-    // The sampler shares the tap's run loop; if it starved the tap the system
-    // would have disabled it and the helper would have counted a re-enable.
-    expect(stopped.tapReenables, "tap re-enabled while sampling the pointer").toBe(0);
+    // The sampler has its own thread precisely so it cannot starve the tap
+    // (a sample measured 1-41 ms); if it did, the system would have disabled
+    // the tap and the helper would have counted a re-enable.
+    expect(stopped.tapReenables,
+      `tap re-enabled while sampling the pointer: ${JSON.stringify(stopped.tapDisabled)}`).toBe(0);
+    // Printed on SUCCESS, like the lossy test's numbers: the first hardware
+    // run of the sampler reported tapReenables: 1, and it took a diagnosis
+    // build to learn it was stop()'s own disable being reported back. The
+    // `afterStop` count is that disable; `timeout` is the one that would
+    // mean starvation.
+    process.stderr.write(
+      `[capture] ${stopped.frames} frames, ${stopped.events} events (${cursor.length} cursor), ` +
+      `tap disables ${JSON.stringify(stopped.tapDisabled)}\n`);
     // Two clocks feed one file; the helper orders it on the way out.
     const ts = events.events.map((e: any) => e.t as number);
     expect(ts.every((t: number, i: number) => i === 0 || t >= ts[i - 1]!), "events.json is not time-ordered").toBe(true);

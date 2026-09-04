@@ -1,9 +1,11 @@
 # STC-289 — still capture in the helper: what to run on the Mac
 
-Written on a Linux session that cannot run `swiftc`, so **every Swift line in this change is
-unverified until the first build**. The TypeScript side is not: `npm run typecheck` passed and
-the loader, schema, bounds and declaration-drift suites ran (77 tests) with the helper build
-stubbed out.
+Written on a Linux session that cannot run `swiftc`. Since then CI (macos-15, SDK 15) has
+**compiled the helper and passed the whole no-grant suite** — the still harness, the
+`capture-still`/`windows` IPC cases against the real binary, the bounds chain. What remains
+unverified is exactly two things: the build against the Mac's **13.3 SDK** (CI cannot see the
+13.3 headers, and `ScreenshotAPI` exists for that gap), and everything that needs a Screen
+Recording grant (section 2) or an eye (section 3).
 
 Three decisions were taken before writing, and each is the answer to a question the ticket left
 open:
@@ -22,17 +24,10 @@ npm run typecheck
 npm test            # still-decisions harness (no grant), ipc capture-still/windows cases, still-bounds
 ```
 
-If `swiftc` rejects anything, the likely spots, in order:
-
-1. `helper/src/Still.swift` `ScreenshotAPI.CaptureImageIMP` — a `@convention(c)` function type
-   whose last parameter is an `@escaping @convention(block)` closure. If the compiler refuses the
-   block type inside a C function type, the fallback is `objc_msgSend` via `dlsym` with the same
-   cast, or dropping `@escaping` (the block is a stored `let`, so it is already heap-allocated).
-2. `fn(cls as AnyObject, sel, filter, configuration, block)` — if `AnyClass as AnyObject` is refused,
-   `unsafeBitCast(cls, to: AnyObject.self)`.
-3. `helper/test/still/main.swift` — the `check` helper compares `some Equatable` values through
-   `String(describing:)`, exactly as `decisions/main.swift` does; optional tuples are printed, not
-   compared, so they should be fine.
+Swift 6.1 against SDK 15 accepted all of it, including `ScreenshotAPI.CaptureImageIMP` (a
+`@convention(c)` function type whose last parameter is an `@escaping @convention(block)` closure)
+and `cls as AnyObject`. `swiftc` 5.8 against 13.3 is the older compiler; if it objects, those two
+are still the places to look, and `objc_msgSend` via `dlsym` with the same cast is the fallback.
 
 ## 1. The pure half — no grant needed
 
