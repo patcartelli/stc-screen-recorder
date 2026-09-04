@@ -96,12 +96,13 @@ enum CursorShape {
 
 /// Samples the system pointer on a run loop and reports shape changes.
 ///
-/// One instance per recording, scheduled on the TAP's own run loop
-/// (Capture.startEventTap): one thread then owns the order of everything that
-/// goes into `events`, and the tap callback stays untouched. The cost of that
-/// is that this callback must be cheap — a starved tap is disabled by the
-/// system (`tapDisabledByTimeout`, counted by `tapReenables`) — which is why
-/// the probe measures the per-sample time rather than assuming it.
+/// One instance per recording, on a thread of its own
+/// (Capture.startCursorSampler). It was first placed on the TAP's run loop so
+/// one thread would own the order of `events`; the probe then measured a
+/// sample at 1.04 ms mean / 41 ms max on real hardware (2026-09-03), which is
+/// not a cost the tap can carry — a starved tap is disabled by the system
+/// (`tapDisabledByTimeout`, counted by `tapReenables`). Time order is
+/// restored at write time by `orderedEvents` instead.
 ///
 /// Why a timer and not a hook on mouseMoved: the pointer changes on hover
 /// without the mouse moving (a page finishing its load under a still cursor,
