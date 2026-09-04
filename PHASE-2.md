@@ -118,7 +118,7 @@ start/stop-only — no pause.
 | preview memory | 458 MB take → +548 MB renderer RSS (~1.2x). A ~15-minute 4K take is the practical ceiling. |
 | preview memory, PiP | see "A second decoder" below — measured 2026-08-27 |
 | export speed | 11.0 ms/frame at 4K = 1.52x realtime. A 5-minute take exports in ~3.3 min. |
-| cursor | macOS pointer artwork since STC-239 (2026-09-02). Shape changes come from events-2 `cursor` events; the helper emits them since STC-309 (written 2026-09-03, **not yet verified on hardware** — `docs/STC-309-RUNBOOK.md`). `project.cursor.style: "circle"` keeps the placeholder as an option |
+| cursor | macOS pointer artwork since STC-239 (2026-09-02); the helper emits the events-2 `cursor` events since STC-309, watched on a real take 2026-09-04 (I-beam, hand, arrow, in sync). `project.cursor.style: "circle"` keeps the placeholder as an option |
 
 ## Two concurrent H.264 encodes — measured 2026-08-27
 
