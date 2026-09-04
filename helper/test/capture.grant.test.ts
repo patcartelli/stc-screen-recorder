@@ -136,7 +136,8 @@ describe("capture — a real recording (requires Screen Recording)", () => {
     // The sampler has its own thread precisely so it cannot starve the tap
     // (a sample measured 1-41 ms); if it did, the system would have disabled
     // the tap and the helper would have counted a re-enable.
-    expect(stopped.tapReenables, "tap re-enabled while sampling the pointer").toBe(0);
+    expect(stopped.tapReenables,
+      `tap re-enabled while sampling the pointer: ${JSON.stringify(stopped.tapDisabled)}`).toBe(0);
     // Two clocks feed one file; the helper orders it on the way out.
     const ts = events.events.map((e: any) => e.t as number);
     expect(ts.every((t: number, i: number) => i === 0 || t >= ts[i - 1]!), "events.json is not time-ordered").toBe(true);

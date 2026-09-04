@@ -45,10 +45,22 @@ func decideFrame(statusRaw: Int, displayTimeRaw: UInt64,
 /// ScreenCaptureKit import and can be compiled into a test binary.
 let SCFrameStatusCompleteRaw = 0
 
+/// Why the system says a tap was disabled. Two different events, two
+/// different stories: a TIMEOUT means the tap's thread did not answer in
+/// time (starvation — the thing STC-309's sampler must never cause), while
+/// USER INPUT is what CoreGraphics reports back for a `tapEnable(false)` —
+/// including the helper's own, in `stop()`. Counting them as one number
+/// made the second look like the first.
+enum TapDisableReason: String, Equatable {
+    case timeout
+    case userInput
+}
+
 enum CursorEventDecision: Equatable {
-    /// The system disabled the tap; it must be re-enabled or input stops
-    /// arriving silently for the rest of the recording.
-    case reenableTap
+    /// The system disabled the tap; during a recording it must be re-enabled
+    /// or input stops arriving silently for the rest of the take. After
+    /// `stop()` has disabled it on purpose, the caller must NOT re-enable.
+    case reenableTap(reason: TapDisableReason)
     case ignore
     /// Earlier than the session start. events-1 requires t >= 0.
     case beforeStart
@@ -79,7 +91,8 @@ func decideCameraOpen(opened: Bool, stoppingBegan: Bool) -> CameraOpenDecision {
 }
 
 func decideCursorEvent(type: CGEventType, timestampNs: UInt64, t0Ns: UInt64) -> CursorEventDecision {
-    if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput { return .reenableTap }
+    if type == .tapDisabledByTimeout { return .reenableTap(reason: .timeout) }
+    if type == .tapDisabledByUserInput { return .reenableTap(reason: .userInput) }
 
     let kind: String
     var button: Int? = nil
