@@ -97,9 +97,30 @@ npm run test:capture
 `capture.grant.test.ts` now asserts, on a real 3 s take: `events.json` is v2,
 the stop reply's `cursorEvents` equals the cursor events in the file, no two
 consecutive cursor events share a shape, the file is time-ordered, and
-`tapReenables` is 0 with the sampler on the tap's run loop.
+`tapReenables` is 0 with the sampler running (on its own thread). It prints
+the tap-disable counts on success; `afterStop` is the helper's own disable
+being reported back, `timeout` would be starvation.
+
+**Ran 2026-09-04: passes, with and without `STC_NO_CURSOR_SAMPLER=1`.** The
+first run reported `tapReenables: 1` on both builds; that was `stop()`'s own
+`tapEnable(false)` coming back as a `tapDisabledByUserInput` event and being
+counted (and re-enabled). Fixed by setting `stoppingBegan` before the disable
+and ignoring disables after it. `lossy-under-capture.grant.test.ts` also
+passes on this build (276 stalled vs 264 drained frames).
 
 ## 3. Hardware verification (increment 4)
+
+**DONE 2026-09-04.** An 11 s take from the app (`~/Desktop/stc/2026-09-04_09-12-59`:
+726 moves, 6 clicks, 37 shape changes over ibeam / pointingHand / arrow) was
+exported with `scripts/export-one.mjs` and watched: I-beam over the field, hand
+over the links, arrow elsewhere, click highlight under the I-beam, in step with
+the video. Sidecars pinned as `fixtures/real-session-cursor/`, semantics in
+`helper/test/real-events-cursor.test.ts`.
+
+NB the first report was "no cursor at all in the video" — that was the raw
+`display.mp4`, which never has one (`showsCursor` is off; the pointer exists
+only in an export). Ask which file was watched before chasing a regression.
+
 
 Record from the app (`npm run app:start`): hover a text field, a link, the
 desktop, then click in the field. Export and **watch**: I-beam over the field,
@@ -114,9 +135,8 @@ and interleaved with moves.
 
 ## 4. Close out
 
-CLAUDE.md's STC-309 row → done with the date and what was watched; PHASE-2's
-cursor row loses "which the helper does not emit yet"; Linear → Done with the
-PR attached.
+**DONE 2026-09-04** — CLAUDE.md's STC-309 row, PHASE-2's cursor row, and the
+Linear ticket all updated with what was watched.
 
 ## What changed, and why it is shaped this way
 

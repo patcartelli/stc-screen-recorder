@@ -138,8 +138,44 @@ final class App {
                 guard let self else { return }
                 switch result {
                 case .success(let info):
-                    // A stop may have arrived while the async start was in flight.
-                    guard self.state == .starting else { return }
+                    // A stop may have arrived while the async start was in
+                    // flight (STC-305): `stop` answers seq 2 immediately
+                    // against a session whose stream is still nil — nothing
+                    // to tear down yet — sets state back to .idle, and only
+                    // THEN does SCShareableContent's callback actually run,
+                    // calling begin(): a real stream and event tap start for
+                    // the first time, on the SAME session object, after the
+                    // client was already told it was stopped. Silently
+                    // returning here left seq 1 unanswered for the client's
+                    // full 30 s timeout while that stream and tap kept
+                    // running for the rest of the process's life — the tap
+                    // thread holds `session` strongly inside CFRunLoopRun,
+                    // so nothing ever frees it, and every subsequent mouse
+                    // event is appended to a struct nothing will read again.
+                    // Every request answers exactly once; this one still
+                    // needs to, and the stream this branch just started
+                    // still needs to be torn down. `session`, not
+                    // `self.capture` (already nil, in the plain case below)
+                    // — this closure's own strong reference is the only
+                    // thing that still points at it.
+                    //
+                    // `self.capture === session`, not state alone: a stop
+                    // that raced this SAME session can be followed by a
+                    // fresh start on a DIFFERENT one before this stray
+                    // success arrives. State alone reads `.starting` again
+                    // for that new session and would wrongly promote this
+                    // stale reply to "recording", then tear the new,
+                    // legitimately-requested session down the moment ITS OWN
+                    // success later found state already claimed. Checking
+                    // identity keeps a stale session's completion from ever
+                    // being mistaken for the one `self` is currently tracking.
+                    guard self.state == .starting, self.capture === session else {
+                        session.stop(reason: "stopped-during-start") { _ in }
+                        IO.send("error", seq: seq,
+                                ["code": "stopped-during-start",
+                                 "detail": "stop arrived before start finished"])
+                        return
+                    }
                     self.state = .recording
                     var o: [String: Any] = ["dir": url.path, "t0Ns": self.startedAtNs]
                     o.merge(info) { a, _ in a }
