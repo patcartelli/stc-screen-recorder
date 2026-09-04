@@ -89,10 +89,15 @@ enum StillRequestError: Error, Equatable, CustomStringConvertible {
     }
 }
 
-/// Numbers arrive from JSONSerialization as NSNumber; `as? Double` bridges an
-/// integral one too, which is what lets a client send `"x": 100` for a rect.
+/// Numbers arrive from JSONSerialization as NSNumber, and `as? Double` bridges
+/// an integral NSNumber too — which is what lets a client send `"x": 100` for
+/// a rect. A native Swift `Int` inside `Any` does NOT take that bridge (the
+/// harness's dictionary literals are exactly that), so it is accepted by name.
+/// CI's first run of the harness found this: `crop-on-window` came back as
+/// `bad-crop` for a crop written as integers.
 private func number(_ v: Any?) -> Double? {
     if let d = v as? Double, d.isFinite { return d }
+    if let i = v as? Int { return Double(i) }
     return nil
 }
 

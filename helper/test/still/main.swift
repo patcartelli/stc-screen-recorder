@@ -41,6 +41,8 @@ check("a window shot with a crop is two claims about the region",
       parse(["dir": "/tmp/x", "kind": "window", "windowId": 12,
              "crop": ["x": 0, "y": 0, "width": 10, "height": 10]]), "err:crop-on-window")
 check("a window shot parses", parse(["dir": "/tmp/x", "kind": "window", "windowId": 12]), "ok:window:frame.png")
+check("a crop written as integers parses (a Swift Int in Any is not an NSNumber)",
+      parse(["dir": "/tmp/x", "crop": ["x": 0, "y": 0, "width": 10, "height": 10]]), "ok:display-crop:frame.png")
 check("a crop with zero height is refused",
       parse(["dir": "/tmp/x", "crop": ["x": 0, "y": 0, "width": 10, "height": 0]]), "err:bad-crop")
 check("a crop missing a side is refused",
