@@ -21,6 +21,35 @@ If `swiftc` rejects anything, the likely spots are `helper/src/CursorShape.swift
 
 ## 1. Spike — does `NSCursor.currentSystem` see other apps' pointers?
 
+**ANSWERED 2026-09-03, on real hardware: yes.** 599 samples in 20 s, 0 nil, on
+the sampler's own thread (no main-thread requirement). The I-beam over a text
+field matched `NSCursor.iBeam` byte-for-byte (hash `19fb277f344bcd43`,
+23x22 pt, hotspot 12,11 at 2x), 14 changes emitted, every one a real flip.
+Four distinct references, all at scale 2 on this display:
+
+| shape | pt | hotspot | reps | hash |
+|---|---|---|---|---|
+| arrow | 28x40 | 5,5 | 4 | `24354067dc3c353e` |
+| ibeam | 23x22 | 12,11 | 4 | `19fb277f344bcd43` |
+| crosshair | 24x24 | 11,11 | 2 | `527f2d226d18ddbd` |
+| pointingHand | 32x32 | 12,8 | 2 | `1e8904d0d3385a7` |
+
+Five unknown pointers were seen and correctly written as `arrow` (window-edge
+and corner resize cursors: 18x28 @ 9,14; 22x22 @ 11,11 twice with different
+bytes; 30x24 @ 15,12). Those are events-3 material.
+
+**What the measurement changed:** a sample costs **1.04 ms mean, 41 ms max**,
+not microseconds. That is not a cost the tap's run loop can carry, so the
+sampler moved to its own thread (`Capture.startCursorSampler`) and
+`orderedEvents` restores time order at write time. The rest of this section is
+kept as the procedure for re-measuring.
+
+**Still open from this spike:** `pointingHand` was never observed. Either no
+link was hovered, or the browser draws its own hand cursor rather than
+`NSCursor.pointingHand`. Re-run over a link in Safari and in the browser you
+use; if the hand shows up as an unknown signature, its bytes go in the table
+above and the classifier needs a second reference for it.
+
 The spike is the helper's own `cursor-probe` command, run from the signed test
 host so it carries the bundle's TCC identity and the production process shape
 (background, `NSApplication` accessory policy, sampling on a plain `Thread`
@@ -98,11 +127,12 @@ PR attached.
 - `helper/src/CursorShape.swift` — the AppKit bridge (`signature(of:)`,
   `references()`), `CursorSampler` (a `CFRunLoopTimer` on whichever loop it is
   handed), and `CursorProbe` (the spike).
-- `helper/src/Capture.swift` — the sampler is scheduled on the tap thread's run
-  loop after the tap is enabled; `recordCursorShape` appends under `lock` with
+- `helper/src/Capture.swift` — the sampler runs on its own thread, started
+  beside the tap; `recordCursorShape` appends under `lock` with
   `t` from the helper's own clock minus `t0Ns`; `stats()` gains `cursorEvents`;
   `writeSidecars` writes version 2, time-ordered. `cursorSampleIntervalSeconds`
-  is the one named constant (30 Hz; up to 33 ms lag, two frames at 60 fps).
+  is the one named constant (30 Hz; up to 33 ms lag, two frames at 60 fps;
+  ~3% of a core at the measured 1 ms per sample).
 - **References are measured at tap start, not baked in.** The ticket's plan was
   a table from the spike; a table drifts the first time the pointer-size
   setting or the display scale changes, and both change the bytes. Measuring
