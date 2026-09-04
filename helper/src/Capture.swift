@@ -45,6 +45,22 @@ final class CaptureSession: NSObject, SCStreamOutput, SCStreamDelegate {
     /// got nothing", and only this flag tells the two apart.
     private var wantCamera = false
     private var stoppingBegan = false
+    /// Guards RE-ENTRY into `stop()` itself (STC-305). `App.start`'s success
+    /// handler can call `stop()` a second time on a session whose teardown is
+    /// already in flight — a stray success racing a `stop` that arrived while
+    /// `startStream()` had already assigned a real `stream` but before
+    /// `startCapture`'s own completion had fired. Both `stream.stopCapture`
+    /// and `writer.finishWriting` are only safe to invoke once per session:
+    /// `WriterGate.closeAndMarkFinished()` already refuses a second
+    /// `markAsFinished`, but its caller never checked that return value, so a
+    /// second `stop()` reaching `finishWriting` a second time was the exact
+    /// AVAssetWriter teardown race this codebase already fixed once (STC-254),
+    /// reachable again through a second call site. `stopStarted` /
+    /// `stopCompletions` / `stopStats` make every caller past the first
+    /// coalesce onto the ONE real teardown instead of starting another.
+    private var stopStarted = false
+    private var stopCompletions: [([String: Any]) -> Void] = []
+    private var stopStats: [String: Any]?
     /// The input and adaptor live behind the gate, not here: every access to
     /// them is either an append or a teardown, and those two must not overlap
     /// (STC-254). Holding them as plain properties is what allowed the overlap.
@@ -560,17 +576,34 @@ final class CaptureSession: NSObject, SCStreamOutput, SCStreamDelegate {
     /// the video may still be readable, and if it is not, the sidecars say what
     /// was attempted.
     func stop(reason: String, completion: @escaping ([String: Any]) -> Void) {
-        if let tap { CGEvent.tapEnable(tap: tap, enable: false) }
-        if let tapRunLoop { CFRunLoopStop(tapRunLoop) }
-
+        // Re-entry (STC-305): a second call while the first is already
+        // tearing down is coalesced onto it rather than starting a second
+        // teardown of the same stream/writer. A second call that arrives
+        // AFTER the first has already finished is answered immediately with
+        // what was already recorded — the take is not re-stopped, and its
+        // reason is not rewritten by a later, incidental caller.
+        lock.lock()
+        if let stats = stopStats {
+            lock.unlock()
+            completion(stats)
+            return
+        }
+        if stopStarted {
+            stopCompletions.append(completion)
+            lock.unlock()
+            return
+        }
+        stopStarted = true
         // Set BEFORE reading `camera`: this is the other half of the HIGH 1
         // race. A camera that finishes opening after this point checks the
         // flag (in `startCameraAsync`) and closes itself instead of being
         // stored, so it is not simply skipped and left running.
-        lock.lock()
         stoppingBegan = true
         let cam = camera
         lock.unlock()
+
+        if let tap { CGEvent.tapEnable(tap: tap, enable: false) }
+        if let tapRunLoop { CFRunLoopStop(tapRunLoop) }
 
         let answerLock = NSLock()
         var answered = false
@@ -583,7 +616,13 @@ final class CaptureSession: NSObject, SCStreamOutput, SCStreamDelegate {
             var s = self.stats()
             if actualReason != reason { s["stopWarning"] = "writer did not finalise in time" }
             self.writeSidecars(reason: actualReason)
+            self.lock.lock()
+            self.stopStats = s
+            let extra = self.stopCompletions
+            self.stopCompletions = []
+            self.lock.unlock()
             completion(s)
+            for c in extra { c(s) }
         }
 
         // HIGH 2 — bound arithmetic. The client (app/src/helper-client.ts,

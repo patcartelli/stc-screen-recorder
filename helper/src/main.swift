@@ -142,10 +142,21 @@ final class App {
                     // Every request answers exactly once; this one still
                     // needs to, and the stream this branch just started
                     // still needs to be torn down. `session`, not
-                    // `self.capture` (already nil) — this closure's own
-                    // strong reference is the only thing that still points
-                    // at it.
-                    guard self.state == .starting else {
+                    // `self.capture` (already nil, in the plain case below)
+                    // — this closure's own strong reference is the only
+                    // thing that still points at it.
+                    //
+                    // `self.capture === session`, not state alone: a stop
+                    // that raced this SAME session can be followed by a
+                    // fresh start on a DIFFERENT one before this stray
+                    // success arrives. State alone reads `.starting` again
+                    // for that new session and would wrongly promote this
+                    // stale reply to "recording", then tear the new,
+                    // legitimately-requested session down the moment ITS OWN
+                    // success later found state already claimed. Checking
+                    // identity keeps a stale session's completion from ever
+                    // being mistaken for the one `self` is currently tracking.
+                    guard self.state == .starting, self.capture === session else {
                         session.stop(reason: "stopped-during-start") { _ in }
                         IO.send("error", seq: seq,
                                 ["code": "stopped-during-start",
