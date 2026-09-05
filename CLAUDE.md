@@ -26,6 +26,7 @@ events → deterministic transform → CFR MP4 with cursor overlay.
 | `transform/src/cursor-art.ts` | the macOS pointer set as vector paths (STC-239); the events-2 `shape` enum must equal its list |
 | `helper/src/CursorShape.swift` | the AppKit side of STC-309: pointer → `CursorSignature`, the 30 Hz `CursorSampler`, and the `cursor-probe` spike. Decisions are in `CaptureDecisions.swift` |
 | `docs/STC-309-RUNBOOK.md` | what to run on the Mac for STC-309, in order, and what each run must show |
+| `docs/HANDOFF-2026-09-04-STC-309.md` | STC-309 closed: what moved, what was got wrong, and what is left (events-3 shapes) |
 | `helper/src/Still.swift` | `capture-still` and `windows` (STC-289): one frame through `SCScreenshotManager`, reached via the ObjC runtime because the 13.3 SDK has no header for it; display filter for regions, window filter for windows |
 | `helper/src/StillDecisions.swift` | the still path's pure decisions — request parsing, crop, cursor localisation, `shotDocument` — tested without a display by `helper/test/still/` |
 | `schema/shot-1.schema.json`, `transform/src/shot.ts` | the still document and its loader (`parseShot` refuses rather than defaults); `fixtures/shot/` |
