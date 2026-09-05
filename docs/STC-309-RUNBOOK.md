@@ -117,21 +117,15 @@ over the links, arrow elsewhere, click highlight under the I-beam, in step with
 the video. Sidecars pinned as `fixtures/real-session-cursor/`, semantics in
 `helper/test/real-events-cursor.test.ts`.
 
+The watch is what makes this step worth anything: a uniformly wrong shape
+passes every automated check in this repo, and only a human watching catches
+it. To repeat it — after a classifier change, new artwork (STC-312), or on a
+new machine — record from the app (`npm run app:start`), hovering a text
+field, a link, the desktop, then clicking in the field; export and watch.
+
 NB the first report was "no cursor at all in the video" — that was the raw
 `display.mp4`, which never has one (`showsCursor` is off; the pointer exists
 only in an export). Ask which file was watched before chasing a regression.
-
-
-Record from the app (`npm run app:start`): hover a text field, a link, the
-desktop, then click in the field. Export and **watch**: I-beam over the field,
-hand over the link, arrow elsewhere, the click highlight under the I-beam, all
-in sync with the video. A uniformly wrong shape passes every automated check in
-this repo; only watching catches it.
-
-Then commit the sidecars (not the mp4) as `fixtures/real-session-cursor/` and
-pin them in a `real-events`-style test: cursor events present; no two
-consecutive with the same shape; every shape in the enum seen; times monotonic
-and interleaved with moves.
 
 ## 4. Close out
 
