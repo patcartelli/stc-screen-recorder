@@ -45,6 +45,22 @@ final class CaptureSession: NSObject, SCStreamOutput, SCStreamDelegate {
     /// got nothing", and only this flag tells the two apart.
     private var wantCamera = false
     private var stoppingBegan = false
+    /// Guards RE-ENTRY into `stop()` itself (STC-305). `App.start`'s success
+    /// handler can call `stop()` a second time on a session whose teardown is
+    /// already in flight — a stray success racing a `stop` that arrived while
+    /// `startStream()` had already assigned a real `stream` but before
+    /// `startCapture`'s own completion had fired. Both `stream.stopCapture`
+    /// and `writer.finishWriting` are only safe to invoke once per session:
+    /// `WriterGate.closeAndMarkFinished()` already refuses a second
+    /// `markAsFinished`, but its caller never checked that return value, so a
+    /// second `stop()` reaching `finishWriting` a second time was the exact
+    /// AVAssetWriter teardown race this codebase already fixed once (STC-254),
+    /// reachable again through a second call site. `stopStarted` /
+    /// `stopCompletions` / `stopStats` make every caller past the first
+    /// coalesce onto the ONE real teardown instead of starting another.
+    private var stopStarted = false
+    private var stopCompletions: [([String: Any]) -> Void] = []
+    private var stopStats: [String: Any]?
     /// The input and adaptor live behind the gate, not here: every access to
     /// them is either an append or a teardown, and those two must not overlap
     /// (STC-254). Holding them as plain properties is what allowed the overlap.
@@ -96,6 +112,14 @@ final class CaptureSession: NSObject, SCStreamOutput, SCStreamDelegate {
     /// forever. A protocol where some requests are never answered is worse than
     /// one that answers with an error.
     private var startCompletion: ((Result<[String: Any], Error>) -> Void)?
+    /// Fired when the stream dies AFTER the start was answered (STC-306).
+    /// `App` sets it, the way it sets `Watchers.onDisplayChange`, to end the
+    /// take: SCK does not resume a stopped stream, so a session left in
+    /// `recording` after `didStopWithError` keeps the writer open and the
+    /// heartbeat saying `recording` while no frame will ever arrive again, and
+    /// nothing ends the take until the user presses Stop. Called on SCK's
+    /// delegate queue; the handler dispatches to main itself.
+    var onStreamDied: ((Error) -> Void)?
     /// How long a `start` may take before it is answered with `start-timeout`.
     /// Covers the WHOLE request — content enumeration included (STC-258).
     /// `helper/test/capture.test.ts` bounds its own waits above this; if this
@@ -192,17 +216,12 @@ final class CaptureSession: NSObject, SCStreamOutput, SCStreamDelegate {
             return
         }
         displayID = display.displayID
-        pointW = display.width
-        pointH = display.height
-        let bounds = CGDisplayBounds(displayID)
-        originX = Double(bounds.origin.x)
-        originY = Double(bounds.origin.y)
-        if let mode = CGDisplayCopyDisplayMode(displayID) {
-            pixelW = mode.pixelWidth
-            pixelH = mode.pixelHeight
-        } else {
-            pixelW = pointW; pixelH = pointH
-        }
+        // Measured by the same function the still path uses (AnchorsDoc.swift),
+        // so anchors.json and shot.json describe one display the same way.
+        let g = displayGeometry(id: displayID, pointWidth: display.width, pointHeight: display.height)
+        pointW = g.pointWidth; pointH = g.pointHeight
+        pixelW = g.pixelWidth; pixelH = g.pixelHeight
+        originX = g.originX; originY = g.originY
         (captureW, captureH) = captureSize(pixelW, pixelH)
 
         // No backstop is armed here: start() armed one covering this whole
@@ -232,6 +251,7 @@ final class CaptureSession: NSObject, SCStreamOutput, SCStreamDelegate {
                         self.startCameraAsync()
                     }
                     self.finishStart(.success(self.describe()))
+                    self.armStreamDeathFault()
                 }
             }
         } catch {
@@ -241,12 +261,39 @@ final class CaptureSession: NSObject, SCStreamOutput, SCStreamDelegate {
 
     /// Call-once. Later callers are no-ops, so a stream that fails after a
     /// successful start reports as a warning rather than a second response.
-    private func finishStart(_ result: Result<[String: Any], Error>) {
+    /// Returns whether THIS call answered the start — `didStopWithError` uses
+    /// that to tell a stream that died on the way up (the start's answer) from
+    /// one that died under a live take (the take's end, STC-306).
+    @discardableResult
+    private func finishStart(_ result: Result<[String: Any], Error>) -> Bool {
         startLock.lock()
         let c = startCompletion
         startCompletion = nil
         startLock.unlock()
         c?(result)
+        return c != nil
+    }
+
+    /// `STC_CAPTURE_FAULT=stream-died`: shortly after a successful start, the
+    /// stream reports itself dead through the same delegate method SCK uses,
+    /// so the helper's reaction to a stream death is watched firing rather
+    /// than reasoned about — a path nobody has seen taken is indistinguishable
+    /// from one that cannot be. The SCStream itself is left running: the
+    /// subject is the reaction (warning, unsolicited `stopped`, finalised
+    /// sidecars), and `stop()` tears the real stream down either way — on a
+    /// genuine death `stopCapture` answers with an error that is ignored, on
+    /// the fault it answers cleanly; both reach `finishWriting`.
+    /// Driven by helper/test/stream-died.grant.test.ts.
+    static let streamDeathFaultDelaySeconds: Double = 0.5
+    private func armStreamDeathFault() {
+        guard ProcessInfo.processInfo.environment["STC_CAPTURE_FAULT"] == "stream-died",
+              let s = stream else { return }
+        IO.log("STC_CAPTURE_FAULT=stream-died: the stream will report itself dead in \(Self.streamDeathFaultDelaySeconds) s")
+        DispatchQueue.global().asyncAfter(deadline: .now() + Self.streamDeathFaultDelaySeconds) { [weak self] in
+            self?.stream(s, didStopWithError: NSError(
+                domain: "stc.fault", code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "injected by STC_CAPTURE_FAULT=stream-died"]))
+        }
     }
 
     /// Opens the camera off the critical path (MEDIUM 3): `start` already
@@ -431,8 +478,14 @@ final class CaptureSession: NSObject, SCStreamOutput, SCStreamDelegate {
     func stream(_ stream: SCStream, didStopWithError error: Error) {
         // If the start is still pending this IS its answer — the stream died on
         // the way up rather than reporting through startCapture's completion.
-        finishStart(.failure(CaptureError.streamFailed(error)))
+        let answeredStart = finishStart(.failure(CaptureError.streamFailed(error)))
         IO.send("warning", ["code": "stream-stopped", "detail": "\(error)"])
+        // Otherwise the take was live and has just lost its source (STC-306).
+        // Nothing here can revive the stream, so the owner ends the take —
+        // the same clean stop a display change gets — instead of sitting in
+        // `recording` with frames that will never arrive. The take is intact
+        // up to the failure, which is what a clean stop preserves.
+        if !answeredStart { onStreamDied?(error) }
     }
 
     // MARK: - event tap
@@ -631,15 +684,33 @@ final class CaptureSession: NSObject, SCStreamOutput, SCStreamDelegate {
     /// the video may still be readable, and if it is not, the sidecars say what
     /// was attempted.
     func stop(reason: String, completion: @escaping ([String: Any]) -> Void) {
+        // Re-entry (STC-305): a second call while the first is already
+        // tearing down is coalesced onto it rather than starting a second
+        // teardown of the same stream/writer. A second call that arrives
+        // AFTER the first has already finished is answered immediately with
+        // what was already recorded — the take is not re-stopped, and its
+        // reason is not rewritten by a later, incidental caller.
+        lock.lock()
+        if let stats = stopStats {
+            lock.unlock()
+            completion(stats)
+            return
+        }
+        if stopStarted {
+            stopCompletions.append(completion)
+            lock.unlock()
+            return
+        }
+        stopStarted = true
         // Set BEFORE reading `camera`: this is the other half of the HIGH 1
         // race. A camera that finishes opening after this point checks the
         // flag (in `startCameraAsync`) and closes itself instead of being
         // stored, so it is not simply skipped and left running. The cursor
         // sampler's run loop is read in the same section for the same reason
-        // (startCursorSampler). And it is set BEFORE the tap is disabled, so
-        // the disable CoreGraphics reports back (handleTapEvent) is seen as
-        // ours and not re-enabled or counted.
-        lock.lock()
+        // (startCursorSampler) — still under the one lock acquisition the
+        // STC-305 re-entry guard above already holds. And it is set BEFORE
+        // the tap is disabled below, so the disable CoreGraphics reports back
+        // (handleTapEvent) is seen as ours and not re-enabled or counted.
         stoppingBegan = true
         let cam = camera
         let cursorRL = cursorRunLoop
@@ -660,7 +731,13 @@ final class CaptureSession: NSObject, SCStreamOutput, SCStreamDelegate {
             var s = self.stats()
             if actualReason != reason { s["stopWarning"] = "writer did not finalise in time" }
             self.writeSidecars(reason: actualReason)
+            self.lock.lock()
+            self.stopStats = s
+            let extra = self.stopCompletions
+            self.stopCompletions = []
+            self.lock.unlock()
             completion(s)
+            for c in extra { c(s) }
         }
 
         // HIGH 2 — bound arithmetic. The client (app/src/helper-client.ts,

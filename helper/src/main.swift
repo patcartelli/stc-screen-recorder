@@ -13,6 +13,9 @@ final class App {
     private var startedAtNs: UInt64 = 0
     private var statsTimer: DispatchSourceTimer?
     private var capture: CaptureSession?
+    /// In-flight stills (STC-289), retained until each answers. A still never
+    /// reads or writes `state`: it is not a recording and must not disturb one.
+    private var stills: [ObjectIdentifier: StillCapture] = [:]
     /// Stats run off the main queue on purpose: telemetry must never compete with
     /// the control plane for the queue that dispatches commands.
     private let statsQueue = DispatchQueue(label: "stc.stats")
@@ -73,6 +76,17 @@ final class App {
                 deviceTypes: [.builtInWideAngleCamera, .externalUnknown],
                 mediaType: .video, position: .unspecified).devices.map { $0.localizedName }
             IO.send("camera-probe", seq: seq, ["auth": auth, "devices": devices])
+        case "capture-still":
+            captureStill(cmd, seq: seq)
+        case "windows":
+            WindowList.enumerate { result in
+                DispatchQueue.main.async {
+                    switch result {
+                    case .success(let o): IO.send("windows", seq: seq, o)
+                    case .failure(let e): IO.send("error", seq: seq, ["code": e.code, "detail": e.description])
+                    }
+                }
+            }
         case "cursor-probe":
             // STC-309 increment 0: the spike, as a command, so it measures the
             // production sampler in the production process. Idle only — a
@@ -120,13 +134,62 @@ final class App {
         let wantCamera = cmd["camera"] as? Bool ?? false
         let session = CaptureSession(dir: url, t0Ns: startedAtNs)
         capture = session
+        // STC-306: a stream that dies after `started` ends the take the way a
+        // display change does (`Watchers.onDisplayChange` in boot()). Set per
+        // session rather than once, because the session is per take; the
+        // identity check keeps a stale session's late callback from stopping
+        // a later take. `didStopWithError` has already sent the
+        // `stream-stopped` warning by the time this runs.
+        session.onStreamDied = { [weak self, weak session] _ in
+            DispatchQueue.main.async {
+                guard let self, let session,
+                      self.state == .recording, self.capture === session else { return }
+                self.stop(reason: "stream-stopped")
+            }
+        }
         session.start(displayId: displayId, camera: wantCamera) { [weak self] result in
             DispatchQueue.main.async {
                 guard let self else { return }
                 switch result {
                 case .success(let info):
-                    // A stop may have arrived while the async start was in flight.
-                    guard self.state == .starting else { return }
+                    // A stop may have arrived while the async start was in
+                    // flight (STC-305): `stop` answers seq 2 immediately
+                    // against a session whose stream is still nil — nothing
+                    // to tear down yet — sets state back to .idle, and only
+                    // THEN does SCShareableContent's callback actually run,
+                    // calling begin(): a real stream and event tap start for
+                    // the first time, on the SAME session object, after the
+                    // client was already told it was stopped. Silently
+                    // returning here left seq 1 unanswered for the client's
+                    // full 30 s timeout while that stream and tap kept
+                    // running for the rest of the process's life — the tap
+                    // thread holds `session` strongly inside CFRunLoopRun,
+                    // so nothing ever frees it, and every subsequent mouse
+                    // event is appended to a struct nothing will read again.
+                    // Every request answers exactly once; this one still
+                    // needs to, and the stream this branch just started
+                    // still needs to be torn down. `session`, not
+                    // `self.capture` (already nil, in the plain case below)
+                    // — this closure's own strong reference is the only
+                    // thing that still points at it.
+                    //
+                    // `self.capture === session`, not state alone: a stop
+                    // that raced this SAME session can be followed by a
+                    // fresh start on a DIFFERENT one before this stray
+                    // success arrives. State alone reads `.starting` again
+                    // for that new session and would wrongly promote this
+                    // stale reply to "recording", then tear the new,
+                    // legitimately-requested session down the moment ITS OWN
+                    // success later found state already claimed. Checking
+                    // identity keeps a stale session's completion from ever
+                    // being mistaken for the one `self` is currently tracking.
+                    guard self.state == .starting, self.capture === session else {
+                        session.stop(reason: "stopped-during-start") { _ in }
+                        IO.send("error", seq: seq,
+                                ["code": "stopped-during-start",
+                                 "detail": "stop arrived before start finished"])
+                        return
+                    }
                     self.state = .recording
                     var o: [String: Any] = ["dir": url.path, "t0Ns": self.startedAtNs]
                     o.merge(info) { a, _ in a }
@@ -136,24 +199,78 @@ final class App {
                     IO.send("error", seq: seq,
                             ["code": ce?.code ?? "start-failed",
                              "detail": ce.map { $0.description } ?? "\(err)"])
-                    // A failed start still leaves the writer's zero-byte
-                    // display.mp4 behind, so "is the directory empty?" is not
-                    // the right question — "does it hold anything worth
-                    // keeping?" is. Only ever removes a directory we created
-                    // whose contents are all empty files.
-                    if !dirExistedBefore, let fm = Optional(FileManager.default),
-                       let entries = try? fm.contentsOfDirectory(atPath: url.path),
-                       entries.allSatisfy({ name in
-                           let attrs = try? fm.attributesOfItem(atPath: url.appendingPathComponent(name).path)
-                           return (attrs?[.size] as? Int ?? 1) == 0
-                       }) {
-                        try? fm.removeItem(at: url)
-                    }
+                    // Scoped to THIS closure's own `url`/`dirExistedBefore`, so it
+                    // is correct regardless of which session is currently tracked.
+                    if !dirExistedBefore { App.removeIfNothingWorthKeeping(url) }
+                    // `self.capture === session`, not unconditional (STC-310,
+                    // the sibling of STC-305's identical fix a few lines up):
+                    // a stop-then-restart can leave THIS closure's session
+                    // stale by the time its failure finally arrives — e.g. the
+                    // 15 s `startTimeoutSeconds` backstop firing well after a
+                    // newer session has since started and is actively
+                    // recording. Resetting state unconditionally would tell
+                    // `App` it is idle with no session while that newer one is
+                    // still live and unreachable — the exact "leaked running
+                    // capture" bug class STC-305 fixed in the `.success`
+                    // branch, reached here through a stale `.failure` instead
+                    // of a stale success.
+                    guard self.capture === session else { return }
                     // Leave the helper usable: a denied permission must not
                     // wedge the process, it must be retryable after granting.
                     self.capture = nil
                     self.sessionDir = nil
                     self.state = .idle
+                }
+            }
+        }
+    }
+
+    /// A failed start still leaves the writer's zero-byte display.mp4 behind,
+    /// so "is the directory empty?" is not the right question — "does it hold
+    /// anything worth keeping?" is. Only ever removes a directory we created
+    /// whose contents are all empty files; a pre-existing one is never passed
+    /// in. Shared by `start` and `capture-still`, so a denied grant litters
+    /// neither the recordings folder nor a stills folder with empty takes.
+    static func removeIfNothingWorthKeeping(_ url: URL) {
+        let fm = FileManager.default
+        guard let entries = try? fm.contentsOfDirectory(atPath: url.path),
+              entries.allSatisfy({ name in
+                  let attrs = try? fm.attributesOfItem(atPath: url.appendingPathComponent(name).path)
+                  return (attrs?[.size] as? Int ?? 1) == 0
+              })
+        else { return }
+        try? fm.removeItem(at: url)
+    }
+
+    /// `capture-still` (STC-289): one frame, its own directory, its own
+    /// document. Allowed in EVERY state, recording included — that is the
+    /// point — and it neither reads nor changes `state`. Validation answers
+    /// before anything touches ScreenCaptureKit, so a bad request costs no
+    /// grant and no time (ipc.test.ts covers those on a machine with neither).
+    private func captureStill(_ cmd: [String: Any], seq: Int?) {
+        let req: StillRequest
+        switch parseStillRequest(cmd) {
+        case .failure(let e):
+            IO.send("error", seq: seq, ["code": e.code, "detail": e.description]); return
+        case .success(let r):
+            req = r
+        }
+        let url = URL(fileURLWithPath: req.dir)
+        let dirExistedBefore = FileManager.default.fileExists(atPath: url.path)
+        do { try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true) }
+        catch { IO.send("error", seq: seq, ["code": "mkdir-failed", "detail": "\(error)"]); return }
+
+        let still = StillCapture(request: req, dir: url)
+        stills[ObjectIdentifier(still)] = still
+        still.run { [weak self] result in
+            DispatchQueue.main.async {
+                self?.stills[ObjectIdentifier(still)] = nil
+                switch result {
+                case .success(let o):
+                    IO.send("still", seq: seq, o)
+                case .failure(let e):
+                    IO.send("error", seq: seq, ["code": e.code, "detail": e.description])
+                    if !dirExistedBefore { App.removeIfNothingWorthKeeping(url) }
                 }
             }
         }
