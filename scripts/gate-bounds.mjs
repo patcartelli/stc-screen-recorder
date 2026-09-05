@@ -90,6 +90,17 @@ export const TEARDOWN_MS = 30_000;
 export const EVAL_SLOTS = 4;
 /** seek-gate keeps its own tighter, more informative bound (it names the last probe). */
 export const SEEK_MS = 90_000;
+
+/**
+ * The still gate's own evaluate bound, in place of the general EVAL_MS.
+ *
+ * It renders eight small canvases and reads them back — no demux, no decoder,
+ * no encoder, so none of the things EVAL_MS is generous for are present. A
+ * minute is already two orders of magnitude over the measured cost, and being
+ * tighter than EVAL_MS is the point: a wedge here should be reported in a
+ * minute rather than three.
+ */
+export const STILL_MS = 30_000;
 /**
  * The whole `npm run test:slow` step, bounded as ONE process the way each gate
  * is — not as a sum of per-test timeouts, which is the model that rots.
@@ -277,6 +288,9 @@ export function gateFloorMs(script) {
     case "identity-gate.mjs": return launchAndTeardown + GC_RETRIES * READY_MS + EVAL_MS;
     // Its own tighter, more informative bound instead of EVAL_MS.
     case "seek-gate.mjs":     return launchAndTeardown + GC_RETRIES * READY_MS + SEEK_MS;
+    // One goto, one readiness wait, one evaluate. No reload, so no GC-retry
+    // loop to re-enter the readiness wait.
+    case "still-gate.mjs":    return launchAndTeardown + READY_MS + STILL_MS;
     default: throw new Error(`no floor declared for scripts/${script}`);
   }
 }
@@ -300,6 +314,13 @@ export const GATE_PROCESS_MS = {
   "export-gate.mjs": 780_000,
   "identity-gate.mjs": 560_000,
   "seek-gate.mjs": 450_000,
+  // The one gate that decodes no video, so it has no VideoDecoder.configure()
+  // to wedge on (STC-259) and no encoder to acquire. The gate itself costs
+  // seconds; this bound is dominated by the launch, readiness and teardown
+  // bounds every gate shares, which is what its floor is made of. Set to the
+  // smallest value its floor allows, because a fifth gate's budget comes
+  // straight out of the job's clearance against the cap.
+  "still-gate.mjs": 220_000,
 };
 
 /** Only the determinism gate is retried; the rest run once. */
