@@ -1,0 +1,96 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>stc selection</title>
+<style>
+  /* The window is transparent; everything visible here is drawn deliberately.
+     No scrollbars, no selection, no drag-image — the overlay is a surface to
+     draw ON, not a document. */
+  html, body {
+    margin: 0; padding: 0; width: 100%; height: 100%;
+    overflow: hidden; background: transparent;
+    user-select: none; -webkit-user-select: none; cursor: crosshair;
+    font: 12px/1.4 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+  }
+  body.window-mode { cursor: default; }
+
+  /* The dim, and the hole in it.
+
+     One element with an enormous spread shadow, rather than four rectangles
+     around the selection: the shadow follows the element on every frame with
+     no chance of a one-pixel seam appearing between panels as the marquee
+     moves, and there is exactly one thing to keep in sync with the state. */
+  #marquee {
+    position: absolute; box-sizing: border-box;
+    box-shadow: 0 0 0 100000px rgba(0, 0, 0, 0.42);
+    border: 1px solid rgba(255, 255, 255, 0.95);
+    display: none;
+  }
+  /* Before the first drag the whole display is dimmed, with no hole at all. */
+  #scrim {
+    position: absolute; inset: 0;
+    background: rgba(0, 0, 0, 0.42);
+  }
+  body.has-selection #scrim, body.window-mode #scrim { display: none; }
+  body.window-mode #marquee { display: none; }
+
+  /* Resize handles. Eight of them, drawn as small white squares with a dark
+     hairline so they read against both a bright and a dark backdrop. */
+  .handle {
+    position: absolute; width: 9px; height: 9px; margin: -5px 0 0 -5px;
+    background: #fff; border: 1px solid rgba(0, 0, 0, 0.55); border-radius: 1px;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+  }
+  .handle.nw { cursor: nwse-resize } .handle.se { cursor: nwse-resize }
+  .handle.ne { cursor: nesw-resize } .handle.sw { cursor: nesw-resize }
+  .handle.n  { cursor: ns-resize }   .handle.s  { cursor: ns-resize }
+  .handle.w  { cursor: ew-resize }   .handle.e  { cursor: ew-resize }
+
+  /* The window-mode highlight: the window's own frame, filled faintly so the
+     target reads as picked rather than merely outlined. */
+  #highlight {
+    position: absolute; display: none; box-sizing: border-box;
+    border: 2px solid rgba(120, 180, 255, 0.95);
+    background: rgba(90, 160, 255, 0.16);
+    border-radius: 6px;
+  }
+
+  /* Readouts. Positioned by script; styled to stay legible over anything. */
+  .chip {
+    position: absolute; display: none;
+    padding: 4px 8px; border-radius: 6px;
+    background: rgba(20, 20, 22, 0.86); color: #fff;
+    font-variant-numeric: tabular-nums;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+    white-space: nowrap; pointer-events: none;
+  }
+  #size { font-weight: 600; }
+  #title { max-width: 420px; overflow: hidden; text-overflow: ellipsis; }
+
+  /* The legend. The overlay has no chrome, so the keys have to be stated. */
+  #legend {
+    position: absolute; left: 50%; transform: translateX(-50%);
+    padding: 7px 12px; border-radius: 8px;
+    background: rgba(20, 20, 22, 0.82); color: rgba(255, 255, 255, 0.92);
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
+    pointer-events: none; white-space: nowrap;
+  }
+  #legend kbd {
+    font: inherit; font-weight: 600;
+    padding: 1px 5px; margin: 0 2px; border-radius: 4px;
+    background: rgba(255, 255, 255, 0.16);
+  }
+  #legend .sep { opacity: 0.4; margin: 0 6px; }
+</style>
+</head>
+<body>
+  <div id="scrim"></div>
+  <div id="marquee"></div>
+  <div id="highlight"></div>
+  <div id="size" class="chip"></div>
+  <div id="title" class="chip"></div>
+  <div id="legend"></div>
+  <script src="../dist/overlay.js"></script>
+</body>
+</html>

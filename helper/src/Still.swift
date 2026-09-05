@@ -249,7 +249,12 @@ final class StillCapture {
                 finish(.failure(.cropOutsideDisplay)); return
             }
             crop = region
-            filter = SCContentFilter(display: display, excludingWindows: [])
+            // STC-290: the caller's overlay must not be in the pixels. Matched
+            // against this display's own window list, so an id from another
+            // display (or one already closed) simply finds nothing.
+            let excluded = request.excludeWindowIds.isEmpty ? [] :
+                content.windows.filter { request.excludeWindowIds.contains($0.windowID) }
+            filter = SCContentFilter(display: display, excludingWindows: excluded)
             // Display-local points, which is what sourceRect takes for a
             // display filter. The whole display when no crop was asked for.
             cfg.sourceRect = region.cgRect

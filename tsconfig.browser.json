@@ -15,7 +15,7 @@
     "types": [],
     "skipLibCheck": true
   },
-  "include": ["transform/src/**/*.ts", "harness/**/*.ts", "app/src/renderer.ts"],
+  "include": ["transform/src/**/*.ts", "harness/**/*.ts", "app/src/renderer.ts", "app/src/overlay.ts"],
   // vite's own config is node — it belongs to the node pass.
   "exclude": ["harness/vite.config.ts"]
 }
