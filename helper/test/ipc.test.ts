@@ -144,6 +144,29 @@ describe("reliable channel — fd3, request/response with sequence numbers", () 
     expect(r.samples as number).toBeGreaterThan(0);
   });
 
+  test("devices lists displays with the fields a picker and a multi-display take need (STC-247)", async () => {
+    // How many displays a CI VM has is the machine's business (it may be
+    // none); the SHAPE of each entry is ours. originX/Y are the display's place
+    // in the global point space anchors.display and CGEvent share.
+    const h = spawnHelper();
+    await waitFor(() => find(h.fd3, "ready"));
+    h.send({ cmd: "devices", seq: 9 });
+    const r = await waitFor(() => h.fd3.find((l) => l.seq === 9), 15_000, "devices reply");
+    expect(r.ev).toBe("devices");
+    if (r.stalled) return;                       // CoreAudio wedged: reported, not a display fact
+    expect(Array.isArray(r.displays)).toBe(true);
+    for (const d of r.displays as any[]) {
+      expect(Number.isInteger(d.id) && d.id > 0, `id ${d.id}`).toBe(true);
+      expect(typeof d.main).toBe("boolean");
+      expect(typeof d.name).toBe("string");
+      for (const k of ["pointW", "pointH", "pixelW", "pixelH", "originX", "originY"]) {
+        expect(typeof d[k], `${k} on display ${d.id}`).toBe("number");
+      }
+    }
+    // At most one main display, when there are any at all.
+    expect((r.displays as any[]).filter((d) => d.main).length).toBeLessThanOrEqual(1);
+  });
+
   test("malformed JSON produces a reliable error without wedging the stream", async () => {
     const h = spawnHelper();
     await waitFor(() => find(h.fd3, "ready"));

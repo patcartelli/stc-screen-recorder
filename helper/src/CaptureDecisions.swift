@@ -272,3 +272,29 @@ func orderedEvents(_ events: [[String: Any]]) -> [[String: Any]] {
         return ta != tb ? ta < tb : a.offset < b.offset
     }.map { $0.element }
 }
+
+
+// ── which display to capture (STC-247) ─────────────────────────────────────
+
+enum DisplayChoice: Equatable {
+    /// Capture this one.
+    case display(CGDirectDisplayID)
+    /// The caller named a display SCK did not list. An error, never a quiet
+    /// swap: the app's picker would otherwise record the wrong screen and say
+    /// nothing, and the take's anchors would name a display the user never
+    /// chose.
+    case notFound(requested: CGDirectDisplayID, available: [CGDirectDisplayID])
+    /// SCK listed nothing — the ungranted case, reported as `no-displays`.
+    case noDisplays
+}
+
+/// `requested == nil` keeps the phase-1 behaviour: whichever display SCK lists
+/// first. `available` is SCShareableContent's order, which is NOT promised to
+/// put the main display first; a caller that cares names an id.
+func chooseDisplay(requested: CGDirectDisplayID?, available: [CGDirectDisplayID]) -> DisplayChoice {
+    guard let first = available.first else { return .noDisplays }
+    guard let requested else { return .display(first) }
+    return available.contains(requested)
+        ? .display(requested)
+        : .notFound(requested: requested, available: available)
+}

@@ -54,6 +54,16 @@ export class HelperSupervisor {
   }
 
   /**
+   * What the helper can record from: displays (with their global origins),
+   * cameras and mics. The helper bounds the enumeration itself and answers
+   * `stalled: true` if CoreAudio is wedged, so this never hangs the UI.
+   */
+  async devices(): Promise<HelperLine> {
+    if (!this.client) throw new Error("helper is not running");
+    return this.client.request("devices");
+  }
+
+  /**
    * The on-screen windows a window shot can name (STC-290).
    *
    * Read fresh every time the overlay opens rather than cached: a window list

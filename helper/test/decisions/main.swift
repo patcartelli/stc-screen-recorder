@@ -233,5 +233,21 @@ check("events are written in time order", ordered.map { $0["t"] as? Int ?? -1 },
 check("ties keep append order (stable)", ordered.map { $0["kind"] as? String ?? "" }, ["move", "cursor", "move", "move"])
 check("ordering an empty list is fine", orderedEvents([]).count, 0)
 
+// ── which display to capture (STC-247) ─────────────────────────────────────
+// SCShareableContent's order is not promised to put the main display first,
+// and a requested display that is not listed must be an error, never a quiet
+// swap for whichever one is first.
+let two: [CGDirectDisplayID] = [3, 7]
+check("no request takes the first listed (the phase-1 behaviour)",
+      chooseDisplay(requested: nil, available: two), DisplayChoice.display(3))
+check("a listed display is chosen by id, wherever it sits in the list",
+      chooseDisplay(requested: 7, available: two), DisplayChoice.display(7))
+check("an unlisted display is refused, naming what was available",
+      chooseDisplay(requested: 9, available: two), DisplayChoice.notFound(requested: 9, available: two))
+check("no displays at all is none, with or without a request",
+      chooseDisplay(requested: 7, available: []), DisplayChoice.noDisplays)
+check("no displays, no request, still none",
+      chooseDisplay(requested: nil, available: []), DisplayChoice.noDisplays)
+
 print(failures == 0 ? "ALL PASS" : "\(failures) FAILURES")
 exit(failures == 0 ? 0 : 1)

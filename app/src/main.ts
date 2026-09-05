@@ -114,6 +114,11 @@ ipcMain.handle("recorder:getSettings", async (): Promise<Settings> =>
 ipcMain.handle("recorder:setSettings", async (_e, patch: Partial<Settings>): Promise<Settings> =>
   writeSettings(app.getPath("userData"), patch ?? {}));
 
+ipcMain.handle("recorder:devices", async () => {
+  if (!sup) throw new Error("supervisor not running");
+  return sup.devices();
+});
+
 ipcMain.handle("recorder:status", async () => ({
   state: sup?.state ?? "starting",
   pid: sup?.pid,
@@ -130,8 +135,11 @@ ipcMain.handle("recorder:start", async () => {
     // Read from the stored preference, NOT passed up from the renderer. Main
     // already owns this setting, and a renderer-supplied flag would be a second
     // source of truth for the thing that turns on a physical camera.
-    const { camera } = readSettings(app.getPath("userData"));
-    const r = await sup.startRecording(dir, { camera });
+    const { camera, displayId } = readSettings(app.getPath("userData"));
+    // displayId only when one was picked: absent means "the helper's first",
+    // and the helper refuses an id it cannot find (display-not-found) rather
+    // than recording another screen (STC-247).
+    const r = await sup.startRecording(dir, { camera, ...(displayId != null ? { displayId } : {}) });
     return { ok: true, dir, info: r };
   } catch (e: any) {
     // A missing Screen Recording grant is the common case and is actionable —
