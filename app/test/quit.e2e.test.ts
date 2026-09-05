@@ -43,6 +43,11 @@ describe("quitting while recording", () => {
     await app.close();
     app = undefined;
 
-    expect(readFileSync(log, "utf8").trim().split("\n")).toEqual(["start", "stop", "quit"]);
+    // The subject is the ORDER of the lifecycle: stop before quit. Enumeration
+    // commands (`devices`, which the display picker issues when the helper
+    // comes up — STC-247) are not part of that order and may land anywhere
+    // before the take, so they are filtered rather than pinned.
+    const lifecycle = readFileSync(log, "utf8").trim().split("\n").filter((c) => c !== "devices");
+    expect(lifecycle).toEqual(["start", "stop", "quit"]);
   }, 120_000);
 });
