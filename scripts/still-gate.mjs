@@ -48,8 +48,16 @@ await server.listen(5207);
 // decodes video. This gate decodes nothing, so that reason does not apply, and
 // dropping it makes the gate runnable on any machine with the repo installed
 // rather than only where Chrome is. Overridable for a like-for-like comparison.
+//
+// It costs CI a step, and the first CI run of this gate is how that was found:
+// `npx playwright install chrome` fetches the CHANNEL and nothing else, so the
+// bundled build was simply absent and the gate died at launch, before a single
+// assertion. ci.yml installs chromium too. The browser is PRINTED rather than
+// assumed, because a pixel gate whose answer depends on the rasteriser should
+// never leave you guessing which one produced the answer.
 const channel = process.env.STC_STILL_GATE_CHANNEL;
 const browser = await chromium.launch({ headless: true, ...(channel ? { channel } : {}) });
+console.log(`browser: ${channel ?? "bundled chromium"} ${browser.version()}`);
 const page = await browser.newPage();
 const trail = await instrumentPage(page);
 

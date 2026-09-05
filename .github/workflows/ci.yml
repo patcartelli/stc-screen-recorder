@@ -116,6 +116,15 @@ jobs:
       - name: Install Chrome
         run: npx playwright install chrome
 
+      # The still gate is the one gate that launches BUNDLED Chromium rather
+      # than `channel: "chrome"`, because it decodes no video and so does not
+      # need H.264 — which is what the four video gates install real Chrome
+      # for. `playwright install chrome` fetches the CHANNEL only, so without
+      # this the still gate dies before it runs a single assertion:
+      # "Executable doesn't exist at .../chromium_headless_shell-<build>".
+      - name: Install Chromium (still gate)
+        run: npx playwright install chromium
+
       - name: Determinism gate (fixture)
         run: npm run gate
 
