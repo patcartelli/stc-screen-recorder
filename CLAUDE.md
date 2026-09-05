@@ -84,7 +84,8 @@ belonging to a different commit).
 | STC-286 | **cause found 2026-08-31, and now reported DURING the take.** In clamshell the built-in camera OPENS — `camera-started device: "FaceTime HD Camera"` — then delivers nothing: 0-byte camera.mp4, `present: false`. Not a failed open and not a wrong pick (`pickCamera` chose correctly over a virtual device and Continuity). A 3 s liveness watchdog warns while recording | nothing — both arms verified on hardware, lid shut AND lid open |
 | STC-239 | **transform half DONE 2026-09-02** — the placeholder circle is macOS pointer artwork (arrow, I-beam, crosshair, pointing hand), vector paths with the hotspot at the origin, drawn at `pxPerPoint` (display→output ratio × `project.cursor.scale`). `events-2` adds `{kind:"cursor", shape}`; the sim shows the arrow until the first one, which is what every v1 take means. `project.cursor.style: "circle"` keeps the old placeholder as an option (project.json only — no UI for it). **The helper still writes v1 and emits no cursor events**, so real takes show the arrow throughout. Merged as #65; closed 2026-09-02 | nothing — the helper half is STC-309 |
 | STC-309 | **DONE 2026-09-04, WATCHED on hardware.** The helper samples `NSCursor.currentSystem` at 30 Hz on its own thread (`helper/src/CursorShape.swift`), classifies against references MEASURED at start from the four `NSCursor` built-ins, emits `{kind:"cursor", shape}` only on change, and writes events.json **v2** time-ordered. Spike on hardware: the API sees other apps' pointers from the background helper, all four shapes match byte-for-byte, a sample costs 1.04 ms mean / 41 ms max (why it is NOT on the tap thread). An 11 s take from the app (726 moves, 37 shape changes) was exported and watched: I-beam over the field, hand over the links, arrow elsewhere, click highlight under the I-beam, in step with the video. Pinned as `fixtures/real-session-cursor/` + `helper/test/real-events-cursor.test.ts`. #67, #75, #76 | nothing. More shapes (resize, hands, not-allowed — seen as unknown, written as arrow) need artwork + events-3 |
-| STC-306 | **helper half DONE 2026-09-04.** A display stream that dies under a live take (`didStopWithError` after `started`) now ends the take the way a display change does: `CaptureSession.onStreamDied` → `App.stop(reason: "stream-stopped")`, warning first, unsolicited `stopped` after, sidecars written and `display.mp4` finalised. `anchors-2` `stop.reason` gained `stream-stopped` / `stream-stopped-timeout`. The helper's FIRST production fault injector: `STC_CAPTURE_FAULT=stream-died` makes the session call its own delegate 0.5 s after a successful start, which is how `helper/test/stream-died.grant.test.ts` watches the path fire instead of reasoning about it. Written on Linux with no swiftc — CI's macOS runner is the first compile | `npm run test:capture` on the Mac: both new tests need the grant. The enum still lacks `quit` / `signal-N` / `stdin-closed`, which `shutdown` writes and nothing validates at load — that is STC-311 |
+| STC-306 | **helper half DONE 2026-09-04.** A display stream that dies under a live take (`didStopWithError` after `started`) now ends the take the way a display change does: `CaptureSession.onStreamDied` → `App.stop(reason: "stream-stopped")`, warning first, unsolicited `stopped` after, sidecars written and `display.mp4` finalised. `anchors-2` `stop.reason` gained `stream-stopped` / `stream-stopped-timeout`. The helper's FIRST production fault injector: `STC_CAPTURE_FAULT=stream-died` makes the session call its own delegate 0.5 s after a successful start, which is how `helper/test/stream-died.grant.test.ts` watches the path fire instead of reasoning about it. Written on Linux with no swiftc — CI's macOS runner is the first compile | `npm run test:capture` on the Mac: both new tests need the grant. `npm run test:capture` also covers STC-311's new schema validation |
+| STC-311 | **DONE 2026-09-04.** `anchors-2` `stop.reason` now describes what the helper can actually write: the fixed reasons plus `quit` / `stdin-closed` / `stopped-during-start`, a `^signal-[0-9]+(-timeout)?$` pattern for the open-ended family, and a `-timeout` variant of every one. `helper/test/stop-reasons.test.ts` is the drift guard — it READS the reason literals out of the Swift call sites and holds the schema to them, so it needs no list of its own | nothing; the schema half runs in `npm test` |
 | STC-289 | **helper still capture — written 2026-09-04 on Linux; COMPILED and unit-tested on CI (SDK 15), NOT yet built against the Mac's 13.3 SDK or run with a grant.** `capture-still` returns one frame via `SCScreenshotManager` with no stream and no recording lifecycle; `windows` lists what a window shot can name. Display filter + `sourceRect` for region/full shots, `desktopIndependentWindow` filter for window shots with alpha end to end; `frame.png` + `shot.json` (shot-1, cherry-picked from the review branch) in the request's dir; cursor sampled from `NSEvent.mouseLocation`, absent when on another display; 10 s answer-once backstop. The pure half is tested without a grant and every document it writes is validated against the schema AND `parseShot` on every `npm test` | a Mac: `docs/STC-289-RUNBOOK.md`. The ObjC-runtime call is the one line no test on Linux can vouch for; `still.grant.test.ts` is the proof |
 | STC-247 | multi-display capture | a second display |
 | STC-251/252 | preview memory ceiling (~15 min at 4K); Node 20 actions deprecation | — |
@@ -444,6 +445,35 @@ reachable via KVC (`setValue(3, forKey: "captureResolution")`, verified in phase
   prints a whole subtree, and `grep -o 'Yes\|No'` on it matches an unrelated token long before the
   clamshell line. Scope the grep to `"AppleClamshellState"` or the reading is not about the lid at
   all.
+
+- **Two checks can each exist and still leave a hole between them, if they are on different
+  VALUES (STC-311).** `anchors-2`'s `stop.reason` was a closed enum of five reasons and their
+  `-timeout` variants. The helper writes four families it refused: `quit`, `stdin-closed` and
+  `signal-N` from `App.shutdown` (STC-304), and `stopped-during-start` (STC-305). Both halves of
+  the check were already in the repo and neither could see it —
+  `shutdown-during-recording.grant.test.ts` asserted `reason === "signal-15"` without validating
+  the document, and `anchors/main.swift` validated documents against the schema but only ever
+  built them with `stopReason: "user"`. Assertion on one value, validation on another; the gap
+  sat exactly between. Nothing broke downstream only because NOTHING validates anchors.json at
+  load — `recording.ts` and `takes.ts` read `stop.t` and never `stop.reason` — so it was a schema
+  that lies rather than a take that fails, which is why it survived three tickets.
+  The fix is not a longer enum: `CaptureSession.stop`'s backstop answers `\(reason)-timeout` for
+  WHATEVER reason it was given, so the suffix is a property of every family and hand-listing the
+  cross-product is the drift that caused this. The schema states the rule (enum + a `signal-`
+  pattern), and `helper/test/stop-reasons.test.ts` READS the reason literals out of the Swift call
+  sites — expanding `signal-\(sig)` from the signal list it finds in `installSignalHandlers`, and
+  THROWING on any interpolation it cannot expand rather than skipping it — and holds the schema to
+  them. Deliberately no list of its own: a fourth copy is the defect, not the fix. Watched failing
+  against the pre-STC-311 schema, against a schema missing only `stopped-during-start`, and — the
+  one that matters — against `{"type": "string"}`, which is what "fixing" a schema by widening it
+  until nothing fails looks like.
+  NB the signal list is grepped by WHAT ITS LOOP DOES (`shutdown(reason:)`), not by position:
+  `main.swift` has two `for sig in [...]` loops and the FIRST is `installCrashHandlers`
+  (SIGSEGV/BUS/ILL/FPE/ABRT/TRAP), which dies with a stderr line and never writes a reason at all.
+  A fourth copy was found while fixing this and deleted rather than corrected: `transform/src/
+  types.ts` typed `stop.reason` as a union of four, missing `stream-stopped` and every shutdown
+  reason. A union that cannot express values real files carry type-checks a lie and makes a
+  `switch` look exhaustive; it is `string` now, with the enumeration living only in the schema.
 
 - **A raw `display.mp4` never has a cursor, and a "the cursor is missing" report must say which file
   was watched.** `showsCursor` is off by design; the pointer exists only in an EXPORT, drawn from
