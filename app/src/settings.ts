@@ -18,9 +18,23 @@ import { join } from "node:path";
 export interface Settings {
   /** Opt-in, default off, sticky (camera PiP design spec). */
   camera: boolean;
+  /**
+   * Which display to record (STC-247), as the helper's CGDirectDisplayID, or
+   * null for "whichever the helper lists first" — the phase-1 behaviour and
+   * the only one a single-display machine ever sees. Sticky, like the camera:
+   * a picked display stays picked across launches. If that display is gone at
+   * `start`, the helper refuses with `display-not-found` rather than quietly
+   * recording another one; the UI shows the stale choice as such.
+   */
+  displayId: number | null;
 }
 
-export const DEFAULT_SETTINGS: Settings = { camera: false };
+export const DEFAULT_SETTINGS: Settings = { camera: false, displayId: null };
+
+/** A display id is a positive integer; anything else is "automatic". */
+function cleanDisplayId(v: unknown): number | null {
+  return typeof v === "number" && Number.isInteger(v) && v > 0 ? v : null;
+}
 
 const FILE = "settings.json";
 
@@ -43,6 +57,7 @@ export function readSettings(dir: string): Settings {
   const doc = raw as Record<string, unknown>;
   return {
     camera: typeof doc.camera === "boolean" ? doc.camera : DEFAULT_SETTINGS.camera,
+    displayId: cleanDisplayId(doc.displayId),
   };
 }
 
@@ -56,7 +71,7 @@ export function readSettings(dir: string): Settings {
  */
 export function writeSettings(dir: string, patch: Partial<Settings>): Settings {
   const merged: Settings = { ...readSettings(dir), ...patch };
-  const clean: Settings = { camera: merged.camera === true };
+  const clean: Settings = { camera: merged.camera === true, displayId: cleanDisplayId(merged.displayId) };
   try {
     writeFileSync(join(dir, FILE), JSON.stringify(clean, null, 2));
   } catch {

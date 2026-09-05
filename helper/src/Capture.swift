@@ -187,9 +187,23 @@ final class CaptureSession: NSObject, SCStreamOutput, SCStreamDelegate {
                 self.finishStart(.failure(CaptureError.noDisplays(underlying: err)))
                 return
             }
-            let display = displayId.flatMap { id in content.displays.first { $0.displayID == id } }
-                ?? content.displays[0]
-            self.begin(display: display, camera: wantCamera)
+            // STC-247: which display is a decision (CaptureDecisions.swift),
+            // and a requested display that is not there is an ERROR — the
+            // old fallback to `displays[0]` recorded the wrong screen and
+            // said nothing, which an app with a display picker cannot have.
+            let ids = content.displays.map { $0.displayID }
+            switch chooseDisplay(requested: displayId, available: ids) {
+            case .noDisplays:
+                self.finishStart(.failure(CaptureError.noDisplays(underlying: err)))
+            case .notFound(let requested, let available):
+                self.finishStart(.failure(CaptureError.displayNotFound(requested: requested, available: available)))
+            case .display(let id):
+                guard let display = content.displays.first(where: { $0.displayID == id }) else {
+                    self.finishStart(.failure(CaptureError.noDisplays(underlying: err)))
+                    return
+                }
+                self.begin(display: display, camera: wantCamera)
+            }
         }
     }
 
@@ -849,9 +863,14 @@ enum CaptureError: Error, CustomStringConvertible {
     case streamFailed(Error)
     case startTimedOut
     case frameStatusMismatch(actual: Int)
+    /// STC-247: `start` named a display SCK did not list.
+    case displayNotFound(requested: CGDirectDisplayID, available: [CGDirectDisplayID])
 
     var description: String {
         switch self {
+        case .displayNotFound(let requested, let available):
+            let list = available.map(String.init).joined(separator: ", ")
+            return "display \(requested) is not available; displays: [\(list)] — pick one of those, or omit displayId"
         case .noDisplays(let e):
             return "no displays available — Screen Recording permission is the usual cause (\(e.map { "\($0)" } ?? "no error"))"
         case .writerRejectedInput: return "AVAssetWriter rejected the video input"
@@ -871,6 +890,7 @@ enum CaptureError: Error, CustomStringConvertible {
         case .streamFailed: return "stream-failed"
         case .startTimedOut: return "start-timeout"
         case .frameStatusMismatch: return "frame-status-mismatch"
+        case .displayNotFound: return "display-not-found"
         }
     }
 }

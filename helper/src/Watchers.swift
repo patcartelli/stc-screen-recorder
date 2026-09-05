@@ -1,6 +1,7 @@
 import Foundation
 import AVFoundation
 import CoreGraphics
+import AppKit
 
 /// "The world changed mid-recording" — three of phase 1's four named risks are this.
 /// Every change is surfaced as an event rather than being allowed to silently corrupt a take.
@@ -54,11 +55,25 @@ final class Watchers {
         onDisplayChange?(id, names)
     }
 
+    /// CGDirectDisplayID -> the name System Settings shows for it.
+    private static func displayNames() -> [CGDirectDisplayID: String] {
+        var out: [CGDirectDisplayID: String] = [:]
+        for screen in NSScreen.screens {
+            if let n = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber {
+                out[CGDirectDisplayID(truncating: n)] = screen.localizedName
+            }
+        }
+        return out
+    }
+
     /// Enumerating AV devices can hang when CoreAudio is wedged (PHASE-0 §2a), so it runs
     /// off-main with a timeout and reports the stall instead of blocking the process.
     static func enumerateDevices(timeout: TimeInterval = 6, _ done: @escaping ([String: Any]) -> Void) {
         let sem = DispatchSemaphore(value: 0)
         var result: [String: Any] = [:]
+        // AppKit's to give and read on the calling thread (main) before the
+        // enumeration moves off it; NSScreen is not promised off-main.
+        let names = displayNames()
         DispatchQueue.global(qos: .userInitiated).async {
             autoreleasepool {
                 let bt: Int32 = 0x626C7565   // 'blue'
@@ -77,9 +92,15 @@ final class Watchers {
                         let id = ids[i]
                         let b = CGDisplayBounds(id)
                         let m = CGDisplayCopyDisplayMode(id)
+                        // originX/Y are the display's place in the global point
+                        // space CGEvent coordinates and anchors.display use
+                        // (STC-247); a picker shows the name, a test checks
+                        // anchors against the origin.
                         displays.append(["id": id, "main": CGDisplayIsMain(id) != 0,
+                                         "name": names[id] ?? "Display \(id)",
                                          "pointW": b.size.width, "pointH": b.size.height,
-                                         "pixelW": m?.pixelWidth ?? 0, "pixelH": m?.pixelHeight ?? 0])
+                                         "pixelW": m?.pixelWidth ?? 0, "pixelH": m?.pixelHeight ?? 0,
+                                         "originX": b.origin.x, "originY": b.origin.y])
                     }
                 }
                 result = ["cameras": cams, "mics": mics, "displays": displays]

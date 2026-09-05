@@ -1,12 +1,18 @@
 /** UI: a record button, live telemetry, and anything that went wrong stated plainly. */
+interface DisplayInfo {
+  id: number; main: boolean; name?: string;
+  pointW: number; pointH: number; pixelW: number; pixelH: number;
+  originX?: number; originY?: number;
+}
 interface Take {
   dir: string; name: string; durationMs: number;
   width: number; height: number; events: number; bytes: number; label?: string;
   camera?: { present: boolean; device?: string; pipStartsAfterMs: number };
 }
 declare const recorder: {
-  getSettings: () => Promise<{ camera: boolean }>;
-  setSettings: (p: { camera?: boolean }) => Promise<{ camera: boolean }>;
+  getSettings: () => Promise<{ camera: boolean; displayId: number | null }>;
+  setSettings: (p: { camera?: boolean; displayId?: number | null }) => Promise<{ camera: boolean; displayId: number | null }>;
+  devices(): Promise<{ displays?: DisplayInfo[]; stalled?: boolean; detail?: string }>;
   status(): Promise<{ state: string; pid?: number }>;
   takes(): Promise<{ takes: Take[]; invalid: { name: string; reason: string }[] }>;
   labelTake(dir: string, label: string): Promise<boolean>;
@@ -70,6 +76,78 @@ cameraBox.addEventListener("change", async () => {
     alertUser(`Could not save the camera setting: ${String(e)}`);
   }
 });
+
+/**
+ * Which display to record (STC-247). "Automatic" is the phase-1 behaviour —
+ * whichever display the helper lists first — and the only choice a
+ * single-display machine ever needs. The list comes from the helper's own
+ * `devices` enumeration, so what is offered is exactly what it can capture;
+ * it is refreshed when the helper comes up and whenever a display is plugged
+ * in or out while idle. A stored choice whose display is gone is shown as
+ * such rather than silently dropped: `start` would then be refused with
+ * `display-not-found`, and the user should see why before pressing Record.
+ */
+const displaySel = $("display") as HTMLSelectElement;
+let storedDisplayId: number | null = null;
+
+function displayLabel(d: DisplayInfo): string {
+  const name = d.name ?? `Display ${d.id}`;
+  return `${name} ${Math.round(d.pointW)}×${Math.round(d.pointH)}${d.main ? " (main)" : ""}`;
+}
+
+async function refreshDisplays(): Promise<void> {
+  let displays: DisplayInfo[] = [];
+  try {
+    const r = await recorder.devices();
+    displays = Array.isArray(r.displays) ? r.displays : [];
+  } catch {
+    displays = [];
+  }
+  const wanted = storedDisplayId;
+  displaySel.replaceChildren();
+  const auto = document.createElement("option");
+  auto.value = ""; auto.textContent = "Automatic";
+  displaySel.append(auto);
+  for (const d of displays) {
+    const o = document.createElement("option");
+    o.value = String(d.id); o.textContent = displayLabel(d);
+    displaySel.append(o);
+  }
+  if (wanted != null && !displays.some((d) => d.id === wanted)) {
+    const o = document.createElement("option");
+    o.value = String(wanted); o.textContent = `Display ${wanted} (not connected)`;
+    displaySel.append(o);
+  }
+  displaySel.value = wanted == null ? "" : String(wanted);
+}
+
+void (async () => {
+  try {
+    storedDisplayId = (await recorder.getSettings()).displayId;
+  } catch {
+    storedDisplayId = null;
+  }
+  await refreshDisplays();
+})();
+
+displaySel.addEventListener("change", async () => {
+  const chosen = displaySel.value === "" ? null : Number(displaySel.value);
+  try {
+    const saved = await recorder.setSettings({ displayId: chosen });
+    // Show what was actually stored, not what was clicked.
+    storedDisplayId = saved.displayId;
+  } catch (e) {
+    alertUser(`Could not save the display setting: ${String(e)}`);
+  }
+  await refreshDisplays();
+});
+
+/** The camera and display are fixed at start and released at stop, so neither
+ * setting may look changeable mid-take. */
+function lockSettings(locked: boolean): void {
+  cameraBox.disabled = locked;
+  displaySel.disabled = locked;
+}
 let currentDir: string | undefined;
 
 function setState(text: string): void { $("state").textContent = text; }
@@ -136,7 +214,7 @@ recordBtn.addEventListener("click", async () => {
         setCamera(cameraBox.checked ? "opening…" : "off");
       // The device is opened at start and closed at stop, so the setting must
       // not appear changeable mid-take — it would misdescribe the recording.
-      cameraBox.disabled = true;
+      lockSettings(true);
         currentDir = r.dir;
         recordBtn.textContent = "Stop";
         setState("recording");
@@ -144,7 +222,7 @@ recordBtn.addEventListener("click", async () => {
     } else {
       await recorder.stop();
       recording = false;
-      cameraBox.disabled = false;
+      lockSettings(false);
       recordBtn.textContent = "Record";
       setState("idle");
       await refreshTakes();
@@ -158,6 +236,9 @@ recordBtn.addEventListener("click", async () => {
 
 recorder.on("helper:ready", (l) => {
   $("pid").textContent = String(l.pid ?? "—");
+  // A (re)started helper can enumerate; a respawned one may see a different
+  // set of displays than the last one did.
+  void refreshDisplays();
   if (!recording) setState("idle");
   recordBtn.disabled = false;
 });
@@ -291,7 +372,12 @@ recorder.on("helper:warning", (l) => {
     alertUser("Display configuration changed — the recording was stopped.");
     return;
   }
-  if (INFORMATIONAL_WARNINGS.has(code)) return;
+  if (INFORMATIONAL_WARNINGS.has(code)) {
+    // An idle display change is not an alert, but it is a new list of
+    // displays; the picker must not go on offering one that was unplugged.
+    if (code === "display-reconfigured") void refreshDisplays();
+    return;
+  }
   const camera = CAMERA_FAULTS[code];
   if (camera) {
     // Both: the row is the at-a-glance state, the alert is the thing that

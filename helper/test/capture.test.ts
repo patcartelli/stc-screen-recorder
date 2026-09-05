@@ -108,12 +108,33 @@ describe("capture — behaviour without a Screen Recording grant", () => {
     // interrupted (-3805). Both are fine. What must never happen is a request
     // that is simply never answered, which is what this originally caught.
     expect(["no-displays", "stream-failed", "writer-failed",
-            "writer-rejected-input", "start-timeout"]).toContain(r.code);
+            "writer-rejected-input", "start-timeout", "display-not-found"]).toContain(r.code);
     expect(String(r.detail ?? "").length).toBeGreaterThan(0);
     if (r.code === "no-displays") expect(String(r.detail)).toMatch(/Screen Recording/i);
     // Budget: probeGranted (START_BOUND_MS) + this start (START_BOUND_MS),
     // plus spawn overhead. A per-test timeout equal to the sum of its own
     // waits cannot pass when those waits actually run.
+  }, 90_000);
+
+  // STC-247. Before this, a displayId SCK did not list fell back to whichever
+  // display it listed first — a take of the wrong screen that said nothing.
+  // Without a grant SCK lists nothing and the answer is no-displays; with one
+  // it must be display-not-found, naming what WAS available. Either way the
+  // one thing that must not happen is `started`.
+  test("a displayId the helper cannot find is refused, never swapped for another display", async () => {
+    const h = spawnHelper();
+    await waitFor(() => find(h.fd3, "ready"));
+    h.send({ cmd: "start", dir: session(), displayId: 4_000_000_001, seq: 1 });
+    const r = await waitFor(() => h.fd3.find((l) => l.seq === 1), START_BOUND_MS, "start outcome");
+    expect(r.ev).toBe("error");
+    expect(["no-displays", "display-not-found"]).toContain(r.code);
+    if (r.code === "display-not-found") {
+      expect(String(r.detail)).toContain("4000000001");
+      expect(String(r.detail)).toMatch(/displays: \[/);
+    }
+    h.send({ cmd: "status", seq: 2 });
+    const st = await waitFor(() => h.fd3.find((l) => l.seq === 2), 10_000, "status");
+    expect(st.state, "a refused start must leave the helper idle").toBe("idle");
   }, 90_000);
 
   test("a denied start leaves the helper idle and retryable, not wedged", async () => {
