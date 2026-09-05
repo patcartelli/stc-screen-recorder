@@ -15,7 +15,7 @@ const dir = () => mkdtempSync(join(tmpdir(), "stc-settings-"));
 
 describe("the camera preference", () => {
   test("defaults to off when nothing has been saved", () => {
-    expect(readSettings(dir())).toEqual({ camera: false });
+    expect(readSettings(dir())).toEqual({ camera: false, displayId: null });
     expect(DEFAULT_SETTINGS.camera).toBe(false);
   });
 
@@ -49,7 +49,7 @@ describe("the camera preference", () => {
   test("unknown keys are dropped rather than persisted", () => {
     const d = dir();
     writeSettings(d, { camera: true, nonsense: 1 } as never);
-    expect(JSON.parse(readFileSync(join(d, "settings.json"), "utf8"))).toEqual({ camera: true });
+    expect(JSON.parse(readFileSync(join(d, "settings.json"), "utf8"))).toEqual({ camera: true, displayId: null });
   });
 
   test("an unwritable directory does not throw — the preference is not worth a crash", () => {
@@ -66,5 +66,38 @@ describe("the camera preference", () => {
     writeSettings(d, {});
     expect(readSettings(d).camera).toBe(true);
     expect(existsSync(join(d, "settings.json"))).toBe(true);
+  });
+});
+
+describe("the display preference (STC-247)", () => {
+  test("defaults to automatic — null, which start() turns into no displayId at all", () => {
+    expect(readSettings(dir()).displayId).toBeNull();
+    expect(DEFAULT_SETTINGS.displayId).toBeNull();
+  });
+
+  test("round-trips an id and clears back to automatic", () => {
+    const d = dir();
+    writeSettings(d, { displayId: 69734662 });
+    expect(readSettings(d).displayId).toBe(69734662);
+    writeSettings(d, { displayId: null });
+    expect(readSettings(d).displayId).toBeNull();
+  });
+
+  // A display id is a CGDirectDisplayID: a positive integer. Anything else is
+  // not a choice, and passing it to the helper would be an error the user
+  // never asked for.
+  test("a value that is not a positive integer reads as automatic", () => {
+    const d = dir();
+    for (const bad of ["2", 0, -1, 1.5, true, {}]) {
+      writeFileSync(join(d, "settings.json"), JSON.stringify({ camera: false, displayId: bad }));
+      expect(readSettings(d).displayId, `displayId ${JSON.stringify(bad)}`).toBeNull();
+    }
+  });
+
+  test("a partial update leaves the display choice alone", () => {
+    const d = dir();
+    writeSettings(d, { displayId: 2 });
+    writeSettings(d, { camera: true });
+    expect(readSettings(d)).toEqual({ camera: true, displayId: 2 });
   });
 });

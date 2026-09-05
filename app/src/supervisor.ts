@@ -53,6 +53,16 @@ export class HelperSupervisor {
     return r;
   }
 
+  /**
+   * What the helper can record from: displays (with their global origins),
+   * cameras and mics. The helper bounds the enumeration itself and answers
+   * `stalled: true` if CoreAudio is wedged, so this never hangs the UI.
+   */
+  async devices(): Promise<HelperLine> {
+    if (!this.client) throw new Error("helper is not running");
+    return this.client.request("devices");
+  }
+
   async stopRecording(): Promise<HelperLine> {
     if (!this.client) throw new Error("helper is not running");
     const r = await this.client.request("stop");

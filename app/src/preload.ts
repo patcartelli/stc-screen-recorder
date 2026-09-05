@@ -7,6 +7,7 @@ import { contextBridge, ipcRenderer } from "electron";
  */
 contextBridge.exposeInMainWorld("recorder", {
   status: () => ipcRenderer.invoke("recorder:status"),
+  devices: () => ipcRenderer.invoke("recorder:devices"),
   getSettings: () => ipcRenderer.invoke("recorder:getSettings"),
   setSettings: (patch: Record<string, unknown>) => ipcRenderer.invoke("recorder:setSettings", patch),
   takes: () => ipcRenderer.invoke("recorder:takes"),
