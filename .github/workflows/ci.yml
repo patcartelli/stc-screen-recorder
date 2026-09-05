@@ -31,7 +31,7 @@ jobs:
     # bounds rather than the thing that catches a wedge, which is exactly why it
     # can afford to state the worst case honestly instead of optimistically.
     # Minutes are free on a public repo; a healthy run is ~6 min.
-    timeout-minutes: 65
+    timeout-minutes: 70
 
     # A post-merge master run re-verifies a tree CI already approved as a PR
     # head, which is the largest remaining duplication. It is NOT skipped by
@@ -146,6 +146,18 @@ jobs:
           cp fixtures/pip/anchors.json fixtures/pip/events.json \
              fixtures/pip/display.mp4 fixtures/pip/camera.mp4 "$CAM/"
           npm run gate:identity -- "$CAM"
+
+      # The decorated still (STC-291). Asserts PROPERTIES of the rendered
+      # pixels — alpha zero outside the window's real shape, no dark fringe on
+      # the corner curve, a shadow that decreases to zero, a background with no
+      # holes — rather than comparing against golden images, which would be a
+      # stored constant across rasterisers that this project does not control
+      # (CLAUDE.md, the rasterization-backend trap).
+      #
+      # Needs no session and decodes no video, so it is the one gate with no
+      # VideoDecoder.configure() to wedge on and nothing for STC-259 to skip.
+      - name: Decorated still gate
+        run: npm run gate:still
 
       # The helper has crashed three times on CI and each time produced only a
       # signal number (STC-254). The stack trace lives in the OS crash report,

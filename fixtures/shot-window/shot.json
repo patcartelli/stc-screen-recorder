@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "kind": "window",
+  "capturedAtNs": "1000000000",
+  "timebase": { "numer": 125, "denom": 3 },
+  "display": {
+    "id": 1,
+    "pointWidth": 1440,
+    "pointHeight": 900,
+    "pixelWidth": 2880,
+    "pixelHeight": 1800,
+    "backingScale": 2,
+    "originX": 0,
+    "originY": 0,
+    "colorSpace": "kCGColorSpaceSRGB"
+  },
+  "window": {
+    "id": 4711,
+    "app": "Notes",
+    "title": "Untitled",
+    "bounds": { "x": 220, "y": 140, "width": 360, "height": 240 }
+  },
+  "frame": { "file": "frame.png", "width": 720, "height": 480, "alpha": true },
+  "cursor": { "x": 320, "y": 300, "shape": "arrow" },
+  "decoration": {
+    "mode": "window-only",
+    "canvas": "natural",
+    "cursor": false,
+    "redactions": []
+  }
+}
