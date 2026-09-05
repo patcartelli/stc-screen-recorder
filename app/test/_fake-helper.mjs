@@ -13,7 +13,8 @@
  * for. It is a stand-in for the helper's CONTROL PLANE only; it captures
  * nothing, and no test may use it to make claims about capture.
  */
-import { writeSync, writeFileSync } from "node:fs";
+import { writeSync, writeFileSync, mkdirSync } from "node:fs";
+import { join } from "node:path";
 
 const argv = process.argv.slice(2);
 const i = argv.indexOf("--stats-interval-ms");
@@ -122,6 +123,71 @@ process.stdin.on("data", (chunk) => {
           session = null;
           send("stopped", { seq, reason: "requested" });
         }, delay);
+        break;
+      }
+      // ── the still path (STC-289/290) ────────────────────────────────────
+      case "windows": {
+        // A fixed, knowable desktop. The overlay's window mode is only as
+        // testable as this list is predictable, and a real window server on a
+        // CI runner is neither.
+        if (process.env.STC_FAKE_NO_DISPLAYS) {
+          send("error", { seq, code: "no-displays", detail: "stand-in has no grant" });
+          break;
+        }
+        send("windows", {
+          seq,
+          windows: [
+            { id: 4711, app: "Finder", title: "Downloads", x: 100, y: 100, width: 400, height: 300, displayId: 1 },
+            { id: 4712, app: "Safari", title: "Example", x: 200, y: 150, width: 800, height: 600, displayId: 1 },
+          ],
+          displays: [{ id: 1, pointWidth: 1920, pointHeight: 1080 }],
+        });
+        break;
+      }
+      case "capture-still": {
+        if (process.env.STC_FAKE_STILL_ERROR) {
+          send("error", { seq, code: process.env.STC_FAKE_STILL_ERROR, detail: "stand-in refused" });
+          break;
+        }
+        // Writes what a real still writes, so the caller's own handling of the
+        // directory and the document is exercised rather than stubbed. The
+        // REQUEST is logged too: whether the crop, the display id and the
+        // overlay exclusion actually reach the helper is the whole of STC-290's
+        // hand-off, and nothing else in the suite can see it.
+        const dir = cmd.dir;
+        try {
+          mkdirSync(dir, { recursive: true });
+          const width = Math.max(1, Math.round((cmd.crop?.width ?? 1920) * 2));
+          const height = Math.max(1, Math.round((cmd.crop?.height ?? 1080) * 2));
+          const shot = {
+            version: 1,
+            kind: cmd.kind === "window" ? "window" : "display-crop",
+            capturedAtNs: "1000000000",
+            timebase: { numer: 125, denom: 3 },
+            display: { id: cmd.displayId ?? 1, pointWidth: 1920, pointHeight: 1080,
+                       pixelWidth: 3840, pixelHeight: 2160, backingScale: 2,
+                       originX: 0, originY: 0 },
+            frame: { file: "frame.png", width, height, alpha: cmd.kind === "window" },
+            decoration: { mode: cmd.kind === "window" ? "window-only" : "selected-area",
+                          canvas: "natural", cursor: false, redactions: [] },
+          };
+          if (cmd.kind === "window") {
+            shot.window = { id: cmd.windowId, bounds: { x: 100, y: 100, width: 400, height: 300 } };
+          } else {
+            shot.crop = cmd.crop ?? { x: 0, y: 0, width: 1920, height: 1080 };
+          }
+          writeFileSync(join(dir, "shot.json"), JSON.stringify(shot, null, 2));
+          // A one-pixel PNG: the bytes are never inspected, only the existence.
+          writeFileSync(join(dir, "frame.png"), Buffer.from(
+            "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000a49444154789c6300010000050001" +
+            "0d0a2db40000000049454e44ae426082", "hex"));
+          if (process.env.STC_FAKE_STILL_LOG) {
+            writeFileSync(process.env.STC_FAKE_STILL_LOG, JSON.stringify(cmd) + "\n", { flag: "a" });
+          }
+          send("still", { seq, dir, file: "frame.png", shot, timing: { totalMs: 1 } });
+        } catch (e) {
+          send("error", { seq, code: "write-failed", detail: String(e) });
+        }
         break;
       }
       case "quit":

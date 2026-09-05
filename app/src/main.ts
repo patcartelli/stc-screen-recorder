@@ -6,6 +6,8 @@ import { existsSync, readdirSync } from "node:fs";
 import { readFile, writeFile, stat, open } from "node:fs/promises";
 import { HelperSupervisor } from "./supervisor.js";
 import { newTakeDir, takesRoot, listTakes, setTakeLabel } from "./takes.js";
+import { openOverlay, closeOverlay, overlayIsOpen } from "./overlay-session.js";
+import type { WindowInfo } from "./selection.js";
 
 /**
  * Electron main process. Owns the helper: it is spawned as a CHILD of this
@@ -97,7 +99,13 @@ app.on("before-quit", (e) => {
   if (quitting) return;
   e.preventDefault();
   quitting = true;
-  (sup ? sup.shutdown() : Promise.resolve()).catch(() => {}).finally(() => app.quit());
+  // An overlay still up at quit would outlive its window list and sit on the
+  // screen with nothing left to answer it.
+  closeOverlay()
+    .catch(() => {})
+    .then(() => (sup ? sup.shutdown() : Promise.resolve()))
+    .catch(() => {})
+    .finally(() => app.quit());
 });
 
 ipcMain.handle("recorder:getSettings", async (): Promise<Settings> =>
@@ -129,6 +137,65 @@ ipcMain.handle("recorder:start", async () => {
     // A missing Screen Recording grant is the common case and is actionable —
     // surface the helper's own code rather than a generic failure.
     return { ok: false, code: e?.code ?? "start-failed", detail: e?.detail ?? String(e?.message ?? e) };
+  }
+});
+
+/**
+ * Select, then capture one frame (STC-290 handing off to STC-289).
+ *
+ * The window list is read from the helper for THIS selection rather than
+ * cached: it is stale the moment anything is closed or moved, and the overlay
+ * is the one place where showing a window that has gone would hand the capture
+ * an id it cannot honour.
+ *
+ * Nothing touches the disk until there is something to write. A cancelled
+ * selection returns without ever asking for a directory, which is what makes
+ * "Escape leaves no shot.json on disk" a property of the code rather than a
+ * hope — the helper only ever sees a request that a real selection produced.
+ */
+ipcMain.handle("still:capture", async () => {
+  if (!sup) throw new Error("supervisor not running");
+  // A second press while the overlay is up is a no-op, not a second overlay.
+  if (overlayIsOpen()) return { ok: false, code: "overlay-open" };
+
+  let windows: WindowInfo[] = [];
+  try {
+    const r = await sup.listWindows();
+    windows = ((r.windows as any[]) ?? []).map((w) => ({
+      id: w.id, app: w.app, title: w.title,
+      bounds: { x: w.x, y: w.y, width: w.width, height: w.height },
+    }));
+  } catch {
+    // Without a Screen Recording grant the helper cannot enumerate anything.
+    // The overlay still opens — region mode needs no window list — and the
+    // capture below reports the real reason, which is more use to the user
+    // than refusing to open with a message about windows they did not ask for.
+  }
+
+  const { outcome, excludeWindowIds } = await openOverlay({
+    windows, dist: here, renderer: join(here, "..", "renderer"),
+  });
+  if (outcome.kind === "cancelled") return { ok: false, cancelled: true };
+
+  const root = takesRoot(process.env);
+  const existing = existsSync(root) ? readdirSync(root) : [];
+  const dir = newTakeDir(process.env, new Date(), existing);
+  const params = outcome.kind === "region"
+    // `displayId` is Electron's, which on macOS is the CGDirectDisplayID the
+    // helper matches against. If that ever stops being true the helper answers
+    // `no-such-display` and the capture fails loudly — it cannot silently
+    // photograph the wrong screen, which is the failure worth designing out.
+    ? { dir, kind: "display-crop", displayId: outcome.displayId,
+        crop: outcome.crop, excludeWindowIds }
+    : { dir, kind: "window", windowId: outcome.windowId };
+
+  try {
+    const r = await sup.captureStill(params);
+    return { ok: true, dir, kind: outcome.kind, shot: r.shot, file: r.file,
+             warning: r.alphaWarning };
+  } catch (e: any) {
+    return { ok: false, code: e?.code ?? "still-failed",
+             detail: e?.detail ?? String(e?.message ?? e) };
   }
 });
 

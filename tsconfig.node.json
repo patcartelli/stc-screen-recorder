@@ -4,10 +4,11 @@
   // `document` here is a runtime crash, not a type error, so make it a type
   // error: dropping lib.dom means any DOM global is TS2584 at the use site.
   //
-  // Scope is by directory with renderer.ts carved out, NOT an explicit file
+  // Scope is by directory with the RENDERERS carved out, NOT an explicit file
   // list — a new file under app/src/ lands in this pass automatically and has
   // to opt OUT. The fail-safe direction: forgetting to list a file cannot
-  // silently lose the constraint.
+  // silently lose the constraint. Two are carved out: the main window's
+  // renderer and the selection overlay's (STC-290), both of which are pages.
   //
   // skipLibCheck is on ONLY here, and only because electron.d.ts declares the
   // main, renderer and <webview> APIs in one file and cannot parse without
@@ -25,5 +26,5 @@
     "skipLibCheck": true
   },
   "include": ["app/src/**/*.ts", "harness/vite.config.ts", "vitest.*.ts"],
-  "exclude": ["app/src/renderer.ts"]
+  "exclude": ["app/src/renderer.ts", "app/src/overlay.ts"]
 }

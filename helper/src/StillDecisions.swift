@@ -54,6 +54,16 @@ struct StillRequest: Equatable {
     let windowId: UInt32?
     /// The frame's file name, beside shot.json. A NAME, never a path.
     let file: String
+    /// CGWindowIDs to leave OUT of a display capture (STC-290).
+    ///
+    /// The selection overlay is a window like any other, and a still taken
+    /// while it is still composited would capture the dimming and the marquee.
+    /// Hiding it first is necessary and not sufficient — the hide and the
+    /// capture reach the window server through different paths, with no
+    /// ordering between them — so the caller also names the windows it must not
+    /// see. Empty for every other caller. Window shots ignore it: their filter
+    /// contains exactly one window, so nothing else can appear anyway.
+    let excludeWindowIds: [UInt32]
 
     static let defaultFile = "frame.png"
 }
@@ -143,15 +153,22 @@ func parseStillRequest(_ cmd: [String: Any]) -> Result<StillRequest, StillReques
         }
     }
 
+    // Anything unreadable is dropped rather than refused: an id the window
+    // server no longer knows is exactly what a stale overlay id looks like, and
+    // excluding a window that is already gone is a no-op, not an error.
+    let exclude = (cmd["excludeWindowIds"] as? [Any] ?? []).compactMap(id32)
+
     switch kind {
     case .displayCrop:
         return .success(StillRequest(dir: dir, kind: kind, displayId: id32(cmd["displayId"]),
-                                     crop: crop, windowId: nil, file: file))
+                                     crop: crop, windowId: nil, file: file,
+                                     excludeWindowIds: exclude))
     case .window:
         guard crop == nil else { return .failure(.cropOnWindow) }
         guard let wid = id32(cmd["windowId"]) else { return .failure(.missingWindowId) }
         return .success(StillRequest(dir: dir, kind: kind, displayId: nil,
-                                     crop: nil, windowId: wid, file: file))
+                                     crop: nil, windowId: wid, file: file,
+                                     excludeWindowIds: exclude))
     }
 }
 
