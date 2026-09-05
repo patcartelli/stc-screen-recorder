@@ -68,10 +68,12 @@
   <h1>stc recorder</h1>
   <div class="row">
     <button id="record">Record</button>
+    <button id="capturestill" title="Select a region or a window and capture one frame">Capture still</button>
     <label id="camera-label"><input type="checkbox" id="camera"> Camera</label>
     <label id="display-label">Display <select id="display"><option value="">Automatic</option></select></label>
     <span id="state">starting…</span>
   </div>
+  <div id="stillstatus" hidden></div>
   <div id="alert"></div>
   <table>
     <tbody>

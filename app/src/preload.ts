@@ -22,6 +22,7 @@ contextBridge.exposeInMainWorld("recorder", {
   writeProject: (bytes: ArrayBuffer) => ipcRenderer.invoke("preview:writeProject", bytes),
   writeExport: (name: string, bytes: ArrayBuffer) => ipcRenderer.invoke("export:write", name, bytes),
   copyFrame: (bytes: ArrayBuffer) => ipcRenderer.invoke("frame:copy", bytes),
+  captureStill: () => ipcRenderer.invoke("still:capture"),
   start: () => ipcRenderer.invoke("recorder:start"),
   stop: () => ipcRenderer.invoke("recorder:stop"),
   reveal: (dir: string) => ipcRenderer.invoke("recorder:reveal", dir),

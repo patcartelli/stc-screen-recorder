@@ -71,6 +71,24 @@ if case .success(let r) = parseStillRequest(["dir": "/tmp/x"]) {
     check("no crop means the whole display", r.crop, nil as StillRect?)
 }
 
+// ── the overlay's exclusion list (STC-290) ──────────────────────────────────
+if case .success(let r) = parseStillRequest(["dir": "/tmp/x", "excludeWindowIds": [7, 9]]) {
+    check("excludeWindowIds are carried", r.excludeWindowIds, [UInt32(7), UInt32(9)])
+} else { print("FAIL an exclusion list did not parse"); failures += 1 }
+if case .success(let r) = parseStillRequest(["dir": "/tmp/x"]) {
+    check("no exclusion list is an empty one, never nil", r.excludeWindowIds.isEmpty, true)
+}
+if case .success(let r) = parseStillRequest(["dir": "/tmp/x", "excludeWindowIds": [7, "nonsense", -1]]) {
+    // A closed overlay window is exactly an unreadable id, and excluding one
+    // that is already gone is a no-op — so the request stands, minus the junk.
+    check("an unreadable id is dropped, not refused", r.excludeWindowIds, [UInt32(7)])
+}
+if case .success(let r) = parseStillRequest(["dir": "/tmp/x", "kind": "window", "windowId": 3,
+                                              "excludeWindowIds": [7]]) {
+    check("a window shot carries the list too (it is simply unused there)",
+          r.excludeWindowIds, [UInt32(7)])
+}
+
 // ── crop resolution ─────────────────────────────────────────────────────────
 check("no crop is the whole display",
       resolveCrop(nil, pointWidth: 1920, pointHeight: 1080),

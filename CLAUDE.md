@@ -33,6 +33,10 @@ events → deterministic transform → CFR MP4 with cursor overlay.
 | `helper/src/StillDecisions.swift` | the still path's pure decisions — request parsing, crop, cursor localisation, `shotDocument` — tested without a display by `helper/test/still/` |
 | `schema/shot-1.schema.json`, `transform/src/shot.ts` | the still document and its loader (`parseShot` refuses rather than defaults); `fixtures/shot/` |
 | `docs/STC-289-RUNBOOK.md` | what to run on the Mac for the still path, and what each result means |
+| `app/src/selection.ts` | the selection overlay's pure decisions (STC-290) — drag, resize, nudge, mode toggle, which display a region belongs to; no DOM, no Electron |
+| `app/src/overlay-session.ts` | the overlay's windows: one per display, transparent, screen-saver level. The state machine lives HERE, not in the windows |
+| `app/src/overlay.ts`, `app/renderer/overlay.html` | the overlay's view. Draws state, reports input, decides nothing |
+| `docs/STC-290-RUNBOOK.md` | what to look at on the Mac for the overlay, and the one thing (Electron's display id) no test can settle |
 | `fixtures/` | hand-authored 5 s fixture session + deterministic display.mp4 generator |
 | `harness/` | vite-served browser harness hosting both sinks |
 | `scripts/gate.mjs` | increment-0 determinism gate (Playwright + real Chrome) |
@@ -89,6 +93,7 @@ belonging to a different commit).
 | STC-309 | **DONE 2026-09-04, WATCHED on hardware.** The helper samples `NSCursor.currentSystem` at 30 Hz on its own thread (`helper/src/CursorShape.swift`), classifies against references MEASURED at start from the four `NSCursor` built-ins, emits `{kind:"cursor", shape}` only on change, and writes events.json **v2** time-ordered. Spike on hardware: the API sees other apps' pointers from the background helper, all four shapes match byte-for-byte, a sample costs 1.04 ms mean / 41 ms max (why it is NOT on the tap thread). An 11 s take from the app (726 moves, 37 shape changes) was exported and watched: I-beam over the field, hand over the links, arrow elsewhere, click highlight under the I-beam, in step with the video. Pinned as `fixtures/real-session-cursor/` + `helper/test/real-events-cursor.test.ts`. #67, #75, #76 | nothing. More shapes (resize, hands, not-allowed — seen as unknown, written as arrow) need artwork + events-3 |
 | STC-306 | **helper half DONE 2026-09-04.** A display stream that dies under a live take (`didStopWithError` after `started`) now ends the take the way a display change does: `CaptureSession.onStreamDied` → `App.stop(reason: "stream-stopped")`, warning first, unsolicited `stopped` after, sidecars written and `display.mp4` finalised. `anchors-2` `stop.reason` gained `stream-stopped` / `stream-stopped-timeout`. The helper's FIRST production fault injector: `STC_CAPTURE_FAULT=stream-died` makes the session call its own delegate 0.5 s after a successful start, which is how `helper/test/stream-died.grant.test.ts` watches the path fire instead of reasoning about it. Written on Linux with no swiftc — CI's macOS runner is the first compile | `npm run test:capture` on the Mac: both new tests need the grant. The enum still lacks `quit` / `signal-N` / `stdin-closed`, which `shutdown` writes and nothing validates at load — that is STC-311 |
 | STC-289 | **helper still capture — written 2026-09-04 on Linux; COMPILED and unit-tested on CI (SDK 15), NOT yet built against the Mac's 13.3 SDK or run with a grant.** `capture-still` returns one frame via `SCScreenshotManager` with no stream and no recording lifecycle; `windows` lists what a window shot can name. Display filter + `sourceRect` for region/full shots, `desktopIndependentWindow` filter for window shots with alpha end to end; `frame.png` + `shot.json` (shot-1, cherry-picked from the review branch) in the request's dir; cursor sampled from `NSEvent.mouseLocation`, absent when on another display; 10 s answer-once backstop. The pure half is tested without a grant and every document it writes is validated against the schema AND `parseShot` on every `npm test` | a Mac: `docs/STC-289-RUNBOOK.md`. The ObjC-runtime call is the one line no test on Linux can vouch for; `still.grant.test.ts` is the proof |
+| STC-290 | **selection overlay — written 2026-09-05 on Linux, so the LOOK is unseen.** One transparent Electron window per display at screen-saver level; the state machine lives in the main process, which is what lets a drag cross a bezel. Region mode hands `capture-still` a display id and a display-local crop, window mode a window id. 44 pure assertions with no screen, plus an E2E that drives the real windows against the stand-in helper. `capture-still` gained `excludeWindowIds` so the overlay cannot land in its own photograph | a Mac: `docs/STC-290-RUNBOOK.md`. The overlay's appearance, and whether Electron's `Display.id` really is the `CGDirectDisplayID` on a second display |
 | STC-247 | **code written 2026-09-05 on Linux; needs a second display to verify.** The helper refuses a `displayId` it cannot find (`display-not-found`) instead of quietly recording SCK's first; `devices` reports each display's `name` and global `originX/Y`; the app has a display picker beside Camera (sticky, "(not connected)" for a stored display that is gone). `multi-display.grant.test.ts` records a non-main display and pins its anchors; it REFUSES on a one-display machine. Stopping on ANY display change is unchanged and deliberate (review P7) | `docs/STC-247-RUNBOOK.md` with a second display: the grant test, a picked-display take previewed/exported and WATCHED, and both unplug arms |
 | STC-251/252 | preview memory ceiling (~15 min at 4K); Node 20 actions deprecation | — |
 
@@ -977,6 +982,20 @@ reachable via KVC (`setValue(3, forKey: "captureResolution")`, verified in phase
   The dev `Electron.app` is ad-hoc signed (`TeamIdentifier=not set`), so per the signing trap above
   the grant is fragile across reinstalls. `tools/test-host` remains the stable-identity bundle for
   permission work.
+
+- **An overlay that hides itself is still in the photograph, sometimes (STC-290).** `BrowserWindow
+  .hide()` and a `SCScreenshotManager` capture reach the window server down different paths with no
+  ordering between them, so "hide, then capture" is a race — and the one time it loses is the one
+  time the user sees the dimming baked into their screenshot. The fix is both belts: the windows are
+  hidden AND their CGWindowIDs go to `capture-still`'s `excludeWindowIds`, which the display filter
+  drops. Window shots need neither, because `desktopIndependentWindow` contains exactly one window.
+  Electron names a window as `"window:12345:0"` via `getMediaSourceId()`, and on macOS that number
+  is the CGWindowID the helper matches against.
+
+- **A per-window state machine cannot track a drag across a bezel (STC-290).** The window under the
+  pointer changes mid-gesture, and neither half knows about the other, so the marquee stops at the
+  edge. The overlay is therefore one state in the MAIN process and N dumb views — which also puts
+  the whole interaction in a pure function that runs without a display server.
 
 - **A macOS 14+ class the 13.3 SDK cannot name is still callable — by name, through the runtime
   (STC-289).** `SCScreenshotManager` has no header in the SDK `helper/build.sh` compiles against, and

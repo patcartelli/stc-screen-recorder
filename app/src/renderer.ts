@@ -25,6 +25,10 @@ declare const recorder: {
   writeProject(bytes: ArrayBuffer): Promise<boolean>;
   writeExport(name: string, bytes: ArrayBuffer): Promise<string>;
   copyFrame(bytes: ArrayBuffer): Promise<{ width: number; height: number }>;
+  captureStill(): Promise<{
+    ok: boolean; cancelled?: boolean; dir?: string; kind?: string;
+    file?: string; shot?: any; warning?: string; code?: string; detail?: string;
+  }>;
   start(): Promise<{ ok: boolean; dir?: string; code?: string; detail?: string }>;
   stop(): Promise<{ ok: boolean; info?: any }>;
   reveal(dir: string): Promise<void>;
@@ -43,6 +47,7 @@ import { TRANSFORM_VERSION } from "@transform/transform-version";
 
 const $ = (id: string) => document.getElementById(id)!;
 const recordBtn = $("record") as HTMLButtonElement;
+const stillBtn = $("capturestill") as HTMLButtonElement;
 const cameraBox = $("camera") as HTMLInputElement;
 let recording = false;
 
@@ -148,6 +153,47 @@ let currentDir: string | undefined;
 function setState(text: string): void { $("state").textContent = text; }
 function alertUser(text: string): void { $("alert").textContent = text; $("alert").classList.add("show"); }
 function clearAlert(): void { $("alert").classList.remove("show"); }
+function stillStatus(text?: string): void {
+  const el = $("stillstatus");
+  if (!text) { el.setAttribute("hidden", ""); el.textContent = ""; return; }
+  el.textContent = text;
+  el.removeAttribute("hidden");
+}
+
+/**
+ * Capture a still (STC-290). The overlay owns the whole interaction, so there
+ * is nothing to do here but ask for it and say what came back.
+ *
+ * The button is disabled for the duration: the overlay is modal in effect —
+ * it covers every display — and a second press behind it would queue a second
+ * capture the user cannot see themselves asking for. Cancelling is a normal
+ * outcome and says nothing, the way dismissing macOS's own crosshair does.
+ */
+stillBtn.addEventListener("click", async () => {
+  stillBtn.disabled = true;
+  clearAlert();
+  stillStatus();
+  try {
+    const r = await recorder.captureStill();
+    if (r.cancelled) return;
+    if (!r.ok) {
+      alertUser(r.code === "no-displays"
+        ? "Screen Recording permission is required.\nGrant it in System Settings › Privacy & Security › Screen & System Audio Recording, then try again."
+        : r.code === "still-unsupported"
+        ? "Still capture needs macOS 14 or newer."
+        : `Could not capture: ${r.code}\n${r.detail ?? ""}`);
+      return;
+    }
+    const px = r.shot?.frame ? `${r.shot.frame.width} × ${r.shot.frame.height}` : "";
+    stillStatus(`Captured ${r.kind === "window" ? "window" : "region"} ${px} → ${r.dir?.split("/").pop() ?? ""}`);
+    if (r.warning) alertUser(r.warning);
+    await refreshTakes();
+  } catch (e: any) {
+    alertUser(`Could not capture: ${e?.message ?? e}`);
+  } finally {
+    stillBtn.disabled = false;
+  }
+});
 
 recordBtn.addEventListener("click", async () => {
   recordBtn.disabled = true;

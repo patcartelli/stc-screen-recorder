@@ -63,6 +63,29 @@ export class HelperSupervisor {
     return this.client.request("devices");
   }
 
+  /**
+   * The on-screen windows a window shot can name (STC-290).
+   *
+   * Read fresh every time the overlay opens rather than cached: a window list
+   * is stale the moment something is closed or moved, and the overlay is the
+   * one place where showing the user a window that is no longer there would
+   * hand the capture an id that cannot be honoured.
+   */
+  async listWindows(): Promise<HelperLine> {
+    if (!this.client) throw new Error("helper is not running");
+    return this.client.request("windows");
+  }
+
+  /**
+   * One frame (STC-289). Deliberately NOT routed through the recording state:
+   * a still is legal while a take is running, and the whole point of it is
+   * that it disturbs nothing.
+   */
+  async captureStill(params: Record<string, unknown>): Promise<HelperLine> {
+    if (!this.client) throw new Error("helper is not running");
+    return this.client.request("capture-still", params);
+  }
+
   async stopRecording(): Promise<HelperLine> {
     if (!this.client) throw new Error("helper is not running");
     const r = await this.client.request("stop");
