@@ -37,6 +37,11 @@ events → deterministic transform → CFR MP4 with cursor overlay.
 | `app/src/overlay-session.ts` | the overlay's windows: one per display, transparent, screen-saver level. The state machine lives HERE, not in the windows |
 | `app/src/overlay.ts`, `app/renderer/overlay.html` | the overlay's view. Draws state, reports input, decides nothing |
 | `docs/STC-290-RUNBOOK.md` | what to look at on the Mac for the overlay, and the one thing (Electron's display id) no test can settle |
+| `transform/src/still-decorate.ts` | the decorated still's pure layout (STC-291) — canvas size, where the capture sits, shadow reach, the five presets. No canvas, no DOM |
+| `transform/src/still-render.ts` | the drawing pass for a decorated still. Draws the layout and decides nothing |
+| `scripts/still-gate.mjs`, `harness/still.ts` | the still gate: renders in a real browser and asserts PROPERTIES of the pixels (alpha outside the shape, no dark fringe, a shadow that reaches zero). No golden images — see the trap |
+| `scripts/decorate-one.mjs` | renders one real shot in every mode, to files a person can look at. The presets can only be judged by looking |
+| `docs/STC-291-RUNBOOK.md` | what to look at on the Mac for the decorated still, and which dial to turn when a preset is wrong |
 | `fixtures/` | hand-authored 5 s fixture session + deterministic display.mp4 generator |
 | `harness/` | vite-served browser harness hosting both sinks |
 | `scripts/gate.mjs` | increment-0 determinism gate (Playwright + real Chrome) |
@@ -94,6 +99,7 @@ belonging to a different commit).
 | STC-306 | **helper half DONE 2026-09-04.** A display stream that dies under a live take (`didStopWithError` after `started`) now ends the take the way a display change does: `CaptureSession.onStreamDied` → `App.stop(reason: "stream-stopped")`, warning first, unsolicited `stopped` after, sidecars written and `display.mp4` finalised. `anchors-2` `stop.reason` gained `stream-stopped` / `stream-stopped-timeout`. The helper's FIRST production fault injector: `STC_CAPTURE_FAULT=stream-died` makes the session call its own delegate 0.5 s after a successful start, which is how `helper/test/stream-died.grant.test.ts` watches the path fire instead of reasoning about it. Written on Linux with no swiftc — CI's macOS runner is the first compile | `npm run test:capture` on the Mac: both new tests need the grant. The enum still lacks `quit` / `signal-N` / `stdin-closed`, which `shutdown` writes and nothing validates at load — that is STC-311 |
 | STC-289 | **helper still capture — written 2026-09-04 on Linux; COMPILED and unit-tested on CI (SDK 15), NOT yet built against the Mac's 13.3 SDK or run with a grant.** `capture-still` returns one frame via `SCScreenshotManager` with no stream and no recording lifecycle; `windows` lists what a window shot can name. Display filter + `sourceRect` for region/full shots, `desktopIndependentWindow` filter for window shots with alpha end to end; `frame.png` + `shot.json` (shot-1, cherry-picked from the review branch) in the request's dir; cursor sampled from `NSEvent.mouseLocation`, absent when on another display; 10 s answer-once backstop. The pure half is tested without a grant and every document it writes is validated against the schema AND `parseShot` on every `npm test` | a Mac: `docs/STC-289-RUNBOOK.md`. The ObjC-runtime call is the one line no test on Linux can vouch for; `still.grant.test.ts` is the proof |
 | STC-290 | **selection overlay — written 2026-09-05 on Linux, so the LOOK is unseen.** One transparent Electron window per display at screen-saver level; the state machine lives in the main process, which is what lets a drag cross a bezel. Region mode hands `capture-still` a display id and a display-local crop, window mode a window id. 44 pure assertions with no screen, plus an E2E that drives the real windows against the stand-in helper. `capture-still` gained `excludeWindowIds` so the overlay cannot land in its own photograph | a Mac: `docs/STC-290-RUNBOOK.md`. The overlay's appearance, and whether Electron's `Display.id` really is the `CGDirectDisplayID` on a second display |
+| STC-291 | **decorated still — written 2026-09-05 on Linux, so the PRESETS ARE UNSEEN on real captures.** Background, padding, shadow and canvas presets for the five modes, split pure-layout (`still-decorate.ts`) / draw (`still-render.ts`). The window's corners are NOT synthesised — they arrive as alpha from `desktopIndependentWindow` and the shadow is cast from that same alpha; nothing is ever scaled. `npm run gate:still` renders in a real browser and asserts properties rather than goldens. Every mode rendered from a real 720x480 window mock and looked at | a Mac: `docs/STC-291-RUNBOOK.md`. Whether the presets look like a product shot, and whether a REAL window capture's alpha is as clean as the synthesised one |
 | STC-247 | **code written 2026-09-05 on Linux; needs a second display to verify.** The helper refuses a `displayId` it cannot find (`display-not-found`) instead of quietly recording SCK's first; `devices` reports each display's `name` and global `originX/Y`; the app has a display picker beside Camera (sticky, "(not connected)" for a stored display that is gone). `multi-display.grant.test.ts` records a non-main display and pins its anchors; it REFUSES on a one-display machine. Stopping on ANY display change is unchanged and deliberate (review P7) | `docs/STC-247-RUNBOOK.md` with a second display: the grant test, a picked-display take previewed/exported and WATCHED, and both unplug arms |
 | STC-251/252 | preview memory ceiling (~15 min at 4K); Node 20 actions deprecation | — |
 
@@ -1011,3 +1017,40 @@ reachable via KVC (`setValue(3, forKey: "captureResolution")`, verified in phase
   NB `captureResolution` in `Capture.swift` is set to 3; `SCCaptureResolutionType` is
   automatic 0 / best 1 / nominal 2. Explicit width/height govern, so it has never mattered — the
   still path sets 1. Not changed in the recording path here; it is not this ticket's.
+
+- **Padding expressed as a percentage cannot hold a shadow expressed in points, and the gate found
+  it on its first run (STC-291).** The preset padding is a fraction of the capture's short edge —
+  right, because a 1x and a 2x capture of the same window must look the same — and the preset
+  shadow is 48 blur / 18 offset in points. On a small capture the percentage loses: 6% of a 320 px
+  edge is 19 px against a shadow reaching ~90, so the shadow was CLIPPED against the canvas edge,
+  which does not look like a bug, it looks like a hard grey band someone chose. `paddingPixels`
+  now takes the max of the requested percentage and `shadowReachPixels` (1.5x blur, since Canvas's
+  `shadowBlur` is a Gaussian with sigma = blur/2 and is dead by three sigma, plus offset and
+  spread). It is a CORRECTNESS floor, not taste: if the result looks too generous the dial is the
+  shadow. Measured before and after on the gate's own ray — alpha 40 at the canvas edge over 10
+  samples, versus reaching 0 over 45.
+  The gate's FIRST failure on that run was my own assertion being wrong, not the code:
+  `window-shadow` legitimately has shadow just outside the corner, so "alpha is 0 outside the
+  shape" only holds for `window-only`. Two problems in one output, one of them the test's.
+
+- **Golden images were asked for and are the wrong instrument HERE, for a reason this file already
+  recorded (STC-291).** The ticket specified golden-image comparison for the decorated still.
+  Gradients, blurred shadows and antialiased curves are Skia's output, and the rasterization-backend
+  trap above measures this project's pre-encode hashes ALREADY differing between GPU and swiftshader
+  for far simpler drawing — so a committed golden is a stored constant across engines the codebase
+  does not control, and it goes red on a Chromium bump rather than on a regression. The still gate
+  asserts PROPERTIES that hold in any correct rasteriser (alpha zero outside the window's real
+  shape, the corner fringe not pulled toward black, the shadow monotonically reaching zero, a
+  background with no holes) plus determinism between two renders inside ONE browser, which is the
+  same scope every other gate here compares in. The capture it renders is SYNTHESISED in the page
+  rather than committed, because the assertions have to name where the corner curve is.
+
+- **Nothing in the still path resamples the capture, and that is load-bearing rather than tidy
+  (STC-291).** Canvas presets grow the canvas around the frame; padding grows the canvas around the
+  frame; the frame is always drawn at its natural pixel size. Resampling a premultiplied image with
+  a hard alpha edge is exactly how a dark fringe appears at a window's rounded corner, and the
+  cheapest way not to have one is not to resample. For the same reason the corners are never
+  synthesised: a window capture arrives WITH its real corners as alpha (`desktopIndependentWindow`,
+  STC-289) and the shadow is cast from that same alpha, so a re-derived radius would throw away the
+  fidelity window mode exists for. A canvas preset also only ever GROWS — a 16:9 preset that shaved
+  the top off a window would be a decoration silently destroying the thing being decorated.

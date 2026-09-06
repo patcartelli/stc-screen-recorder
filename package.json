@@ -13,6 +13,7 @@
     "test:capture": "vitest run --config vitest.grant.config.ts",
     "gate:seek": "node scripts/gate-retry.mjs scripts/seek-gate.mjs",
     "gate:identity": "node scripts/gate-retry.mjs scripts/identity-gate.mjs",
+    "gate:still": "node scripts/gate-retry.mjs scripts/still-gate.mjs",
     "test:slow": "vitest run --config vitest.slow.config.ts",
     "merge": "node scripts/merge-when-green.mjs"
   },

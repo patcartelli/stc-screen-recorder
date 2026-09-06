@@ -12,7 +12,22 @@ export function recorder(): { ctx: CursorCanvas; ops: string[] } {
   const ctx = new Proxy(target, {
     get(_t, prop: string) {
       if (prop in target) return target[prop];
-      return (...args: unknown[]) => { ops.push(`${prop}(${args.map(String).join(",")})`); };
+      return (...args: unknown[]) => {
+        ops.push(`${prop}(${args.map(String).join(",")})`);
+        // A gradient is the one thing a caller does something WITH rather than
+        // just calls: it collects colour stops and is then assigned to
+        // fillStyle. Handing back undefined would crash the caller instead of
+        // recording it, so the stub records its stops too.
+        if (/^create\w*Gradient$/.test(prop)) {
+          return {
+            addColorStop(offset: number, color: string) {
+              ops.push(`addColorStop(${offset},${color})`);
+            },
+            toString() { return `<${prop}>`; },
+          };
+        }
+        return undefined;
+      };
     },
     set(_t, prop: string, value) {
       target[prop] = value;
