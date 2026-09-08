@@ -1,6 +1,15 @@
 import { defineConfig } from "vitest/config";
 
-/** Only the tests that need a Screen Recording grant. `npm run test:capture`. */
+/**
+ * The tests that cannot run on CI. `npm run test:capture`.
+ *
+ * Mostly that means a Screen Recording grant. `still-clipboard.grant.test.ts`
+ * (STC-293) is the one that does not: it needs a real logged-in Mac session
+ * for `NSPasteboard.general`, which a runner cannot be relied on to provide.
+ * Same reason to keep it out of `npm test` — a check that reddens on the
+ * machine rather than on the code is worse than one that does not run — and
+ * the file says so at the top.
+ */
 export default defineConfig({
   test: {
     // Scoped to the real test directories, exactly as vitest.config.ts scopes

@@ -11,6 +11,19 @@ import { makeTakeFolder } from "./_take-fixture.js";
  * in the page, must be pixel-identical to the stage canvas, and the stage is
  * what render() + composite() painted for the export-grid frame the still was
  * snapped to. The grid arithmetic itself is unit-tested in transform/test.
+ *
+ * ## Migrated onto the one export path (STC-293)
+ *
+ * These buttons used to encode a PNG in the canvas and hand it to Electron's
+ * `clipboard.writeImage` — a second encoder and a second clipboard, which
+ * STC-293's Note forbids. They now send composited RGBA through
+ * `still:export`, so the file is written by ImageIO in the helper and the copy
+ * carries PNG + TIFF + a file URL.
+ *
+ * That makes the identity assertion STRONGER rather than weaker: it now proves
+ * the pixels survive the whole trip out of the canvas, across IPC, through a
+ * temp file and back out of ImageIO, which is the path every still in the app
+ * takes.
  */
 const root = join(__dirname, "..", "..");
 let app: ElectronApplication | undefined;
@@ -71,10 +84,16 @@ describe("the current preview frame as a PNG", () => {
     expect(existsSync(join(takeDir, "display.mp4"))).toBe(true);
   }, 120_000);
 
-  test("Copy frame puts the image on the clipboard and reports its size", async () => {
+  test("Copy frame puts the image on the clipboard and reports what it took", async () => {
     const { win } = await openTake();
     await win.click("#copyframe");
-    await expect.poll(() => win.textContent("#framestatus"), { timeout: 20_000 }).toMatch(/^Copied frame at .*\(640×360\)/);
+    // The size, and the representations the pasteboard ACTUALLY accepted —
+    // reported back from the helper rather than assumed. "png + tiff +
+    // fileURL" is what makes Slack, Keynote and Finder each get something they
+    // can use (STC-293); a copy that silently offered only one of them would
+    // still say "Copied" here without this.
+    await expect.poll(() => win.textContent("#framestatus"), { timeout: 20_000 })
+      .toMatch(/^Copied frame at .*\(640×360, png \+ tiff \+ fileURL\)/);
   }, 120_000);
 
   test("works while playing: the still is taken and playback resumes", async () => {

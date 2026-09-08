@@ -78,6 +78,20 @@ final class App {
             IO.send("camera-probe", seq: seq, ["auth": auth, "devices": devices])
         case "capture-still":
             captureStill(cmd, seq: seq)
+        case "export-still":
+            // The one way out (STC-293). Deliberately state-free, like
+            // capture-still: exporting a still during a recording must not be
+            // able to disturb the take, and refusing one because a take is
+            // running would make the feature useless exactly when it is most
+            // wanted.
+            StillExport.run(cmd) { result in
+                DispatchQueue.main.async {
+                    switch result {
+                    case .success(let o): IO.send("exported-still", seq: seq, o)
+                    case .failure(let e): IO.send("error", seq: seq, ["code": e.code, "detail": e.description])
+                    }
+                }
+            }
         case "windows":
             WindowList.enumerate { result in
                 DispatchQueue.main.async {

@@ -1,4 +1,6 @@
-import { layoutStill, decorationForMode } from "@transform/still-decorate";
+import { layoutStill, decorationForMode, pxPerPointOf } from "@transform/still-decorate";
+import { colorSpaceFor, planRender, DEFAULT_EXPORT_OPTIONS,
+         type OutputScale, type StillFormat } from "@transform/still-export";
 import { renderStill } from "@transform/still-render";
 import { parseShot, type DecorationMode, type Shot } from "@transform/shot";
 import { mark } from "./mark.js";
@@ -207,6 +209,9 @@ async function decorateReal(shotDoc: unknown, frameSrc: string,
 declare global {
   interface Window {
     __decorate(shot: unknown, frameSrc: string, mode?: string): Promise<string>;
+    __composite(shot: unknown, frameSrc: string, format: string, scale: string): Promise<{
+      bytes: string; width: number; height: number; alpha: boolean; colorSpace: string;
+    }>;
     __stillGate(): Promise<{
       probes: StillProbe[];
       /** The same mode rendered twice: the hashes must agree. */
@@ -219,6 +224,43 @@ declare global {
 }
 
 window.__decorate = decorateReal;
+
+/**
+ * Composite a shot and hand back PIXELS (STC-293).
+ *
+ * The one difference from `__decorate` that matters: this returns raw RGBA
+ * rather than a data URL, because a data URL is a PNG this page encoded, and
+ * `scripts/export-still-one.mjs` exists to prove the file came out of ImageIO
+ * instead. It is the same shape the app's renderer sends over IPC, so the
+ * script exercises the app's own path rather than a parallel one.
+ */
+window.__composite = async (shotDoc, frameSrc, format, scale) => {
+  const shot = parseShot(shotDoc as never);
+  const img = new Image();
+  img.src = frameSrc;
+  await img.decode();
+
+  const plan = planRender(
+    { ...DEFAULT_EXPORT_OPTIONS, format: format as StillFormat, scale: scale as OutputScale },
+    { layout: layoutStill(shot), pxPerPoint: pxPerPointOf(shot) });
+
+  const colorSpace = colorSpaceFor(shot.display.colorSpace);
+  const cv = document.createElement("canvas");
+  cv.width = plan.layout.canvas.width;
+  cv.height = plan.layout.canvas.height;
+  const ctx = cv.getContext("2d", { alpha: true, colorSpace }) as CanvasRenderingContext2D;
+  renderStill(ctx as never, { frame: img }, plan.layout);
+
+  const data = ctx.getImageData(0, 0, cv.width, cv.height).data;
+  let binary = "";
+  // Chunked: `String.fromCharCode(...data)` blows the argument limit on
+  // anything bigger than a thumbnail, and a 4K still is 33 million bytes.
+  for (let i = 0; i < data.length; i += 0x8000) {
+    binary += String.fromCharCode(...data.subarray(i, i + 0x8000));
+  }
+  return { bytes: btoa(binary), width: cv.width, height: cv.height,
+           alpha: plan.alpha, colorSpace };
+};
 
 window.__stillGate = async () => {
   mark("still gate: rendering");

@@ -4,6 +4,18 @@ interface DisplayInfo {
   pointW: number; pointH: number; pixelW: number; pixelH: number;
   originX?: number; originY?: number;
 }
+interface StillSettingsView {
+  format: string; quality: number; scale: string;
+  stripMetadata: boolean; template: string; destination: string | null;
+}
+interface AppSettings {
+  camera: boolean;
+  displayId: number | null;
+  /** STC-292. */
+  shutterSound: boolean;
+  /** STC-293. */
+  still: StillSettingsView;
+}
 interface Take {
   dir: string; name: string; durationMs: number;
   width: number; height: number; events: number; bytes: number; label?: string;
@@ -15,9 +27,8 @@ interface StillResult {
   source?: string;
 }
 declare const recorder: {
-  getSettings: () => Promise<{ camera: boolean; displayId: number | null; shutterSound: boolean }>;
-  setSettings: (p: { camera?: boolean; displayId?: number | null; shutterSound?: boolean })
-    => Promise<{ camera: boolean; displayId: number | null; shutterSound: boolean }>;
+  getSettings: () => Promise<AppSettings>;
+  setSettings: (p: Partial<AppSettings>) => Promise<AppSettings>;
   devices(): Promise<{ displays?: DisplayInfo[]; stalled?: boolean; detail?: string }>;
   status(): Promise<{ state: string; pid?: number }>;
   takes(): Promise<{ takes: Take[]; invalid: { name: string; reason: string }[] }>;
@@ -30,12 +41,30 @@ declare const recorder: {
   readTakeChunk(name: string, offset: number, length: number): Promise<ArrayBuffer>;
   writeProject(bytes: ArrayBuffer): Promise<boolean>;
   writeExport(name: string, bytes: ArrayBuffer): Promise<string>;
-  copyFrame(bytes: ArrayBuffer): Promise<{ width: number; height: number }>;
   captureStill(action?: CaptureAction): Promise<StillResult>;
   getShortcuts(): Promise<{ shortcuts: Shortcuts; report: ShortcutReport[] }>;
   setShortcut(action: CaptureAction, accelerator: string | null):
     Promise<{ shortcuts: Shortcuts; report: ShortcutReport[] }>;
   resetShortcuts(): Promise<{ shortcuts: Shortcuts; report: ShortcutReport[] }>;
+  // `copyFrame` used to sit here (STC-298) and is gone: it was a second
+  // encoder and a second clipboard, and the preview's frame grab goes through
+  // `exportStill` like every other way out of the app now (STC-293).
+  exportStill(req: {
+    bytes: ArrayBuffer; width: number; height: number; alpha: boolean; colorSpace?: string;
+    target: { file: boolean; clipboard: boolean };
+    options: { format: string; quality: number; scale: string;
+               stripMetadata: boolean; template: string; flattenColor?: string };
+    info: { app?: string; title?: string; mode: string };
+    dir?: string;
+  }): Promise<{
+    ok: boolean; file?: string; bytes?: number; clipboard?: string[];
+    width?: number; height?: number; format?: string; alpha?: boolean;
+    premultiplied?: boolean; metadata?: string; code?: string; detail?: string;
+  }>;
+  chooseStillDestination(): Promise<{ destination: string | null }>;
+  clearStillDestination(): Promise<{ destination: string | null }>;
+  revealStill(): Promise<boolean>;
+  readStillFrame(dir: string, name: string): Promise<ArrayBuffer>;
   start(): Promise<{ ok: boolean; dir?: string; code?: string; detail?: string }>;
   stop(): Promise<{ ok: boolean; info?: any }>;
   reveal(dir: string): Promise<void>;
@@ -56,6 +85,13 @@ import {
   clampTrim, isFullTake, minTrimNs,
 } from "@transform/trim";
 import { TRANSFORM_VERSION } from "@transform/transform-version";
+import { parseShot, DECORATION_MODES, type DecorationMode, type Shot } from "@transform/shot";
+import { decorationForMode, layoutStill, pxPerPointOf } from "@transform/still-decorate";
+import { renderStill } from "@transform/still-render";
+import {
+  DEFAULT_FLATTEN_COLOR, FORMATS, colorSpaceFor, parseFormat, parseScale, planRender,
+  stillIsBlocked, type ExportOptions, type StillFormat,
+} from "@transform/still-export";
 
 const $ = (id: string) => document.getElementById(id)!;
 const recordBtn = $("record") as HTMLButtonElement;
@@ -201,6 +237,20 @@ async function reportStill(r: StillResult): Promise<void> {
   stillStatus(`Captured ${KIND_WORDS[r.kind ?? ""] ?? "still"} ${px} → ${r.dir?.split("/").pop() ?? ""}`);
   if (r.warning) alertUser(r.warning);
   await refreshTakes();
+
+  // The still panel (STC-293), opened HERE rather than in the button's own
+  // handler: every capture reaches this function, including the ones from the
+  // global hotkey and the menu bar (STC-292 sends `still:captured` for those),
+  // so a shot taken while the window was not even focused still has somewhere
+  // to be copied or saved from. STC-296's floating thumbnail replaces this.
+  //
+  // The capture is already on disk by now, so a panel that fails to open costs
+  // a decoration pass and not the shot — "nothing is lost by doing nothing"
+  // (STC-288) has to hold even when this throws.
+  if (r.dir && r.shot) {
+    try { await openStillPanel(r.dir, r.shot); }
+    catch (e: any) { alertUser(`Captured, but could not decorate it: ${e?.message ?? e}`); }
+  }
 }
 
 /**
@@ -446,6 +496,8 @@ let scrubbing = false;
 let openSession: LoadedSession | undefined;
 let openProject: Project | undefined;
 let openTakeName = "";
+/** The open take's directory, so a saved frame can land beside its recording. */
+let openTakeDir = "";
 let exportAbort: AbortController | undefined;
 
 const fmtClock = (ns: number) => {
@@ -563,6 +615,7 @@ async function openPreviewOrThrow(take: Take): Promise<void> {
   openSession = session;
   openProject = project;
   openTakeName = take.name;
+  openTakeDir = take.dir;
   player = new PreviewPlayer($("stage") as HTMLCanvasElement, session, project);
   const scrub = $("scrub") as HTMLInputElement;
   player.onTime = (tNs, playing) => {
@@ -738,23 +791,55 @@ function frameStatus(text: string): void {
   el.removeAttribute("hidden");
 }
 
-/** `frame-<take>-<ms>ms.png`: the take it came from and where in it, in the filename. */
-function frameFileName(tNs: number): string {
-  return `frame-${openTakeName}-${Math.round(tNs / 1e6)}ms.png`;
+/**
+ * `frame-<take>-<ms>ms`: the take it came from and where in it.
+ *
+ * A template rather than a finished name, because the extension belongs to the
+ * chosen format and the collision suffix belongs to the destination folder —
+ * both of which are `still-export.ts`'s to decide. The literal text carries no
+ * `{token}`, which is legal: a template with no tokens is a constant name, and
+ * the uniqueness pass still makes it collision-free.
+ */
+function frameTemplate(tNs: number): string {
+  return `frame-${openTakeName}-${Math.round(tNs / 1e6)}ms`;
 }
 
 let frameBusy = false;
+/**
+ * The preview's frame grab, on the ONE way out (STC-298, migrated to STC-293).
+ *
+ * It used to encode a PNG in the canvas and hand it to `clipboard.writeImage`,
+ * which was a second encoder and a second clipboard — exactly what STC-293's
+ * Note forbids ("no second implementation hiding in the thumbnail"). It now
+ * sends composited RGBA through `still:export` like everything else, so it
+ * inherits the format choice, the destination folder, the filename template
+ * and the multi-representation pasteboard for free.
+ *
+ * A video frame is opaque and sRGB, so it never meets the flatten fork — the
+ * transparency modes are a property of a window capture, not of a recording.
+ */
 async function withFrame(action: "copy" | "save"): Promise<void> {
   if (!player || frameBusy) return;
   frameBusy = true;
   try {
-    const { tNs, png } = await player.captureFrame();
+    const { tNs, rgba, width, height } = await player.captureFrame();
+    const settings = (await recorder.getSettings()).still;
+    const r = await recorder.exportStill({
+      bytes: rgba, width, height, alpha: false, colorSpace: "srgb",
+      target: { file: action === "save", clipboard: action === "copy" },
+      options: { ...settings, template: frameTemplate(tNs) },
+      info: { app: openTakeName, mode: "frame" },
+      // Beside the recording, matching what this button did before: a frame
+      // grabbed out of a take belongs with the take unless the user has named
+      // a stills folder, and `still:export` honours that preference for them.
+      ...(openTakeDir ? { dir: openTakeDir } : {}),
+    });
+    if (!r.ok) throw new Error(r.detail ?? r.code ?? "export failed");
     if (action === "copy") {
-      const { width, height } = await recorder.copyFrame(png);
-      frameStatus(`Copied frame at ${fmtClock(tNs)} (${width}×${height})`);
+      frameStatus(`Copied frame at ${fmtClock(tNs)} (${r.width}×${r.height}`
+        + `${r.clipboard?.length ? `, ${r.clipboard.join(" + ")}` : ""})`);
     } else {
-      const dest = await recorder.writeExport(frameFileName(tNs), png);
-      frameStatus(`Saved frame at ${fmtClock(tNs)} → ${dest.split("/").pop()}`);
+      frameStatus(`Saved frame at ${fmtClock(tNs)} → ${r.file?.split("/").pop() ?? ""}`);
     }
   } catch (e: any) {
     alertUser(`Could not ${action} the frame: ${e?.message ?? e}`);
@@ -773,6 +858,305 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "S" || e.key === "s") { e.preventDefault(); void withFrame("save"); }
 });
 $("cancelexport").addEventListener("click", () => exportAbort?.abort());
+
+// ---- the still panel (STC-293) --------------------------------------------
+//
+// The only surface a decorated still can currently be got out of the app
+// from. STC-296's floating thumbnail replaces it with something that appears
+// over the screen right after a capture; until then this is what the
+// acceptance list's "paste into Slack, Mail, Figma and Preview" is performed
+// against, and it is deliberately built on the same `still:export` funnel the
+// thumbnail will call — so the thumbnail inherits a tested path rather than
+// growing its own.
+
+const stillPanel = $("stillpanel");
+const stillCanvas = $("stillcanvas") as HTMLCanvasElement;
+const stillModeSel = $("stillmode") as HTMLSelectElement;
+const stillFormatSel = $("stillformat") as HTMLSelectElement;
+const stillScaleSel = $("stillscale") as HTMLSelectElement;
+const stillQuality = $("stillquality") as HTMLInputElement;
+
+/** The open shot, its frame, and where it lives. Cleared when the panel closes. */
+let openShot: { shot: Shot; dir: string; frame: ImageBitmap } | undefined;
+/**
+ * The composite at FULL output size, kept between the preview and the export.
+ *
+ * The visible canvas is scaled down to fit the window, so it cannot be the
+ * thing that is exported — reading pixels back from it would hand the encoder
+ * a thumbnail. This is the real one; the visible canvas draws from it.
+ */
+let stillComposite: HTMLCanvasElement | undefined;
+let stillBusy = false;
+
+function stillExportStatus(text?: string): void {
+  const el = $("stillexportstatus");
+  if (text === undefined) { el.setAttribute("hidden", ""); return; }
+  el.textContent = text;
+  el.removeAttribute("hidden");
+}
+
+/**
+ * The export options the panel's own controls describe, over the stored ones.
+ *
+ * Every control's value goes through the transform's own parser rather than
+ * being cast: a `<select>` yields a bare string, and `parseFormat` refusing an
+ * unknown one is the difference between a stale option in the markup becoming
+ * the default and it reaching ImageIO as a format it cannot write.
+ */
+function panelOptions(settings: StillSettingsView, flattenColor?: string): ExportOptions {
+  return {
+    ...settings,
+    format: parseFormat(stillFormatSel.value),
+    quality: Number(stillQuality.value),
+    scale: parseScale(stillScaleSel.value),
+    ...(flattenColor ? { flattenColor } : {}),
+  };
+}
+
+/**
+ * Draw the shot at the current mode and scale.
+ *
+ * Two canvases on purpose. `stillComposite` is the output, at exactly the size
+ * the file will be; the visible one is a scaled view of it. Deriving the
+ * export from the view is the mistake this shape exists to prevent — it would
+ * silently export whatever the window happened to be sized to.
+ */
+async function drawStill(settings: StillSettingsView): Promise<void> {
+  if (!openShot) return;
+  const mode = stillModeSel.value as DecorationMode;
+  const shot = parseShot({
+    ...openShot.shot,
+    decoration: decorationForMode(mode, openShot.shot.decoration),
+  });
+  const plan = planRender(panelOptions(settings), {
+    layout: layoutStill(shot), pxPerPoint: pxPerPointOf(shot),
+  });
+  const { canvas } = plan.layout;
+
+  const out = document.createElement("canvas");
+  out.width = canvas.width;
+  out.height = canvas.height;
+  // `alpha: true` unconditionally: a context without it composites onto opaque
+  // black, which is the very outcome the transparency modes exist to avoid.
+  // The colour space follows the capture's display, so a P3 capture is
+  // composited in P3 rather than being clipped to sRGB before it is encoded.
+  const ctx = out.getContext("2d", {
+    alpha: true, colorSpace: colorSpaceFor(openShot.shot.display.colorSpace),
+  }) as CanvasRenderingContext2D | null;
+  if (!ctx) throw new Error("could not get a 2D context for the still");
+  renderStill(ctx as never, { frame: openShot.frame }, plan.layout);
+  stillComposite = out;
+
+  // The view: fitted, and never enlarged — a 300 px shot shown at 900 px would
+  // be advertising a sharpness the file does not have.
+  const fit = Math.min(1, 520 / canvas.width, 260 / canvas.height);
+  stillCanvas.width = Math.max(1, Math.round(canvas.width * fit));
+  stillCanvas.height = Math.max(1, Math.round(canvas.height * fit));
+  const view = stillCanvas.getContext("2d", { alpha: true });
+  view?.clearRect(0, 0, stillCanvas.width, stillCanvas.height);
+  view?.drawImage(out, 0, 0, stillCanvas.width, stillCanvas.height);
+
+  const q = FORMATS[stillFormatSel.value as StillFormat];
+  $("stillqualitylabel")[q?.lossy ? "removeAttribute" : "setAttribute"]("hidden", "");
+  $("stillqualityvalue").textContent = `${Math.round(Number(stillQuality.value) * 100)}%`;
+  stillExportStatus(`${canvas.width} × ${canvas.height}`
+    + (plan.factor !== 1 ? ` (1×, from ${plan.layout.canvas.width / plan.factor | 0} px)` : "")
+    + (plan.alpha ? " · transparent" : ""));
+}
+
+/**
+ * The flatten fork, as a promise the export waits on.
+ *
+ * STC-293: choosing JPEG in a transparent mode "must say what will happen —
+ * flatten onto a chosen colour, or switch format — never silently fill black".
+ * A toast after the file was written would not satisfy that; the point is that
+ * the user decides BEFORE anything is encoded, which is why this returns a
+ * choice rather than logging a warning.
+ */
+function askFlatten(message: string): Promise<"cancel" | "png" | string> {
+  const box = $("stillflatten");
+  $("stillflattenmessage").textContent = message;
+  const color = $("stillflattencolor") as HTMLInputElement;
+  if (!color.value) color.value = DEFAULT_FLATTEN_COLOR;
+  box.removeAttribute("hidden");
+  return new Promise((resolve) => {
+    const finish = (answer: "cancel" | "png" | string) => {
+      box.setAttribute("hidden", "");
+      $("stillflattengo").removeEventListener("click", onGo);
+      $("stillflattenpng").removeEventListener("click", onPng);
+      $("stillflattencancel").removeEventListener("click", onCancel);
+      resolve(answer);
+    };
+    const onGo = () => finish(color.value);
+    const onPng = () => finish("png");
+    const onCancel = () => finish("cancel");
+    $("stillflattengo").addEventListener("click", onGo);
+    $("stillflattenpng").addEventListener("click", onPng);
+    $("stillflattencancel").addEventListener("click", onCancel);
+  });
+}
+
+/**
+ * Composite the flatten colour UNDER what is already drawn.
+ *
+ * `destination-over` rather than a second canvas: it fills exactly the pixels
+ * whose alpha is short of 1, at their own coverage, and leaves every opaque
+ * pixel untouched. Drawing the composite onto a filled canvas would work too
+ * and would cost a second full-size buffer; painting a rectangle on top would
+ * not work at all.
+ */
+function flattenOnto(canvas: HTMLCanvasElement, color: string): void {
+  const ctx = canvas.getContext("2d", { alpha: true });
+  if (!ctx) return;
+  ctx.save();
+  ctx.globalCompositeOperation = "destination-over";
+  ctx.fillStyle = color;
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.restore();
+}
+
+async function exportStillNow(action: "copy" | "save"): Promise<void> {
+  if (!openShot || stillBusy) return;
+  stillBusy = true;
+  try {
+    const settings = (await recorder.getSettings()).still;
+    const mode = stillModeSel.value as DecorationMode;
+    const shot = parseShot({
+      ...openShot.shot,
+      decoration: decorationForMode(mode, openShot.shot.decoration),
+    });
+    const layout = layoutStill(shot);
+    const pxPerPoint = pxPerPointOf(shot);
+
+    let plan = planRender(panelOptions(settings), { layout, pxPerPoint });
+    let flattenColor: string | undefined;
+    if (stillIsBlocked(plan)) {
+      // `stillIsBlocked` is true only for a `conflict`, which is the only
+      // variant carrying a message — but narrowing on the variant rather than
+      // on the predicate is what makes that a type error if the shape changes.
+      const conflict = plan.flatten.kind === "conflict" ? plan.flatten : undefined;
+      const answer = await askFlatten(conflict?.message ?? "");
+      if (answer === "cancel") return;
+      if (answer === "png") {
+        stillFormatSel.value = "png";
+        await drawStill(settings);
+      } else {
+        flattenColor = answer;
+      }
+      plan = planRender(panelOptions(settings, flattenColor), { layout, pxPerPoint });
+      // A second conflict would mean the answer did not resolve the first, and
+      // encoding it anyway is the silent black fill this whole fork exists to
+      // prevent. Refusing is the honest end of that road.
+      if (stillIsBlocked(plan)) throw new Error("the transparency question was not resolved");
+    }
+
+    await drawStill(settings);
+    const out = stillComposite;
+    if (!out) throw new Error("the still has not been composited");
+    if (flattenColor) flattenOnto(out, flattenColor);
+
+    const ctx = out.getContext("2d", { alpha: true });
+    const data = ctx!.getImageData(0, 0, out.width, out.height).data;
+    const bytes = data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength);
+
+    stillExportStatus(action === "copy" ? "Copying…" : "Saving…");
+    const r = await recorder.exportStill({
+      bytes: bytes as ArrayBuffer,
+      width: out.width, height: out.height,
+      alpha: plan.alpha,
+      colorSpace: openShot.shot.display.colorSpace ?? "",
+      target: { file: action === "save", clipboard: action === "copy" },
+      options: panelOptions(settings, flattenColor),
+      info: { ...(shot.window?.app ? { app: shot.window.app } : {}),
+              ...(shot.window?.title ? { title: shot.window.title } : {}),
+              mode },
+      dir: openShot.dir,
+    });
+    if (!r.ok) throw new Error(r.detail ?? r.code ?? "export failed");
+
+    $("stillreveal")[r.file && action === "save" ? "removeAttribute" : "setAttribute"]("hidden", "");
+    stillExportStatus(action === "copy"
+      // Which representations the pasteboard actually took, not which were
+      // offered: this is the one place a user can see that transparency
+      // survived, and "png + tiff + fileURL" is the answer to "why did Keynote
+      // get a different thing than Slack".
+      ? `Copied ${r.width}×${r.height} (${(r.clipboard ?? []).join(" + ") || "no representations"})`
+      : `Saved ${r.file?.split("/").pop() ?? ""}`
+        + (typeof r.bytes === "number" ? ` · ${(r.bytes / 1024).toFixed(0)} KB` : ""));
+  } catch (e: any) {
+    stillExportStatus();
+    alertUser(`Could not ${action === "copy" ? "copy" : "save"} the still: ${e?.message ?? e}`);
+  } finally {
+    stillBusy = false;
+  }
+}
+
+function showDestination(dest: string | null): void {
+  $("stilldest").textContent = dest ?? "beside the shot";
+}
+
+/**
+ * Open the panel on a fresh capture.
+ *
+ * The mode list is restricted to what the SHOT can actually wear: four of the
+ * five modes need a window capture's own alpha, and offering them for a
+ * display crop would be offering a transparency the pixels do not have
+ * (STC-291, and the helper's own `alphaWarning` says the same thing when a
+ * window comes back opaque).
+ */
+async function openStillPanel(dir: string, shotDoc: unknown): Promise<void> {
+  const shot = parseShot(shotDoc);
+  const bytes = await recorder.readStillFrame(dir, shot.frame.file);
+  const frame = await createImageBitmap(new Blob([bytes], { type: "image/png" }));
+  openShot = { shot, dir, frame };
+
+  const modes = shot.frame.alpha ? DECORATION_MODES : (["selected-area"] as const);
+  stillModeSel.textContent = "";
+  for (const m of modes) {
+    const opt = document.createElement("option");
+    opt.value = m;
+    opt.textContent = m.replace(/-/g, " ").replace(/^./, (c) => c.toUpperCase());
+    stillModeSel.append(opt);
+  }
+  stillModeSel.value = shot.decoration.mode;
+
+  const settings = (await recorder.getSettings()).still;
+  stillFormatSel.value = settings.format;
+  stillScaleSel.value = settings.scale;
+  stillQuality.value = String(settings.quality);
+  showDestination(settings.destination);
+  $("stillreveal").setAttribute("hidden", "");
+
+  stillPanel.removeAttribute("hidden");
+  await drawStill(settings);
+}
+
+function closeStillPanel(): void {
+  openShot?.frame.close();
+  openShot = undefined;
+  stillComposite = undefined;
+  stillPanel.setAttribute("hidden", "");
+  stillExportStatus();
+}
+
+for (const el of [stillModeSel, stillFormatSel, stillScaleSel]) {
+  el.addEventListener("change", () => {
+    void recorder.getSettings().then((s) => drawStill(s.still)).catch(() => {});
+  });
+}
+stillQuality.addEventListener("input", () => {
+  $("stillqualityvalue").textContent = `${Math.round(Number(stillQuality.value) * 100)}%`;
+});
+$("stillcopy").addEventListener("click", () => void exportStillNow("copy"));
+$("stillsave").addEventListener("click", () => void exportStillNow("save"));
+$("stillclose").addEventListener("click", closeStillPanel);
+$("stillreveal").addEventListener("click", () => { void recorder.revealStill(); });
+$("stillchoosedest").addEventListener("click", async () => {
+  showDestination((await recorder.chooseStillDestination()).destination);
+});
+$("stillcleardest").addEventListener("click", async () => {
+  showDestination((await recorder.clearStillDestination()).destination);
+});
 
 // ---- library -------------------------------------------------------------
 

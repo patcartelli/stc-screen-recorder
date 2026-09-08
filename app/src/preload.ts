@@ -21,12 +21,25 @@ contextBridge.exposeInMainWorld("recorder", {
     ipcRenderer.invoke("preview:chunk", name, offset, length),
   writeProject: (bytes: ArrayBuffer) => ipcRenderer.invoke("preview:writeProject", bytes),
   writeExport: (name: string, bytes: ArrayBuffer) => ipcRenderer.invoke("export:write", name, bytes),
-  copyFrame: (bytes: ArrayBuffer) => ipcRenderer.invoke("frame:copy", bytes),
+  // `action` is STC-292's: the hotkey and the menu bar ask for a specific
+  // capture mode, the button asks for none.
   captureStill: (action?: string) => ipcRenderer.invoke("still:capture", action),
   getShortcuts: () => ipcRenderer.invoke("shortcuts:get"),
   setShortcut: (action: string, accelerator: string | null) =>
     ipcRenderer.invoke("shortcuts:set", action, accelerator),
   resetShortcuts: () => ipcRenderer.invoke("shortcuts:reset"),
+  // The one way out (STC-293). Composited RGBA in, a file and/or the
+  // pasteboard out — the renderer never names a format's encoder, a
+  // destination folder or a filename. `copyFrame` used to sit here and is
+  // gone: it was a second encoder and a second clipboard, and the preview's
+  // frame grab goes through `still:export` like everything else now.
+  exportStill: (req: Record<string, unknown>) => ipcRenderer.invoke("still:export", req),
+  chooseStillDestination: () => ipcRenderer.invoke("still:chooseDestination"),
+  clearStillDestination: () => ipcRenderer.invoke("still:clearDestination"),
+  // Takes no path: main reveals the file it wrote itself, so the sandboxed
+  // renderer never gets to name something outside the recordings folder.
+  revealStill: () => ipcRenderer.invoke("still:reveal"),
+  readStillFrame: (dir: string, name: string) => ipcRenderer.invoke("still:frame", dir, name),
   start: () => ipcRenderer.invoke("recorder:start"),
   stop: () => ipcRenderer.invoke("recorder:stop"),
   reveal: (dir: string) => ipcRenderer.invoke("recorder:reveal", dir),

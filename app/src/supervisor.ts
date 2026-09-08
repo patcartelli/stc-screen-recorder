@@ -86,6 +86,17 @@ export class HelperSupervisor {
     return this.client.request("capture-still", params);
   }
 
+  /**
+   * Encode a composited still and put it on disk, the pasteboard, or both
+   * (STC-293). State-free for the same reason `captureStill` is: copying a
+   * still is legal while a take is running, and refusing one because the user
+   * happens to be recording would make it useless exactly when it is wanted.
+   */
+  async exportStill(params: Record<string, unknown>): Promise<HelperLine> {
+    if (!this.client) throw new Error("helper is not running");
+    return this.client.request("export-still", params);
+  }
+
   async stopRecording(): Promise<HelperLine> {
     if (!this.client) throw new Error("helper is not running");
     const r = await this.client.request("stop");
