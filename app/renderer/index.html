@@ -62,6 +62,18 @@
     #framestatus[hidden] { display: none; }
     #exportprogress { flex: 1; }
     #exportstatus { font-size: 12px; opacity: .75; min-width: 150px; font-variant-numeric: tabular-nums; }
+    .shortcut { display: flex; align-items: baseline; gap: 10px; padding: 5px 0;
+                border-top: 1px solid rgba(128,128,128,.22); }
+    .shortcut .name { min-width: 150px; }
+    .shortcut .keys { font: inherit; min-width: 88px; text-align: center; padding: 3px 10px;
+                      font-size: 12px; font-variant-numeric: tabular-nums; }
+    .shortcut .keys.listening { border-color: rgba(90,140,220,.9); }
+    .shortcut .clear { padding: 3px 8px; font-size: 12px; }
+    .shortcut .why { font-size: 12px; color: #c2553c; flex: 1; }
+    .shortcut .why.ok { color: inherit; opacity: .5; }
+    #shortcutfoot { display: flex; gap: 10px; align-items: baseline; padding-top: 8px; }
+    #shortcutfoot button { padding: 3px 10px; font-size: 12px; }
+    #shortcuthint { font-size: 12px; opacity: .55; }
   </style>
 </head>
 <body>
@@ -117,6 +129,13 @@
       <span id="exportstatus"></span>
       <button id="cancelexport">Cancel</button>
     </div>
+  </div>
+
+  <h2>Capture shortcuts</h2>
+  <div id="shortcuts"></div>
+  <div id="shortcutfoot">
+    <button id="resetshortcuts">Restore defaults</button>
+    <span id="shortcuthint">Work with the app in the background. Click a shortcut, then press the keys.</span>
   </div>
 
   <h2 id="lib-heading">Recordings</h2>

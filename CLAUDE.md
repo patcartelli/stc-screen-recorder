@@ -42,6 +42,10 @@ events → deterministic transform → CFR MP4 with cursor overlay.
 | `scripts/still-gate.mjs`, `harness/still.ts` | the still gate: renders in a real browser and asserts PROPERTIES of the pixels (alpha outside the shape, no dark fringe, a shadow that reaches zero). No golden images — see the trap |
 | `scripts/decorate-one.mjs` | renders one real shot in every mode, to files a person can look at. The presets can only be judged by looking |
 | `docs/STC-291-RUNBOOK.md` | what to look at on the Mac for the decorated still, and which dial to turn when a preset is wrong |
+| `app/src/hotkeys.ts` | the global shortcuts' pure decisions (STC-292) — the accelerator grammar, the reserved list, duplicates, keystroke recording, and every sentence the user is shown. No Electron, no DOM |
+| `app/src/tray-menu.ts` | the menu-bar item's pure half — the template and the icon's pixels. Nothing in Electron can read a `Tray` back, so everything checkable is checked before it gets there |
+| `app/src/tray.ts`, `app/src/shutter.ts` | the Electron `Tray`; the system camera-shutter sound, honouring `com.apple.sound.uiaudio.enabled` and the alert volume |
+| `docs/STC-292-RUNBOOK.md` | what to press on the Mac for the hotkeys and the menu bar, and the permission round trip no test can do |
 | `fixtures/` | hand-authored 5 s fixture session + deterministic display.mp4 generator |
 | `harness/` | vite-served browser harness hosting both sinks |
 | `scripts/gate.mjs` | increment-0 determinism gate (Playwright + real Chrome) |
@@ -101,6 +105,7 @@ belonging to a different commit).
 | STC-290 | **selection overlay — written 2026-09-05 on Linux, so the LOOK is unseen.** One transparent Electron window per display at screen-saver level; the state machine lives in the main process, which is what lets a drag cross a bezel. Region mode hands `capture-still` a display id and a display-local crop, window mode a window id. 44 pure assertions with no screen, plus an E2E that drives the real windows against the stand-in helper. `capture-still` gained `excludeWindowIds` so the overlay cannot land in its own photograph | a Mac: `docs/STC-290-RUNBOOK.md`. The overlay's appearance, and whether Electron's `Display.id` really is the `CGDirectDisplayID` on a second display |
 | STC-291 | **decorated still — written 2026-09-05 on Linux, so the PRESETS ARE UNSEEN on real captures.** Background, padding, shadow and canvas presets for the five modes, split pure-layout (`still-decorate.ts`) / draw (`still-render.ts`). The window's corners are NOT synthesised — they arrive as alpha from `desktopIndependentWindow` and the shadow is cast from that same alpha; nothing is ever scaled. `npm run gate:still` renders in a real browser and asserts properties rather than goldens. Every mode rendered from a real 720x480 window mock and looked at | a Mac: `docs/STC-291-RUNBOOK.md`. Whether the presets look like a product shot, and whether a REAL window capture's alpha is as clean as the synthesised one |
 | STC-247 | **DONE 2026-09-08, VERIFIED on two displays (HP Z27 main id 4 @ 0,0; built-in id 1 @ 1920,0).** The helper refuses a `displayId` it cannot find (`display-not-found`) instead of quietly recording SCK's first; `devices` reports each display's `name` and global `originX/Y`; the app has a display picker beside Camera (sticky, "(not connected)" for a stored display that is gone). On hardware: `multi-display.grant.test.ts` recorded the NON-main built-in by id and its anchors named it (id 1, 1920,0, 1800×1169); a 21 s take from the app with the built-in picked had `anchors.display` = that display, capture 3326×2160, and the EXPORT was watched — the built-in's content, cursor where the pointer was, no whole-screen offset; Automatic recorded the HP (id 4, main, listed first — observed, not promised); both unplug arms ended the take with `stop.reason: display-reconfigured`, including the one where the captured display survived (review P7, deliberate). #85 | nothing. An origin timeline in anchors, so an unrelated display change need not end a take, is its own ticket |
+| STC-292 | **global hotkey and menu-bar quick capture — written 2026-09-08 on Linux, so NOTHING about the menu bar's look, the Dock's behaviour or the shutter sound has been seen or heard.** Three global shortcuts (⌃⌥⇧⌘1/2/3 — the caps-lock hyperkey row), user-remappable and sticky, registered through Electron's `globalShortcut` (Carbon `RegisterEventHotKey`, no Accessibility grant). A menu-bar item with the three captures, Open Library and Quit. The app is menu-bar-FIRST now: the Dock icon goes when the last window closes and comes back with one. `still:capture` became a main-process FUNCTION with three doors — window button, hotkey, menu bar — and gained a `display` action that captures the display under the pointer with no overlay at all. Conflicts are surfaced, not swallowed: `hotkeys.ts` refuses what is knowably wrong (⌘⇧3/4/5/6 in any spelling, media keys, duplicates, bare keys) and `globalShortcut.register` returning false is reported apart from it. Feedback is the system shutter sound only — the corner animation is STC-296's | a Mac: `docs/STC-292-RUNBOOK.md`. Whether macOS delivers the chord to a background app, whether the icon inverts in both appearances, whether the sound plays and follows the setting, and the fresh-install round trip with only Screen Recording granted |
 | STC-251/252 | preview memory ceiling (~15 min at 4K); Node 20 actions deprecation | — |
 
 `PHASE-2.md` records the measured limits (export 1.52x realtime, preview ~1.2x file size in RAM).
@@ -1044,6 +1049,35 @@ reachable via KVC (`setValue(3, forKey: "captureResolution")`, verified in phase
   background with no holes) plus determinism between two renders inside ONE browser, which is the
   same scope every other gate here compares in. The capture it renders is SYNTHESISED in the page
   rather than committed, because the assertions have to name where the corner curve is.
+
+- **A list of constants written in the reader's order is compared in the CODE's order, and the
+  mismatch is silent (STC-292).** `SYSTEM_CLAIMED` holds the macOS bindings the app refuses, and it
+  reads the way Apple writes them — `Command+Shift+4`. The canonical order `parseAccelerator`
+  produces is Control, Alt, Shift, Command, so the literal entries matched NOTHING: every system
+  screenshot binding was quietly accepted, and the acceptance criterion "rejects bindings already
+  claimed by the system" was false while looking implemented. Caught by the test on its first run,
+  not by reading the code. The list is normalised at load now, through the grammar with the reserved
+  check lifted out so it cannot recurse — and a typo in it THROWS at startup rather than becoming an
+  entry that silently never matches. Same family as every "one value, two copies" defect in this
+  file, with the second copy being an ordering convention rather than a number.
+
+- **A renderer-side guard can shadow the main-side one, and the E2E will not notice (STC-292).**
+  `shortcuts:set` refuses a reserved binding before storing anything, and the preferences field
+  refuses it too so the UI never briefly shows it as accepted. Both are wanted; the trap is that the
+  UI test can only ever reach the first refusal it meets. With `shortcuts:set`'s own check disabled,
+  the UI-driven test still passed — the renderer had already declined and main was never called.
+  Proven by mutation, and the fix is a second test that goes straight at the IPC through the preload
+  (`recorder.setShortcut(...)`), which fails with the guard removed and passes with it. Any time a
+  check exists at two layers, the outer one needs a test that cannot be satisfied by the inner.
+
+- **`skipIf(platform !== "darwin")` is the skip this repo already warns about, unless the BEHAVIOUR
+  is platform-specific (STC-292).** `shutter.ts` originally read `process.platform` directly, which
+  made four of its tests unrunnable on a Linux checkout — a skip that reads as covered and rots,
+  exactly what the `*.grant.test.ts` split exists to avoid. The platform is an injected dependency
+  now and all fifteen run everywhere, including the "off macOS it is suppressed" case. The one
+  remaining platform skip is legitimate and says so: `window-all-closed` quits on non-darwin BY
+  DESIGN, so there is no menu-bar-first survival to check on Linux rather than an unchecked one —
+  and its notice goes to `process.stderr`, because vitest discards `console.*` from a skipped test.
 
 - **Nothing in the still path resamples the capture, and that is load-bearing rather than tidy
   (STC-291).** Canvas presets grow the canvas around the frame; padding grows the canvas around the

@@ -22,14 +22,22 @@ contextBridge.exposeInMainWorld("recorder", {
   writeProject: (bytes: ArrayBuffer) => ipcRenderer.invoke("preview:writeProject", bytes),
   writeExport: (name: string, bytes: ArrayBuffer) => ipcRenderer.invoke("export:write", name, bytes),
   copyFrame: (bytes: ArrayBuffer) => ipcRenderer.invoke("frame:copy", bytes),
-  captureStill: () => ipcRenderer.invoke("still:capture"),
+  captureStill: (action?: string) => ipcRenderer.invoke("still:capture", action),
+  getShortcuts: () => ipcRenderer.invoke("shortcuts:get"),
+  setShortcut: (action: string, accelerator: string | null) =>
+    ipcRenderer.invoke("shortcuts:set", action, accelerator),
+  resetShortcuts: () => ipcRenderer.invoke("shortcuts:reset"),
   start: () => ipcRenderer.invoke("recorder:start"),
   stop: () => ipcRenderer.invoke("recorder:stop"),
   reveal: (dir: string) => ipcRenderer.invoke("recorder:reveal", dir),
   on: (event: string, cb: (payload: any) => void) => {
     const channels = ["helper:ready", "helper:stats", "helper:respawned",
                       "helper:gave-up", "helper:recording-lost", "helper:recording-ended",
-                      "helper:warning", "helper:camera-started"];
+                      "helper:warning", "helper:camera-started",
+                      // A capture the window did not ask for — a hotkey or the
+                      // menu bar (STC-292). The shot is on disk either way;
+                      // this is only so an open window stays truthful.
+                      "still:captured"];
     if (!channels.includes(event)) throw new Error(`unknown channel: ${event}`);
     const listener = (_e: unknown, payload: any) => cb(payload);
     ipcRenderer.on(event, listener);

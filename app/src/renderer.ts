@@ -9,6 +9,11 @@ interface Take {
   width: number; height: number; events: number; bytes: number; label?: string;
   camera?: { present: boolean; device?: string; pipStartsAfterMs: number };
 }
+interface StillResult {
+  ok: boolean; cancelled?: boolean; dir?: string; kind?: string;
+  file?: string; shot?: any; warning?: string; code?: string; detail?: string;
+  source?: string;
+}
 declare const recorder: {
   getSettings: () => Promise<{ camera: boolean; displayId: number | null }>;
   setSettings: (p: { camera?: boolean; displayId?: number | null }) => Promise<{ camera: boolean; displayId: number | null }>;
@@ -25,16 +30,22 @@ declare const recorder: {
   writeProject(bytes: ArrayBuffer): Promise<boolean>;
   writeExport(name: string, bytes: ArrayBuffer): Promise<string>;
   copyFrame(bytes: ArrayBuffer): Promise<{ width: number; height: number }>;
-  captureStill(): Promise<{
-    ok: boolean; cancelled?: boolean; dir?: string; kind?: string;
-    file?: string; shot?: any; warning?: string; code?: string; detail?: string;
-  }>;
+  captureStill(action?: CaptureAction): Promise<StillResult>;
+  getShortcuts(): Promise<{ shortcuts: Shortcuts; report: ShortcutReport[] }>;
+  setShortcut(action: CaptureAction, accelerator: string | null):
+    Promise<{ shortcuts: Shortcuts; report: ShortcutReport[] }>;
+  resetShortcuts(): Promise<{ shortcuts: Shortcuts; report: ShortcutReport[] }>;
   start(): Promise<{ ok: boolean; dir?: string; code?: string; detail?: string }>;
   stop(): Promise<{ ok: boolean; info?: any }>;
   reveal(dir: string): Promise<void>;
   on(event: string, cb: (p: any) => void): () => void;
 };
 
+import {
+  ACTION_LABELS, CAPTURE_ACTIONS, acceleratorFromKeyStroke, explainShortcut,
+  formatAccelerator, parseAccelerator,
+  type CaptureAction, type ShortcutReport, type Shortcuts,
+} from "./hotkeys.js";
 import { loadSession, type LoadedSession } from "@transform/session";
 import { PreviewPlayer } from "@transform/preview";
 import { exportSession } from "@transform/export";
@@ -160,6 +171,37 @@ function stillStatus(text?: string): void {
   el.removeAttribute("hidden");
 }
 
+const KIND_WORDS: Record<string, string> = {
+  region: "region", window: "window", display: "full display",
+};
+
+/**
+ * Say what a capture did, wherever it came from.
+ *
+ * Shared by the button and by `still:captured`, which is how a hotkey or
+ * menu-bar capture reaches an open window (STC-292). One function because the
+ * two must not drift: a shot taken by hotkey is the same shot, and reporting it
+ * differently would make the window's account of the take library depend on
+ * which door the user came through.
+ */
+async function reportStill(r: StillResult): Promise<void> {
+  if (r.cancelled) return;
+  if (!r.ok) {
+    alertUser(r.code === "no-displays"
+      ? "Screen Recording permission is required.\nGrant it in System Settings › Privacy & Security › Screen & System Audio Recording, then try again."
+      : r.code === "still-unsupported"
+      ? "Still capture needs macOS 14 or newer."
+      : r.code === "overlay-open"
+      ? "A capture is already in progress."
+      : `Could not capture: ${r.code}\n${r.detail ?? ""}`);
+    return;
+  }
+  const px = r.shot?.frame ? `${r.shot.frame.width} × ${r.shot.frame.height}` : "";
+  stillStatus(`Captured ${KIND_WORDS[r.kind ?? ""] ?? "still"} ${px} → ${r.dir?.split("/").pop() ?? ""}`);
+  if (r.warning) alertUser(r.warning);
+  await refreshTakes();
+}
+
 /**
  * Capture a still (STC-290). The overlay owns the whole interaction, so there
  * is nothing to do here but ask for it and say what came back.
@@ -174,26 +216,18 @@ stillBtn.addEventListener("click", async () => {
   clearAlert();
   stillStatus();
   try {
-    const r = await recorder.captureStill();
-    if (r.cancelled) return;
-    if (!r.ok) {
-      alertUser(r.code === "no-displays"
-        ? "Screen Recording permission is required.\nGrant it in System Settings › Privacy & Security › Screen & System Audio Recording, then try again."
-        : r.code === "still-unsupported"
-        ? "Still capture needs macOS 14 or newer."
-        : `Could not capture: ${r.code}\n${r.detail ?? ""}`);
-      return;
-    }
-    const px = r.shot?.frame ? `${r.shot.frame.width} × ${r.shot.frame.height}` : "";
-    stillStatus(`Captured ${r.kind === "window" ? "window" : "region"} ${px} → ${r.dir?.split("/").pop() ?? ""}`);
-    if (r.warning) alertUser(r.warning);
-    await refreshTakes();
+    await reportStill(await recorder.captureStill("region"));
   } catch (e: any) {
     alertUser(`Could not capture: ${e?.message ?? e}`);
   } finally {
     stillBtn.disabled = false;
   }
 });
+
+// A capture that started somewhere this window was not: a global hotkey or the
+// menu bar. The shot is on disk whether or not anyone is watching — this only
+// keeps an open window from showing a stale take list and no explanation.
+recorder.on("still:captured", (r: StillResult) => { void reportStill(r); });
 
 recordBtn.addEventListener("click", async () => {
   recordBtn.disabled = true;
@@ -866,3 +900,129 @@ recorder.status().then((s) => {
   }
 });
 refreshTakes();
+
+// ---- capture shortcuts (STC-292) ------------------------------------------
+//
+// Rebinding, and the one thing the ticket asks for that a silent failure would
+// ruin: a shortcut that did not bind must SAY so. The grammar, the reserved
+// list and the wording all live in `hotkeys.ts` — this draws the answer and
+// records keystrokes, and decides nothing on its own.
+
+const shortcutList = $("shortcuts");
+let shortcutState: { shortcuts: Shortcuts; report: ShortcutReport[] } | undefined;
+/** Which row is waiting for a keystroke, if any. */
+let listening: CaptureAction | undefined;
+
+function reportFor(action: CaptureAction): ShortcutReport | undefined {
+  return shortcutState?.report.find((r) => r.action === action);
+}
+
+function renderShortcuts(): void {
+  shortcutList.replaceChildren();
+  for (const action of CAPTURE_ACTIONS) {
+    const row = document.createElement("div");
+    row.className = "shortcut";
+
+    const name = document.createElement("span");
+    name.className = "name";
+    name.textContent = ACTION_LABELS[action];
+
+    const keys = document.createElement("button");
+    keys.className = "keys";
+    keys.id = `shortcut-${action}`;
+    const bound = shortcutState?.shortcuts[action] ?? null;
+    keys.textContent = listening === action ? "Press keys…" : formatAccelerator(bound);
+    if (listening === action) keys.classList.add("listening");
+    keys.addEventListener("click", () => {
+      listening = listening === action ? undefined : action;
+      renderShortcuts();
+    });
+
+    const clear = document.createElement("button");
+    clear.className = "clear";
+    clear.textContent = "Clear";
+    clear.disabled = bound == null;
+    clear.addEventListener("click", () => { void applyShortcut(action, null); });
+
+    const why = document.createElement("span");
+    why.className = "why";
+    why.id = `shortcutwhy-${action}`;
+    const r = reportFor(action);
+    const message = r ? explainShortcut(r) : undefined;
+    if (message) why.textContent = message;
+    else if (r?.registered) { why.textContent = "Active"; why.classList.add("ok"); }
+
+    row.append(name, keys, clear, why);
+    shortcutList.append(row);
+  }
+}
+
+async function applyShortcut(action: CaptureAction, accelerator: string | null): Promise<void> {
+  listening = undefined;
+  try {
+    shortcutState = await recorder.setShortcut(action, accelerator);
+  } catch (e) {
+    alertUser(`Could not set that shortcut: ${String(e)}`);
+  }
+  renderShortcuts();
+}
+
+/**
+ * Records the chord.
+ *
+ * Capture phase and `stopImmediatePropagation` because the preview's own
+ * ⌘⇧C / ⌘⇧S bindings are listening on the same document, and a user binding a
+ * capture shortcut must not also trigger one. `code` rather than `key`: on
+ * macOS ⌥⇧1 arrives as an unrelated glyph, so a layout-independent name is the
+ * only one that can be replayed as an accelerator.
+ *
+ * A press that is only modifiers is not an answer — the chord is still being
+ * pressed — so the field keeps waiting rather than binding ⌘ on its own.
+ */
+document.addEventListener("keydown", (e) => {
+  if (!listening) return;
+  e.preventDefault();
+  e.stopImmediatePropagation();
+  if (e.code === "Escape") { listening = undefined; renderShortcuts(); return; }
+  const accelerator = acceleratorFromKeyStroke({
+    code: e.code, metaKey: e.metaKey, ctrlKey: e.ctrlKey,
+    altKey: e.altKey, shiftKey: e.shiftKey,
+  });
+  if (accelerator === null) return;
+  const action = listening;
+  // Checked here as well as in main so the field can refuse instantly, without
+  // a round trip that would briefly show the binding as accepted.
+  const parsed = parseAccelerator(accelerator);
+  if (!parsed.ok) {
+    listening = undefined;
+    shortcutState = shortcutState && {
+      shortcuts: shortcutState.shortcuts,
+      report: shortcutState.report.map((r) => r.action === action
+        ? { ...r, accelerator, problem: parsed.problem, registered: false,
+            ...(parsed.token ? { token: parsed.token } : {}) }
+        : r),
+    };
+    renderShortcuts();
+    return;
+  }
+  void applyShortcut(action, parsed.accelerator);
+}, true);
+
+($("resetshortcuts") as HTMLButtonElement).addEventListener("click", async () => {
+  listening = undefined;
+  try {
+    shortcutState = await recorder.resetShortcuts();
+  } catch (e) {
+    alertUser(`Could not restore the default shortcuts: ${String(e)}`);
+  }
+  renderShortcuts();
+});
+
+void (async () => {
+  try {
+    shortcutState = await recorder.getShortcuts();
+  } catch {
+    shortcutState = undefined;
+  }
+  renderShortcuts();
+})();

@@ -1,8 +1,8 @@
-import { BrowserWindow, ipcMain, screen } from "electron";
+import { app, BrowserWindow, ipcMain, screen } from "electron";
 import { join } from "node:path";
 import {
   reduce, confirm, initialState,
-  type DisplayInfo, type SelectionContext, type SelectionEvent,
+  type DisplayInfo, type Mode, type SelectionContext, type SelectionEvent,
   type SelectionOutcome, type SelectionState, type WindowInfo,
 } from "./selection.js";
 
@@ -84,6 +84,14 @@ export function overlayIsOpen(): boolean { return active !== undefined; }
 export interface OpenOptions {
   /** The helper's `windows` reply, already in global points. */
   windows: WindowInfo[];
+  /**
+   * Which mode to open in (STC-292). The window's one button opens in region
+   * mode as it always did; the hotkeys and the menu bar have an item each, and
+   * a "Capture Window" that opened on a crosshair and made the user press Space
+   * would not be the action it names. The mode toggle still works either way —
+   * this decides where the interaction STARTS, not what it can do.
+   */
+  mode?: Mode;
   /** Where the overlay's HTML and preload live. Injected so tests can point elsewhere. */
   dist: string;
   renderer: string;
@@ -123,13 +131,14 @@ class OverlaySession {
    * bounds that a display rearrangement may already have changed.
    */
   private readonly displayOf = new Map<BrowserWindow, number>();
-  private state: SelectionState = initialState("region");
+  private state: SelectionState;
   private readonly ctx: SelectionContext;
   private settle!: (r: OverlayResult) => void;
   readonly promise: Promise<OverlayResult>;
   private done = false;
 
   constructor(private readonly opts: OpenOptions) {
+    this.state = initialState(opts.mode ?? "region");
     this.ctx = { displays: screen.getAllDisplays().map(toDisplayInfo), windows: opts.windows };
     this.promise = new Promise<OverlayResult>((res) => { this.settle = res; });
   }
@@ -138,6 +147,13 @@ class OverlaySession {
     ipcMain.on("overlay:event", this.onEvent);
     try {
       for (const d of screen.getAllDisplays()) this.windows.push(this.makeWindow(d));
+      // The overlay needs the keyboard, and a hotkey capture (STC-292) starts
+      // with this app in the background — where focusing a window raises it
+      // BEHIND whatever is frontmost, leaving Escape dead and the user with an
+      // overlay they cannot dismiss. The main window is not activated by this;
+      // only the overlay is, which is what "without the main window ever
+      // activating" means in practice.
+      app.focus({ steal: true });
       // Focus one of them, or nothing receives the keyboard and Escape is dead.
       this.windows[0]?.focus();
     } catch (e) {

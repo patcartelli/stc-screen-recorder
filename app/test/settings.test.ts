@@ -3,6 +3,7 @@ import { mkdtempSync, writeFileSync, readFileSync, existsSync, chmodSync, mkdirS
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readSettings, writeSettings, DEFAULT_SETTINGS } from "../src/settings.js";
+import { DEFAULT_SHORTCUTS, HYPER } from "../src/hotkeys.js";
 
 /**
  * The camera preference is opt-in, default off, and sticky (design spec).
@@ -15,7 +16,8 @@ const dir = () => mkdtempSync(join(tmpdir(), "stc-settings-"));
 
 describe("the camera preference", () => {
   test("defaults to off when nothing has been saved", () => {
-    expect(readSettings(dir())).toEqual({ camera: false, displayId: null });
+    expect(readSettings(dir()))
+      .toEqual({ camera: false, displayId: null, shortcuts: DEFAULT_SHORTCUTS });
     expect(DEFAULT_SETTINGS.camera).toBe(false);
   });
 
@@ -49,7 +51,8 @@ describe("the camera preference", () => {
   test("unknown keys are dropped rather than persisted", () => {
     const d = dir();
     writeSettings(d, { camera: true, nonsense: 1 } as never);
-    expect(JSON.parse(readFileSync(join(d, "settings.json"), "utf8"))).toEqual({ camera: true, displayId: null });
+    expect(JSON.parse(readFileSync(join(d, "settings.json"), "utf8")))
+      .toEqual({ camera: true, displayId: null, shortcuts: DEFAULT_SHORTCUTS });
   });
 
   test("an unwritable directory does not throw — the preference is not worth a crash", () => {
@@ -98,6 +101,74 @@ describe("the display preference (STC-247)", () => {
     const d = dir();
     writeSettings(d, { displayId: 2 });
     writeSettings(d, { camera: true });
-    expect(readSettings(d)).toEqual({ camera: true, displayId: 2 });
+    expect(readSettings(d))
+      .toEqual({ camera: true, displayId: 2, shortcuts: DEFAULT_SHORTCUTS });
+  });
+});
+
+/**
+ * The capture shortcuts (STC-292). Stored here rather than in the renderer for
+ * the same reason the camera is: main registers them at launch, before any
+ * window exists, so a preference the renderer owned would arrive too late to
+ * be the thing that binds.
+ */
+describe("the capture shortcuts", () => {
+  test("default to the hyperkey row when nothing has been saved", () => {
+    expect(readSettings(dir()).shortcuts).toEqual({
+      region: `${HYPER}+1`, window: `${HYPER}+2`, display: `${HYPER}+3`,
+    });
+  });
+
+  test("a rebinding round-trips, which is the acceptance criterion", () => {
+    const d = dir();
+    writeSettings(d, { shortcuts: { ...DEFAULT_SHORTCUTS, region: "Alt+Shift+R" } });
+    // Read back through a fresh call, as a relaunch would.
+    expect(readSettings(d).shortcuts.region).toBe("Alt+Shift+R");
+    expect(readSettings(d).shortcuts.window).toBe(DEFAULT_SHORTCUTS.window);
+  });
+
+  test("stored NORMALISED, so the file, the menu bar and the report agree", () => {
+    const d = dir();
+    writeSettings(d, { shortcuts: { ...DEFAULT_SHORTCUTS, window: "shift+alt+r" } });
+    expect(JSON.parse(readFileSync(join(d, "settings.json"), "utf8")).shortcuts.window)
+      .toBe("Alt+Shift+R");
+  });
+
+  test("an unbound action stays unbound across a restart", () => {
+    // `null` is a preference, not an absence: springing back to the default the
+    // next time the file is read would silently rebind a key the user cleared.
+    const d = dir();
+    writeSettings(d, { shortcuts: { ...DEFAULT_SHORTCUTS, display: null } });
+    expect(readSettings(d).shortcuts.display).toBeNull();
+  });
+
+  test("a binding that no longer parses falls back to the default, not to nothing", () => {
+    const d = dir();
+    for (const bad of ["Command+Hyper", "A", 7, {}, ["Command+A"]]) {
+      writeFileSync(join(d, "settings.json"),
+                    JSON.stringify({ shortcuts: { region: bad } }));
+      expect(readSettings(d).shortcuts.region, JSON.stringify(bad))
+        .toBe(DEFAULT_SHORTCUTS.region);
+    }
+  });
+
+  test("a hand-edited file naming a system binding falls back rather than storing it", () => {
+    const d = dir();
+    writeFileSync(join(d, "settings.json"), JSON.stringify({ shortcuts: { region: "Command+Shift+4" } }));
+    expect(readSettings(d).shortcuts.region).toBe(DEFAULT_SHORTCUTS.region);
+  });
+
+  test("a partial update leaves the shortcuts alone", () => {
+    const d = dir();
+    writeSettings(d, { shortcuts: { ...DEFAULT_SHORTCUTS, region: null } });
+    writeSettings(d, { camera: true });
+    expect(readSettings(d).shortcuts.region).toBeNull();
+  });
+
+  test("only known actions are written — a typo cannot accumulate in the file", () => {
+    const d = dir();
+    writeSettings(d, { shortcuts: { ...DEFAULT_SHORTCUTS, regoin: "Alt+X" } as never });
+    const stored = JSON.parse(readFileSync(join(d, "settings.json"), "utf8"));
+    expect(Object.keys(stored.shortcuts).sort()).toEqual(["display", "region", "window"]);
   });
 });
