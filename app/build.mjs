@@ -12,4 +12,8 @@ await build({ ...common, entryPoints: ["app/src/renderer.ts"], outfile: "app/dis
 // window's preload.
 await build({ ...common, entryPoints: ["app/src/overlay-preload.ts"], outfile: "app/dist/overlay-preload.cjs", format: "cjs" });
 await build({ ...common, entryPoints: ["app/src/overlay.ts"], outfile: "app/dist/overlay.js", format: "iife", platform: "browser" });
+// The post-capture floating thumbnail (STC-296) — its own window, its own
+// smaller bridge, for the same reason the overlay's is separate.
+await build({ ...common, entryPoints: ["app/src/thumbnail-preload.ts"], outfile: "app/dist/thumbnail-preload.cjs", format: "cjs" });
+await build({ ...common, entryPoints: ["app/src/thumbnail-renderer.ts"], outfile: "app/dist/thumbnail-renderer.js", format: "iife", platform: "browser" });
 console.log("app built -> app/dist/");

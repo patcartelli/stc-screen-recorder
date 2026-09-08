@@ -36,10 +36,6 @@ contextBridge.exposeInMainWorld("recorder", {
   exportStill: (req: Record<string, unknown>) => ipcRenderer.invoke("still:export", req),
   chooseStillDestination: () => ipcRenderer.invoke("still:chooseDestination"),
   clearStillDestination: () => ipcRenderer.invoke("still:clearDestination"),
-  // Takes no path: main reveals the file it wrote itself, so the sandboxed
-  // renderer never gets to name something outside the recordings folder.
-  revealStill: () => ipcRenderer.invoke("still:reveal"),
-  readStillFrame: (dir: string, name: string) => ipcRenderer.invoke("still:frame", dir, name),
   start: () => ipcRenderer.invoke("recorder:start"),
   stop: () => ipcRenderer.invoke("recorder:stop"),
   reveal: (dir: string) => ipcRenderer.invoke("recorder:reveal", dir),

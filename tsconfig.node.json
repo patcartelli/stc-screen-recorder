@@ -26,5 +26,5 @@
     "skipLibCheck": true
   },
   "include": ["app/src/**/*.ts", "harness/vite.config.ts", "vitest.*.ts"],
-  "exclude": ["app/src/renderer.ts", "app/src/overlay.ts"]
+  "exclude": ["app/src/renderer.ts", "app/src/overlay.ts", "app/src/thumbnail-renderer.ts"]
 }

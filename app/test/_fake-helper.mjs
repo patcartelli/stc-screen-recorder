@@ -205,6 +205,34 @@ process.stdin.on("data", (chunk) => {
         }
         break;
       }
+      // ── the export path (STC-293/296) ───────────────────────────────────
+      case "export-still": {
+        // The real helper (StillEncode.swift) reads `rgba` and writes ImageIO's
+        // answer; this stand-in writes a placeholder so a caller's OWN handling
+        // of the reply — the file it asked for existing, the pasteboard
+        // representations it was told about — is exercised without a real
+        // encoder. The bytes are never inspected, only the existence and the
+        // shape of the reply, the same rule `capture-still`'s stand-in follows.
+        if (process.env.STC_FAKE_STILL_LOG) {
+          writeFileSync(process.env.STC_FAKE_STILL_LOG, JSON.stringify(cmd) + "\n", { flag: "a" });
+        }
+        try {
+          if (cmd.file) {
+            mkdirSync(join(cmd.file, ".."), { recursive: true });
+            writeFileSync(cmd.file, Buffer.from([0]));
+          }
+          send("export-still", {
+            seq, width: cmd.width, height: cmd.height, format: cmd.format,
+            alpha: cmd.alpha === true, premultiplied: false,
+            ...(cmd.file ? { file: cmd.file, bytes: 1 } : {}),
+            ...(cmd.clipboard ? { clipboard: ["png", "tiff", "fileURL"] } : {}),
+            ...(cmd.capturedAt ? { metadata: "kept" } : {}),
+          });
+        } catch (e) {
+          send("error", { seq, code: "write-failed", detail: String(e) });
+        }
+        break;
+      }
       case "quit":
         send("bye", { seq });
         process.exit(0);

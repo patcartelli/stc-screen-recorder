@@ -3,7 +3,7 @@ import { mkdtempSync, writeFileSync, readFileSync, existsSync, chmodSync, mkdirS
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  readSettings, writeSettings, DEFAULT_SETTINGS, DEFAULT_STILL_SETTINGS,
+  readSettings, writeSettings, DEFAULT_SETTINGS, DEFAULT_STILL_SETTINGS, DEFAULT_THUMBNAIL_SETTINGS,
 } from "../src/settings.js";
 import { DEFAULT_SHORTCUTS, HYPER } from "../src/hotkeys.js";
 
@@ -20,7 +20,8 @@ describe("the camera preference", () => {
   test("defaults to off when nothing has been saved", () => {
     expect(readSettings(dir()))
       .toEqual({ camera: false, displayId: null, shortcuts: DEFAULT_SHORTCUTS,
-                 shutterSound: true, still: DEFAULT_STILL_SETTINGS });
+                 shutterSound: true, still: DEFAULT_STILL_SETTINGS,
+                 thumbnail: DEFAULT_THUMBNAIL_SETTINGS });
     expect(DEFAULT_SETTINGS.camera).toBe(false);
   });
 
@@ -56,7 +57,8 @@ describe("the camera preference", () => {
     writeSettings(d, { camera: true, nonsense: 1 } as never);
     expect(JSON.parse(readFileSync(join(d, "settings.json"), "utf8")))
       .toEqual({ camera: true, displayId: null, shortcuts: DEFAULT_SHORTCUTS,
-                 shutterSound: true, still: DEFAULT_STILL_SETTINGS });
+                 shutterSound: true, still: DEFAULT_STILL_SETTINGS,
+                 thumbnail: DEFAULT_THUMBNAIL_SETTINGS });
   });
 
   test("an unwritable directory does not throw — the preference is not worth a crash", () => {
@@ -107,7 +109,8 @@ describe("the display preference (STC-247)", () => {
     writeSettings(d, { camera: true });
     expect(readSettings(d))
       .toEqual({ camera: true, displayId: 2, shortcuts: DEFAULT_SHORTCUTS,
-                 shutterSound: true, still: DEFAULT_STILL_SETTINGS });
+                 shutterSound: true, still: DEFAULT_STILL_SETTINGS,
+                 thumbnail: DEFAULT_THUMBNAIL_SETTINGS });
   });
 });
 
@@ -281,5 +284,70 @@ describe("the still export preferences (STC-293)", () => {
     const d = dir();
     writeFileSync(join(d, "settings.json"), JSON.stringify({ still: "png please" }));
     expect(readSettings(d).still).toEqual(DEFAULT_SETTINGS.still);
+  });
+});
+
+/**
+ * The post-capture floating thumbnail's preferences (STC-296): where it sits,
+ * how long it waits, and what ignoring it does. `thumbnail.ts` owns the
+ * validation rules (the timeout floor, the corner enum); this only checks that
+ * `settings.ts` applies them the same way every other block here is applied —
+ * falls back field by field, and a partial update leaves the rest alone.
+ */
+describe("the thumbnail preferences (STC-296)", () => {
+  test("defaults: bottom-right, 6 s, save, not skipped", () => {
+    const t = readSettings(dir()).thumbnail;
+    expect(t).toEqual({ corner: "bottom-right", timeoutMs: 6000, settleAction: "save", skip: false });
+  });
+
+  test("round-trips a full change", () => {
+    const d = dir();
+    writeSettings(d, { thumbnail: { corner: "top-left", timeoutMs: 4000, settleAction: "copy", skip: true } });
+    expect(readSettings(d).thumbnail)
+      .toEqual({ corner: "top-left", timeoutMs: 4000, settleAction: "copy", skip: true });
+  });
+
+  test("changing one field does not drop the others", () => {
+    const d = dir();
+    writeSettings(d, { thumbnail: { ...readSettings(d).thumbnail, corner: "top-right" } });
+    writeSettings(d, { thumbnail: { ...readSettings(d).thumbnail, skip: true } });
+    const t = readSettings(d).thumbnail;
+    expect(t.corner).toBe("top-right");
+    expect(t.skip).toBe(true);
+  });
+
+  test("a timeout below the floor is raised to it, never stored as given", () => {
+    const d = dir();
+    writeFileSync(join(d, "settings.json"), JSON.stringify({ thumbnail: { timeoutMs: 500 } }));
+    expect(readSettings(d).thumbnail.timeoutMs).toBe(3000);
+  });
+
+  test("an unknown corner or settle action falls back rather than reaching the window", () => {
+    const d = dir();
+    writeFileSync(join(d, "settings.json"),
+                  JSON.stringify({ thumbnail: { corner: "middle", settleAction: "delete" } }));
+    const t = readSettings(d).thumbnail;
+    expect(t.corner).toBe("bottom-right");
+    expect(t.settleAction).toBe("save");
+  });
+
+  test("a non-boolean skip is not a preference, and falls back to off", () => {
+    const d = dir();
+    writeFileSync(join(d, "settings.json"), JSON.stringify({ thumbnail: { skip: "yes" } }));
+    expect(readSettings(d).thumbnail.skip).toBe(false);
+  });
+
+  test("a thumbnail block of the wrong shape falls back whole", () => {
+    const d = dir();
+    writeFileSync(join(d, "settings.json"), JSON.stringify({ thumbnail: "bottom-right please" }));
+    expect(readSettings(d).thumbnail).toEqual(DEFAULT_SETTINGS.thumbnail);
+  });
+
+  test("a still-preference change leaves the thumbnail preference alone, and vice versa", () => {
+    const d = dir();
+    writeSettings(d, { thumbnail: { ...readSettings(d).thumbnail, skip: true } });
+    writeSettings(d, { still: { ...readSettings(d).still, format: "heic" } });
+    expect(readSettings(d).thumbnail.skip).toBe(true);
+    expect(readSettings(d).still.format).toBe("heic");
   });
 });

@@ -6,8 +6,8 @@ import ImageIO
 /// `export-still`: the one way a still leaves this app (STC-293).
 ///
 /// The composited pixels arrive as raw RGBA from whichever canvas drew them —
-/// the still panel, the post-capture thumbnail (STC-296), the preview's frame
-/// grab (STC-298) — and leave as a file, as pasteboard contents, or as both.
+/// the post-capture floating thumbnail (STC-296), the preview's frame grab
+/// (STC-298) — and leave as a file, as pasteboard contents, or as both.
 /// The ticket's Note is the reason this is one verb rather than three: "One
 /// encoder, one filename template, one destination setting; no second
 /// implementation hiding in the thumbnail." A `copy-still` beside an

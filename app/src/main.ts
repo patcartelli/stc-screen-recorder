@@ -20,6 +20,7 @@ import { HelperSupervisor } from "./supervisor.js";
 import { newTakeDir, takesRoot, listTakes, setTakeLabel, insideTakesRoot } from "./takes.js";
 import { openOverlay, closeOverlay, overlayIsOpen } from "./overlay-session.js";
 import type { WindowInfo } from "./selection.js";
+import { presentThumbnail, beforeCapture as hideThumbnailForCapture, closeThumbnail } from "./thumbnail-window.js";
 
 /**
  * Electron main process. Owns the helper: it is spawned as a CHILD of this
@@ -181,11 +182,15 @@ app.on("before-quit", (e) => {
   e.preventDefault();
   quitting = true;
   // An overlay still up at quit would outlive its window list and sit on the
-  // screen with nothing left to answer it.
+  // screen with nothing left to answer it. A thumbnail still up is worse if
+  // left alone — its shot would never be saved — so closing it SETTLES it
+  // (STC-296), not merely discards the window.
   globalShortcut.unregisterAll();
   tray?.destroy();
   tray = undefined;
-  closeOverlay()
+  closeThumbnail()
+    .catch(() => {})
+    .then(() => closeOverlay())
     .catch(() => {})
     .then(() => (sup ? sup.shutdown() : Promise.resolve()))
     .catch(() => {})
@@ -303,9 +308,14 @@ async function captureStill(action: CaptureAction, source: CaptureSource): Promi
   capturing = true;
   tray?.update({ shortcuts, busy: true });
   try {
+    // Whatever panel is on screen from a PREVIOUS capture must be out of this
+    // one's pixels (STC-296's acceptance list: "including a full-display
+    // capture on the same display") and out from underneath the overlay, if
+    // one is about to open. Cheap when nothing is showing — see `beforeCapture`.
+    const thumbExcluded = await hideThumbnailForCapture();
     const outcome = action === "display"
-      ? await wholeDisplay()
-      : await selectRegionOrWindow(action);
+      ? await wholeDisplay(thumbExcluded)
+      : await selectRegionOrWindow(action, thumbExcluded);
     if (outcome === undefined) return { ok: false, cancelled: true, source };
 
     const root = takesRoot(process.env);
@@ -322,6 +332,25 @@ async function captureStill(action: CaptureAction, source: CaptureSource): Promi
     // it means the next capture, not the next launch.
     void playShutter({ enabled: readSettings(app.getPath("userData")).shutterSound })
       .catch(() => {});
+    // The panel (STC-296), presented from HERE rather than from any window's
+    // renderer: a capture from the hotkey or the menu bar has no window at
+    // all, and the panel is the only place a decorated still can be gotten out
+    // of the app in v1. `skip` bypasses it entirely: the ticket's own words are
+    // "go straight to clipboard", so a silent capture always copies, whatever
+    // the (otherwise inapplicable) settle-action preference says.
+    // Never lets a panel failure cost the CAPTURE — the shot is already on
+    // disk in `dir` by this point, the same "nothing lost by doing nothing"
+    // rule the old still panel followed for exactly this reason.
+    try {
+      const { thumbnail } = readSettings(app.getPath("userData"));
+      presentThumbnail({
+        dir, shot: r.shot, corner: thumbnail.corner, timeoutMs: thumbnail.timeoutMs,
+        dist: here, rendererDir: join(here, "..", "renderer"),
+        ...(thumbnail.skip ? { settleAction: "copy" as const, silent: true } : { settleAction: thumbnail.settleAction }),
+      });
+    } catch (e) {
+      console.error("[thumbnail] could not present:", e);
+    }
     // The helper's reply is a JSON line, so its fields arrive as `unknown`;
     // named here rather than spread, so a renamed field is a type error and not
     // a silently absent one.
@@ -342,6 +371,7 @@ interface CaptureParams { kind: string; [k: string]: unknown }
 /** The overlay path. `undefined` is a cancellation, which writes nothing. */
 async function selectRegionOrWindow(
   action: Extract<CaptureAction, "region" | "window">,
+  thumbExcluded: number[],
 ): Promise<{ kind: string; params: CaptureParams } | undefined> {
   let windows: WindowInfo[] = [];
   try {
@@ -366,9 +396,12 @@ async function selectRegionOrWindow(
     // helper matches against. If that ever stops being true the helper answers
     // `no-such-display` and the capture fails loudly — it cannot silently
     // photograph the wrong screen, which is the failure worth designing out.
+    // The overlay's own excluded windows and the thumbnail's (STC-296) are
+    // combined here — a WINDOW capture needs neither, since its own filter
+    // names exactly one window and cannot accidentally include another.
     ? { kind: "region",
         params: { kind: "display-crop", displayId: outcome.displayId,
-                  crop: outcome.crop, excludeWindowIds } }
+                  crop: outcome.crop, excludeWindowIds: [...excludeWindowIds, ...thumbExcluded] } }
     : { kind: "window", params: { kind: "window", windowId: outcome.windowId } };
 }
 
@@ -380,12 +413,15 @@ async function selectRegionOrWindow(
  * is the one under the cursor. It is also the only rule that needs nothing on
  * screen to disambiguate, which is the point of this action existing.
  *
- * No crop is sent — the helper reads an absent crop as the whole display — and
- * no exclusions, because no overlay was ever composited.
+ * No crop is sent — the helper reads an absent crop as the whole display — but
+ * a showing thumbnail (STC-296) still needs excluding: "no overlay" is not
+ * "nothing else is on screen."
  */
-async function wholeDisplay(): Promise<{ kind: string; params: CaptureParams }> {
+async function wholeDisplay(thumbExcluded: number[]): Promise<{ kind: string; params: CaptureParams }> {
   const display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
-  return { kind: "display", params: { kind: "display-crop", displayId: display.id } };
+  return { kind: "display",
+           params: { kind: "display-crop", displayId: display.id,
+                     ...(thumbExcluded.length ? { excludeWindowIds: thumbExcluded } : {}) } };
 }
 
 /**
@@ -552,13 +588,14 @@ ipcMain.handle("export:write", async (_e, name: string, bytes: ArrayBuffer) => {
 /**
  * The one way a still leaves the app (STC-293).
  *
- * Every caller reaches disk and pasteboard through here: the still panel, the
- * preview's frame grab (STC-298, migrated onto this in the same change), and
- * the floating thumbnail when it lands (STC-296). The ticket's Note forbids a
- * second implementation, and the way that rule stays true is that there is
- * exactly one handler and it takes composited pixels rather than an encoded
- * image — an encoded image would mean the caller had already chosen a format,
- * which is half the decision this path exists to own.
+ * Every caller reaches disk and pasteboard through here: the preview's frame
+ * grab (STC-298, migrated onto this in the same change) and the floating
+ * thumbnail's own window (STC-296), each through its own preload but the same
+ * handler. The ticket's Note forbids a second implementation, and the way
+ * that rule stays true is that there is exactly one handler and it takes
+ * composited pixels rather than an encoded image — an encoded image would
+ * mean the caller had already chosen a format, which is half the decision
+ * this path exists to own.
  *
  * The renderer sends RGBA because it has a canvas and no encoder; the helper
  * encodes because ImageIO is the only thing here that can write HEIC, embed a
