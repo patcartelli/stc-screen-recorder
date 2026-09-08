@@ -146,6 +146,65 @@ export function isExpired(state: ThumbnailState, now: number): boolean {
  */
 export function dismiss(): ThumbnailState { return { kind: "idle" }; }
 
+// ── stacking ────────────────────────────────────────────────────────────────
+
+/**
+ * More than one capture on screen at once (STC-296's "multiple captures in
+ * quick succession stack rather than replacing each other").
+ *
+ * ## The newest panel takes the corner
+ *
+ * Index 0 is the newest, sitting exactly where a single panel would; older
+ * ones are pushed INWARD along the vertical axis. Someone who has just
+ * pressed the shortcut looks at the corner, and finding their newest shot
+ * anywhere else would make the stack a puzzle rather than a record.
+ *
+ * ## "Drains oldest-first on timeout" is not built here
+ *
+ * The ticket asks for it and the existing code already does it: each session
+ * arms its own timer when it paints, so panels that appeared in order expire
+ * in order. It is a property of every panel keeping its OWN timer — which is
+ * the thing a central drain queue would have taken away. Worth stating,
+ * because a queue is the obvious way to build a behaviour that is already
+ * free.
+ */
+
+/**
+ * How far each older panel is pushed in, in points.
+ *
+ * Enough to leave a legible sliver of the one behind against a 150 px
+ * collapsed panel, and no more: the stack is a reminder that shots are
+ * waiting, not a UI to read.
+ */
+export const STACK_STEP_PX = 26;
+
+/**
+ * How many panels may be on screen before the oldest is settled to make room.
+ *
+ * Five, matching the ticket's own acceptance case ("five captures in five
+ * seconds"). A cap rather than an unbounded stack because the panels are
+ * always-on-top and a rapid burst would otherwise wall off the screen — and
+ * nothing is lost by capping, since the panel pushed out is SETTLED, exactly
+ * as a replaced panel already was.
+ */
+export const MAX_STACKED = 5;
+
+/**
+ * Where the panel at `index` sits, 0 being the newest.
+ *
+ * Built on `positionFor`, so a stack of one is in precisely the place a lone
+ * panel was — the single-panel case cannot drift from the stacked one because
+ * it is not a separate calculation.
+ */
+export function stackPosition(index: number, corner: Corner, workArea: Bounds,
+                              size: Size, margin = 20): { x: number; y: number } {
+  const base = positionFor(corner, workArea, size, margin);
+  // Older panels move DOWN from a top corner and UP from a bottom one: always
+  // further into the screen, never off the edge it is anchored to.
+  const inward = corner.startsWith("top") ? 1 : -1;
+  return { x: base.x, y: base.y + index * STACK_STEP_PX * inward };
+}
+
 // ── swipe to discard ────────────────────────────────────────────────────────
 
 /**
