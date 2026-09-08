@@ -26,8 +26,10 @@ async function launch(recordingsDir: string) {
 describe("take library in the app", () => {
   test("an empty recordings folder says so instead of looking broken", async () => {
     const win = await launch(mkdtempSync(join(tmpdir(), "stc-empty-")));
+    // Kind-neutral since STC-294: the library holds stills too, so "no
+    // recordings" would be wrong in a folder that has screenshots and no video.
     await expect.poll(() => win.textContent("#takes"), { timeout: 20_000 })
-      .toContain("No recordings yet");
+      .toContain("Nothing here yet");
   }, 60_000);
 
   test("a real recording is listed with metadata read from its sidecars", async () => {
@@ -39,7 +41,10 @@ describe("take library in the app", () => {
     expect(text).toMatch(/\d+:\d\d/);            // duration
     expect(text).toMatch(/\d+×\d+/);             // resolution
     expect(text).toMatch(/\d+ events/);
-    expect(text).toMatch(/\d+ (MB|GB)/);
+    // KB admitted since STC-294. The old formatter was `Math.round(b / 1e6) MB`
+    // unconditionally, so this 84 KB fixture displayed as "0 MB" and matched
+    // this regex by luck; the adapter's formatter has a KB step.
+    expect(text).toMatch(/\d+(\.\d+)? (KB|MB|GB)/);
   }, 90_000);
 
   test("a broken take is reported in the list, and does not hide a good one", async () => {

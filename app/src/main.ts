@@ -16,7 +16,7 @@ import { parseShot } from "@transform/shot.js";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { existsSync, readdirSync } from "node:fs";
-import { readFile, writeFile, stat, open, mkdir, readdir, copyFile } from "node:fs/promises";
+import { readFile, writeFile, stat, open, mkdir, readdir, copyFile, rm } from "node:fs/promises";
 import { HelperSupervisor } from "./supervisor.js";
 import { newTakeDir, takesRoot, setTakeLabel, insideTakesRoot } from "./takes.js";
 import { listTakes, listLibrary, THUMBNAIL_FILE } from "./library.js";
@@ -848,6 +848,12 @@ ipcMain.handle("still:writeShot", async (_e, dir: string, redactions: unknown) =
     decoration: { ...stored.decoration, redactions },
   });
   await writeFile(file, JSON.stringify(next, null, 2));
+  // The library's cached thumbnail (STC-294) was rendered from the document
+  // that just changed, so it now shows a decoration this shot no longer has.
+  // Dropped rather than re-rendered: this process has no canvas, and the grid
+  // renders a missing one the next time the tile is on screen. A failure here
+  // costs a stale picture, never the regions that were just written.
+  await rm(join(dir, THUMBNAIL_FILE), { force: true }).catch(() => {});
   return { ok: true, redactions: next.decoration.redactions.length };
 });
 

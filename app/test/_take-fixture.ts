@@ -1,4 +1,4 @@
-import { mkdtempSync, cpSync, mkdirSync } from "node:fs";
+import { mkdtempSync, cpSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -15,8 +15,11 @@ const root = join(__dirname, "..", "..");
  * verify wiring, and a 90-frame 640x360 fixture does that in a fraction of the
  * time.
  */
-export function makeTakeFolder(takeName = "2026-08-24_10-00-00"): { dir: string; takeDir: string } {
-  const dir = mkdtempSync(join(tmpdir(), "stc-takes-"));
+export function makeTakeFolder(takeName = "2026-08-24_10-00-00",
+                               opts: { into?: string } = {}): { dir: string; takeDir: string } {
+  // `into` puts it in an EXISTING root, so a test can seed a mixed library
+  // (STC-294) rather than getting one temp folder per fixture.
+  const dir = opts.into ?? mkdtempSync(join(tmpdir(), "stc-takes-"));
   const takeDir = join(dir, takeName);
   mkdirSync(takeDir, { recursive: true });
   for (const f of ["anchors.json", "events.json", "display.mp4"]) {
@@ -47,5 +50,29 @@ export function makePipTakeFolder(
   // the realistic case, not the exotic one.
   if (opts.withProject !== false) files.push("project.json");
   for (const f of files) cpSync(join(root, "fixtures", "pip", f), join(takeDir, f));
+  return { dir, takeDir };
+}
+
+/**
+ * A still, from the committed window-capture fixture (STC-294).
+ *
+ * `fixtures/shot-window/` is a real `shot.json` plus a synthetic 720x480 RGBA
+ * frame — enough for the library to classify, summarise and decorate one
+ * without a Mac, a grant or a helper. Named with a timestamp because that IS
+ * the identity and the sort key for both kinds, which is the whole reason one
+ * index over two formats is possible.
+ */
+export function makeStillFolder(
+  takeName = "2026-09-08_12-00-00",
+  opts: { into?: string; redactions?: { x: number; y: number; width: number; height: number }[] } = {},
+): { dir: string; takeDir: string } {
+  const dir = opts.into ?? mkdtempSync(join(tmpdir(), "stc-takes-"));
+  const takeDir = join(dir, takeName);
+  mkdirSync(takeDir, { recursive: true });
+  cpSync(join(root, "fixtures", "shot-window", "frame.png"), join(takeDir, "frame.png"));
+  const shot = JSON.parse(
+    readFileSync(join(root, "fixtures", "shot-window", "shot.json"), "utf8"));
+  if (opts.redactions) shot.decoration.redactions = opts.redactions;
+  writeFileSync(join(takeDir, "shot.json"), JSON.stringify(shot, null, 2));
   return { dir, takeDir };
 }
