@@ -93,7 +93,15 @@ requests, and two files**.
 1. **A panel replaced before it had composited exported nothing.**
    `runExport` opens `if (!composite) return false` — a fair guard — but
    `settle()` treated that as completion, so main destroyed the window and the
-   capture was never exported. `settle` now waits for the decode-and-draw.
+   capture was never exported. `settle` waits for the decode-and-draw now.
+   **That fix is not in this branch and does not need to be:** the same bug was
+   found and fixed independently as #102 while this was in review, in a better
+   form — the wait is BOUNDED by `SETTLE_READY_MS`, and
+   `app/test/thumbnail-bounds.test.ts` asserts that bound clears
+   `SETTLE_BACKSTOP_MS`, without which the window is destroyed before the wait
+   can finish. Merging master here resolved the conflict by taking that version
+   whole. Two independent routes to one bug is corroboration, and the measured
+   progression below is what this gate contributed.
 2. **Concurrent exports overwrote each other**, and the code had predicted it.
    Names are made unique against a directory listing taken before writing, so
    five racing settles all saw an empty folder and chose the same name.

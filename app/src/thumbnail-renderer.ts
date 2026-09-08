@@ -4,8 +4,10 @@ import {
 import { decorationForMode, layoutStill, pxPerPointOf } from "@transform/still-decorate";
 import { renderStill, sampleRedactionFills } from "@transform/still-render";
 import { normaliseRegion, undoLast } from "@transform/still-redact";
+import { withTimeout } from "@transform/timeout";
 import {
   classifyDrag, discardDirection, isDiscardSwipe, parseCorner, swipeOffset,
+  SETTLE_READY_MS,
 } from "./thumbnail.js";
 import { colorSpaceFor, planRender, stillIsBlocked, type ExportOptions } from "@transform/still-export";
 
@@ -375,28 +377,50 @@ canvas.addEventListener("pointerup", (e) => {
 });
 
 /** Ends the interaction: exports (per `settleAction`) and tells main to destroy the window. */
+/**
+ * Resolved once the panel has composited for the first time.
+ *
+ * `onSettle` is registered before the load below has read `frame.png`,
+ * decoded it and drawn it — so a settle CAN arrive with no composite yet.
+ * Before this existed, that reached `runExport`, hit its `if (!composite)`
+ * guard, returned false, and the `finally` destroyed the window having
+ * exported nothing. Silently: the take directory still held `shot.json` and
+ * `frame.png`, so nothing looked broken, but the decorated file the panel
+ * promised was never written.
+ *
+ * The path there is a SECOND CAPTURE arriving while the first panel is still
+ * loading, since `presentThumbnail` settles the outgoing one. The timeout
+ * path was never exposed — its timer is armed on `painted`, which is after
+ * the first draw — which is exactly why this survived: the case everyone
+ * tests is the safe one.
+ */
+let markReady!: () => void;
+const ready = new Promise<void>((res) => { markReady = res; });
+
 async function settle(): Promise<void> {
   if (settling) return;
   settling = true;
   try {
+    // `"none"` is a shot RE-OPENED from the library (STC-294): it is already on
+    // disk and nothing is going to be exported, so there is nothing to wait
+    // for. Waiting for a composite in order not to use it would be delay
+    // bought with nothing — and, on a slow decode, a panel that appears to
+    // hang before closing.
     if (settleAction !== "none") {
-      // Waits for the frame to be decoded and drawn — see `ready`. A settle
-      // can arrive before any of that has happened (a capture replacing this
-      // panel moments after it was created), and exporting nothing because
-      // there was nothing composited YET is how a burst quietly loses shots.
-      // `ready` rejecting means the frame could not be loaded at all, which is
-      // a genuine "nothing to export" rather than a race, so it falls through
-      // to `done` exactly as before.
-      //
-      // Guarded on `composite` rather than awaited unconditionally, and that
-      // is load-bearing: the `silent` path calls `settle()` from INSIDE the
-      // same IIFE that `ready` is the promise for, so an unconditional await
-      // would have it wait on itself forever. By then `draw()` has run, so
-      // there is nothing to wait for.
-      if (!composite) await ready.catch(() => {});
+      // Bounded, and the bound has a reason: a panel whose frame never decodes
+      // must not hold the window open until main's backstop kills it with no
+      // explanation. Timing out still falls through to `runExport`, which
+      // refuses honestly rather than pretending.
+      try {
+        await withTimeout(ready, SETTLE_READY_MS,
+                          "the panel did not composite in time to settle");
+      } catch {
+        setStatus("Could not prepare the shot in time.");
+      }
       await runExport(settleAction);
     }
-  } finally { window.thumb.event({ kind: "done" }); }
+  }
+  finally { window.thumb.event({ kind: "done" }); }
 }
 
 // ---- wiring ----------------------------------------------------------------
@@ -689,27 +713,13 @@ document.addEventListener("keydown", (e) => {
 // exactly what "timeout dismissal must never block on a render" requires.
 window.thumb.onSettle(() => { void settle(); });
 
-/**
- * Resolves once there is something to export.
- *
- * A settle that arrives before the frame has been fetched and decoded used to
- * find `composite` undefined, and `runExport`'s `if (!composite) return false`
- * turned that into a silent no-op: the panel reported "done", main destroyed
- * it, and the capture was never exported. STC-301's gate 4 measured it — five
- * captures in quick succession produced five shots on disk but only THREE
- * export requests and two files. Nothing was destroyed (the take directory is
- * written by the helper before any panel exists) but the user's chosen settle
- * action silently did not happen, which is the quiet half of "nothing is lost
- * by doing nothing".
- *
- * So settle WAITS for this rather than giving up. It is a promise rather than
- * a flag because the wait has to be joinable from the settle path, which can
- * arrive at any point during the load.
- */
-const ready: Promise<void> = (async () => {
+void (async () => {
   const bytes = await window.thumb.getFrame(dir, shot.frame.file);
   frame = await createImageBitmap(new Blob([bytes], { type: "image/png" }));
   await draw();
+  // Anything already waiting to settle can proceed now — and it must be here,
+  // after `draw()`, because `composite` is what a settle actually needs.
+  markReady();
   // A silent panel is never shown, so there is nothing to paint FOR — settle
   // immediately, with no rAF and no round trip through main.
   if (silent) { void settle(); return; }

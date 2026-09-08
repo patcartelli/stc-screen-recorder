@@ -4,6 +4,7 @@ import { mkdtempSync, existsSync, readdirSync, readFileSync, writeFileSync } fro
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseShot } from "../../transform/src/shot.js";
+import { SETTLE_READY_MS } from "../src/thumbnail.js";
 
 /**
  * STC-301 gate 4 — nothing lost.
@@ -54,8 +55,27 @@ const FAKE_HELPER = join(root, "app", "test", "_fake-helper.mjs");
  */
 const N = 5;
 
+/**
+ * Teardown gets a bound of its own, and the number is derived rather than felt.
+ *
+ * This gate deliberately leaves the app mid-burst: a panel replaced before its
+ * page had finished loading is settling, and a settle waits up to
+ * `SETTLE_READY_MS` for the first composite (STC-296, #102) before it exports.
+ * So `app.close()` can legitimately have that much work behind it — and
+ * vitest's default hook timeout is 10 s, which is the SAME NUMBER, making the
+ * teardown a coin flip. Observed failing 1 run in 5 here with the test body
+ * itself green, which is the shape of flake the ticket's Constraints section
+ * refuses.
+ *
+ * A bound that does not clear the wait it is sitting on top of is the "a new
+ * bound must be checked against every bound already covering the same code"
+ * trap CLAUDE.md records three times. It is derived from `SETTLE_READY_MS`
+ * rather than restated, so raising that wait cannot silently un-do this.
+ */
+const TEARDOWN_MS = SETTLE_READY_MS + 20_000;
+
 let app: ElectronApplication | undefined;
-afterEach(async () => { await app?.close().catch(() => {}); app = undefined; });
+afterEach(async () => { await app?.close().catch(() => {}); app = undefined; }, TEARDOWN_MS);
 
 interface Launched { win: Page; recordings: string; destDir: string }
 
