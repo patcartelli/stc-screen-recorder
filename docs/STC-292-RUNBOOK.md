@@ -247,15 +247,49 @@ and the fix is to add it to `SYSTEM_CLAIMED`, not to widen the report.
 
 The one that needs a clean machine, or a reset.
 
+**The bundle id is `com.github.Electron`.** `npm run app:start` is
+`electron .` with no packaging step, so macOS attributes every grant to
+Electron.app itself, not to anything named after this project. Confirm it
+rather than trusting this line:
+
 ```
-tccutil reset ScreenCapture <bundle-id>
-tccutil reset Accessibility <bundle-id>
+/usr/libexec/PlistBuddy -c 'Print CFBundleIdentifier' \
+  node_modules/electron/dist/Electron.app/Contents/Info.plist
 ```
+
+Quit the app first, and confirm nothing is lingering — a leftover `electron .`
+holds the display and every capture after the reset fails as `-3805`, which
+reads as a permission fault and is not one:
+
+```
+ps -Ao pid,command | grep '[s]tc-screen-recorder/node_modules/electron'
+```
+
+Then:
+
+```
+tccutil reset ScreenCapture com.github.Electron
+tccutil reset Accessibility com.github.Electron
+```
+
+**Never run `tccutil reset ScreenCapture` with no bundle id** — that resets
+every app on the machine, not this one. And note the id is shared: any other
+Electron app run from a checkout on this Mac loses its grant too and will
+re-prompt.
+
+**Confirm the reset took before believing anything after it.** Open System
+Settings › Privacy & Security › Screen & System Audio Recording; Electron must
+be **gone from the list**, not merely switched off. A reset that silently did
+nothing leaves every step below asserting the grant it was meant to remove.
 
 Then, **without ever running a recording**:
 
-1. Launch. Grant Screen Recording when asked (or in System Settings ›
-   Privacy & Security › Screen & System Audio Recording).
+1. Launch with `npm run app:start`, by hand. Not under Playwright — driven from
+   a test runner the responsible process is the launching shell, so no grant is
+   attributable to Electron and no entry ever appears for the user to grant
+   (see CLAUDE.md's TCC-by-launch-path trap). Grant Screen Recording when asked
+   (or in System Settings › Privacy & Security › Screen & System Audio
+   Recording).
 2. Do **not** grant Accessibility. Confirm the app is not even listed under
    Privacy & Security › Accessibility.
 3. Press ⌃⌥⇧⌘1. The overlay appears, a region is captured, `shot.json` and
@@ -268,6 +302,21 @@ any of this — which is why media keys are refused as bindings
 (`hotkeys.ts`, `needs-accessibility`): Electron registers them through a
 CGEventTap, and binding one would quietly reintroduce the dependency this
 criterion exists to rule out.
+
+### The cheaper check, if the reset is not to hand
+
+The criterion's substance is that capture does not DEPEND on Accessibility, and
+that can be falsified without resetting anything. Electron is probably already
+listed under Privacy & Security › Accessibility from the recorder's event tap —
+which is exactly why step 2 above says "without ever running a recording".
+
+Toggle Accessibility **off** for Electron, quit, relaunch, press ⌃⌥⇧⌘1. A shot
+on disk means the hotkey path does not need the grant.
+
+This is NOT a substitute for the reset: it leaves the fresh-install half — that
+a user who has never recorded is never prompted for Accessibility and never
+appears in that list at all — unproven. It rules out the thing that would be a
+bug; the reset proves the story the ticket actually asks for.
 
 ## 8. What is deliberately not here
 
