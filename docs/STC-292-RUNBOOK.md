@@ -50,15 +50,22 @@ grey halo means colour crept in under zero alpha (`bgraFromMask`).
 
 ## 2. The Dock — it should go away
 
-**This one is UNVERIFIED and is the reason this section exists.** On the GitHub
-macOS runner, `dock.isVisible()` stayed `true` with no window left — twice, once
-as a single read and once through a full 10 s poll (runs 34243729730 and
-34244375788) — while the app was demonstrably still running, still had its
-menu-bar item, and still held its shortcuts. The window count really was zero in
-both. So either `dock.hide()` does not take on that runner, or the runner's
-session does not present apps the way a desk does. **Nobody has yet watched a
-real Dock.** Take this step slowly and believe what you see over what the code
-intends.
+**WATCHED ON HARDWARE 2026-09-08 and it works.** The app appears in both places
+at launch, ⌘W removes the Dock icon as designed, and the menu-bar item stays.
+Arm 1 below passed on the first try; arm 2 was never needed.
+
+**The GitHub macOS runner disagrees, and it is the runner that is wrong.**
+There, `dock.isVisible()` stayed `true` with no window left — twice, once as a
+single read and once through a full 10 s poll (runs 34243729730 and
+34244375788) — while the window count was zero, the menu-bar item was alive and
+the shortcuts were still registered. A real Mac does the opposite, so that is a
+property of the runner's session and not of this code. **Do not put the
+assertion back into `app/test/hotkeys.e2e.test.ts`**: it would be red forever
+for a behaviour that demonstrably works, and the next person would "fix" it by
+loosening it until it passed without meaning anything.
+
+The procedure below stays because it is how the claim gets re-checked after any
+change to `setDockVisible` or `window-all-closed` — the runner cannot do it.
 
 ```
 helper/build.sh          # once, if the helper is not already built

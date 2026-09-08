@@ -105,7 +105,7 @@ belonging to a different commit).
 | STC-290 | **selection overlay — written 2026-09-05 on Linux, so the LOOK is unseen.** One transparent Electron window per display at screen-saver level; the state machine lives in the main process, which is what lets a drag cross a bezel. Region mode hands `capture-still` a display id and a display-local crop, window mode a window id. 44 pure assertions with no screen, plus an E2E that drives the real windows against the stand-in helper. `capture-still` gained `excludeWindowIds` so the overlay cannot land in its own photograph | a Mac: `docs/STC-290-RUNBOOK.md`. The overlay's appearance, and whether Electron's `Display.id` really is the `CGDirectDisplayID` on a second display |
 | STC-291 | **decorated still — written 2026-09-05 on Linux, so the PRESETS ARE UNSEEN on real captures.** Background, padding, shadow and canvas presets for the five modes, split pure-layout (`still-decorate.ts`) / draw (`still-render.ts`). The window's corners are NOT synthesised — they arrive as alpha from `desktopIndependentWindow` and the shadow is cast from that same alpha; nothing is ever scaled. `npm run gate:still` renders in a real browser and asserts properties rather than goldens. Every mode rendered from a real 720x480 window mock and looked at | a Mac: `docs/STC-291-RUNBOOK.md`. Whether the presets look like a product shot, and whether a REAL window capture's alpha is as clean as the synthesised one |
 | STC-247 | **DONE 2026-09-08, VERIFIED on two displays (HP Z27 main id 4 @ 0,0; built-in id 1 @ 1920,0).** The helper refuses a `displayId` it cannot find (`display-not-found`) instead of quietly recording SCK's first; `devices` reports each display's `name` and global `originX/Y`; the app has a display picker beside Camera (sticky, "(not connected)" for a stored display that is gone). On hardware: `multi-display.grant.test.ts` recorded the NON-main built-in by id and its anchors named it (id 1, 1920,0, 1800×1169); a 21 s take from the app with the built-in picked had `anchors.display` = that display, capture 3326×2160, and the EXPORT was watched — the built-in's content, cursor where the pointer was, no whole-screen offset; Automatic recorded the HP (id 4, main, listed first — observed, not promised); both unplug arms ended the take with `stop.reason: display-reconfigured`, including the one where the captured display survived (review P7, deliberate). #85 | nothing. An origin timeline in anchors, so an unrelated display change need not end a take, is its own ticket |
-| STC-292 | **global hotkey and menu-bar quick capture — written 2026-09-08 on Linux, so NOTHING about the menu bar's look, the Dock's behaviour or the shutter sound has been seen or heard, and the DOCK DID NOT HIDE ON CI (see the trap below — it may be a real bug).** Three global shortcuts (⌃⌥⇧⌘1/2/3 — the caps-lock hyperkey row), user-remappable and sticky, registered through Electron's `globalShortcut` (Carbon `RegisterEventHotKey`, no Accessibility grant). A menu-bar item with the three captures, Open Library and Quit. The app is menu-bar-FIRST now: the Dock icon goes when the last window closes and comes back with one. `still:capture` became a main-process FUNCTION with three doors — window button, hotkey, menu bar — and gained a `display` action that captures the display under the pointer with no overlay at all. Conflicts are surfaced, not swallowed: `hotkeys.ts` refuses what is knowably wrong (⌘⇧3/4/5/6 in any spelling, media keys, duplicates, bare keys) and `globalShortcut.register` returning false is reported apart from it. Feedback is the system shutter sound only — the corner animation is STC-296's | a Mac: `docs/STC-292-RUNBOOK.md`. Whether macOS delivers the chord to a background app, whether the icon inverts in both appearances, whether the sound plays and follows the setting, and the fresh-install round trip with only Screen Recording granted |
+| STC-292 | **global hotkey and menu-bar quick capture — written 2026-09-08 on Linux. The DOCK IS CONFIRMED on hardware (⌘W removes the icon, the menu-bar item stays; CI disagrees and the runner is what is wrong — see the trap below). The menu bar's LOOK, the shutter sound, delivery of the chord to a background app and the permission round trip are still unseen and unheard.** Three global shortcuts (⌃⌥⇧⌘1/2/3 — the caps-lock hyperkey row), user-remappable and sticky, registered through Electron's `globalShortcut` (Carbon `RegisterEventHotKey`, no Accessibility grant). A menu-bar item with the three captures, Open Library and Quit. The app is menu-bar-FIRST now: the Dock icon goes when the last window closes and comes back with one. `still:capture` became a main-process FUNCTION with three doors — window button, hotkey, menu bar — and gained a `display` action that captures the display under the pointer with no overlay at all. Conflicts are surfaced, not swallowed: `hotkeys.ts` refuses what is knowably wrong (⌘⇧3/4/5/6 in any spelling, media keys, duplicates, bare keys) and `globalShortcut.register` returning false is reported apart from it. Feedback is the system shutter sound only — the corner animation is STC-296's | a Mac: `docs/STC-292-RUNBOOK.md`. Whether macOS delivers the chord to a background app, whether the icon inverts in both appearances, whether the sound plays and follows the setting, and the fresh-install round trip with only Screen Recording granted |
 | STC-251/252 | preview memory ceiling (~15 min at 4K); Node 20 actions deprecation | — |
 
 `PHASE-2.md` records the measured limits (export 1.52x realtime, preview ~1.2x file size in RAM).
@@ -1050,20 +1050,22 @@ reachable via KVC (`setValue(3, forKey: "captureResolution")`, verified in phase
   same scope every other gate here compares in. The capture it renders is SYNTHESISED in the page
   rather than committed, because the assertions have to name where the corner curve is.
 
-- **`app.dock.hide()` did not hide the Dock on CI, and no bound was going to fix that (STC-292).**
-  `dock.isVisible()` stayed `true` with the last window closed — as a single read, then through a
-  full 10 s poll (runs 34243729730 and 34244375788) — while the window count was
-  zero, the menu-bar item was alive and the shortcuts were still registered. The first push widened
-  the read into a poll on the theory that AppKit applies an activation-policy change
-  asynchronously; the second failure ruled that out, and a third bound would have been a slower way
-  of asserting the same false thing. The claim moved to `docs/STC-292-RUNBOOK.md` §2, where a person
-  can look at a Dock; the two assertions that ARE the ticket's acceptance criterion (no window,
-  still running, still bound) stayed in the E2E and pass. **It is not known whether a real Mac hides
-  it** — the leading suspicion is that AppKit declines a Regular → Accessory change while the app is
-  the ACTIVE application, which is exactly what a runner with nothing else open is, in which case
-  the policy change belongs on resign-active rather than on the last window closing. The runbook
-  says how to tell those apart in two minutes. Same family as every other entry here: a green tick
-  bought by loosening an assertion is worth less than a red one that named something true.
+- **`app.dock.hide()` works on a real Mac and NOT on the CI runner — the runner is what is wrong,
+  and no bound was ever going to fix it (STC-292).** `dock.isVisible()` stayed `true` there with the
+  last window closed — as a single read, then through a full 10 s poll (runs 34243729730 and
+  34244375788) — while the window count was zero, the menu-bar item was alive and the shortcuts were
+  still registered. WATCHED on hardware 2026-09-08: ⌘W removes the Dock icon, the menu-bar item
+  stays. So it is a property of the runner's session, not of this code.
+  The route there is the lesson. The first push widened the read into a poll on the theory that
+  AppKit applies an activation-policy change asynchronously; the second, identical failure ruled
+  that out, and a third bound would have been a slower way of asserting the same false thing. The
+  claim moved to `docs/STC-292-RUNBOOK.md` §2 instead, where a person can look at a Dock — and a
+  person then did, which is the only reason this is settled. **Do not put the assertion back**: it
+  would be red forever for a behaviour that demonstrably works, and the next person would loosen it
+  until it passed without meaning anything. The two assertions that ARE the ticket's acceptance
+  criterion (no window, still running, still bound) stayed in the E2E and pass. A green tick bought
+  by loosening an assertion is worth less than a red one that named something true — and a claim an
+  automated environment cannot see is worth more in a runbook than in a test.
 
 - **A list of constants written in the reader's order is compared in the CODE's order, and the
   mismatch is silent (STC-292).** `SYSTEM_CLAIMED` holds the macOS bindings the app refuses, and it
