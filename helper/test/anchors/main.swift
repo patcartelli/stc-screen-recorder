@@ -84,5 +84,36 @@ do {
     check(d["t0Ns"] as? String == "18446744073", "t0Ns must be a string")
 }
 
+// 5. A take ended by SHUTDOWN, not by a stop anyone asked for (STC-311).
+//    Every case above used stopReason "user", so the only reasons ever run
+//    through the schema were the ones that were already in its enum — while
+//    App.shutdown writes "quit", "stdin-closed" and "signal-N" (STC-304), and
+//    STC-305 writes "stopped-during-start". Those documents are as real as any
+//    other and had never been validated. `signal-15` also pins the open-ended
+//    family: it is why the schema cannot be a closed enum.
+do {
+    for reason in ["quit", "stdin-closed", "signal-15", "stopped-during-start"] {
+        let d = anchorsDocument(timebase: (125, 3), t0Ns: 1000, display: display,
+                                capture: capture, camera: nil, requested: false,
+                                stopReason: reason, stopTNs: 8_000_000_000)
+        let stop = d["stop"] as? [String: Any]
+        check(stop?["reason"] as? String == reason, "stop.reason must be written verbatim: \(reason)")
+        printJSON(d, marker: "JSON-STOP-\(reason.uppercased()):")
+    }
+}
+
+// 6. The writer did not finalise in time, on a shutdown reason. The backstop
+//    appends "-timeout" to WHATEVER reason it was given (CaptureSession.stop),
+//    so the suffix is not a fixed list of five — a wedged writer during a
+//    SIGTERM writes "signal-15-timeout".
+do {
+    let d = anchorsDocument(timebase: (125, 3), t0Ns: 1000, display: display,
+                            capture: capture, camera: nil, requested: false,
+                            stopReason: "signal-15-timeout", stopTNs: 8_000_000_000)
+    check((d["stop"] as? [String: Any])?["reason"] as? String == "signal-15-timeout",
+          "a timed-out shutdown keeps its suffixed reason")
+    printJSON(d, marker: "JSON-STOP-SIGNAL-TIMEOUT:")
+}
+
 if failures.isEmpty { print("ALL PASS") }
 else { for f in failures { print("FAIL: \(f)") }; exit(1) }
