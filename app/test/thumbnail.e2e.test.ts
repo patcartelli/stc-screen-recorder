@@ -1,6 +1,6 @@
 import { describe, test, expect, afterEach } from "vitest";
 import { _electron as electron, type ElectronApplication, type Page } from "playwright";
-import { mkdtempSync, existsSync, readdirSync, readFileSync } from "node:fs";
+import { mkdtempSync, existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { makeTakeFolder } from "./_take-fixture.js";
@@ -44,8 +44,18 @@ async function launch(extraEnv: Record<string, string> = {}): Promise<Launched> 
   const { dir: recordings } = makeTakeFolder();
   const destDir = mkdtempSync(join(tmpdir(), "stc-thumb-dest-"));
   const stillLog = join(mkdtempSync(join(tmpdir(), "stc-still-log-")), "requests.jsonl");
+  const userData = mkdtempSync(join(tmpdir(), "stc-ud-"));
+  // Seeded on DISK, before launch — never through `recorder:setSettings`.
+  // That channel deliberately strips `still.destination` (STC-293 review,
+  // #92): a renderer may not choose where main writes, precisely the thing an
+  // E2E test setting up its own fixture would otherwise look like. A real
+  // destination (not "beside the shot") makes a settled export easy to find,
+  // and a short timeout keeps the ignore-it path from costing minutes.
+  writeFileSync(join(userData, "settings.json"), JSON.stringify({
+    still: { destination: destDir }, thumbnail: { timeoutMs: 3000 },
+  }));
   app = await electron.launch({
-    args: [root, `--user-data-dir=${mkdtempSync(join(tmpdir(), "stc-ud-"))}`],
+    args: [root, `--user-data-dir=${userData}`],
     cwd: root,
     env: {
       ...process.env, STC_RECORDINGS_DIR: recordings, STC_HELPER_BIN: FAKE_HELPER,
@@ -54,13 +64,6 @@ async function launch(extraEnv: Record<string, string> = {}): Promise<Launched> 
   });
   const win = await app.firstWindow();
   await win.waitForSelector("#capturestill");
-  // A real destination (not "beside the shot") so a settled export is easy to
-  // find, and a short timeout so the ignore-it path does not cost minutes.
-  await win.evaluate(async (dest) => {
-    await (window as any).recorder.setSettings({
-      still: { destination: dest }, thumbnail: { timeoutMs: 3000 },
-    });
-  }, destDir);
   return { win, recordings, destDir, stillLog };
 }
 
