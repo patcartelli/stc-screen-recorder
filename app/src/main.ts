@@ -1,5 +1,5 @@
 import {
-  app, BrowserWindow, ipcMain, dialog, shell, globalShortcut, screen,
+  app, BrowserWindow, ipcMain, dialog, shell, globalShortcut, screen, Menu,
 } from "electron";
 import { readSettings, writeSettings, type Settings } from "./settings.js";
 import {
@@ -7,9 +7,13 @@ import {
   type CaptureAction, type ShortcutReport, type Shortcuts,
 } from "./hotkeys.js";
 import { installTray, type TrayHandle } from "./tray.js";
+import {
+  thumbnailMenuTemplate, type ThumbMenuContext, type ThumbMenuId,
+} from "./thumbnail-menu.js";
 import { playShutter } from "./shutter.js";
 import {
-  exportStill, resolveExportOptions, type CompositedStill, type ExportTarget,
+  exportStill, plannedFileName, resolveExportOptions,
+  type CompositedStill, type ExportTarget,
 } from "./still-io.js";
 import { colorSpaceFor, type ExportOptions } from "@transform/still-export.js";
 import { parseShot } from "@transform/shot.js";
@@ -636,9 +640,29 @@ ipcMain.handle("still:export", async (_e, req: {
     alpha: req.alpha === true,
     colorSpace: colorSpaceFor(req.colorSpace),
   };
+  // "Save As…" (STC-296's right-click menu). The renderer asked to choose; it
+  // does not get to say WHAT was chosen. Main puts the panel up, and the path
+  // that comes back is the privileged `explicitFile` — the same division
+  // `still:writeShot` makes, where the renderer names regions and never a
+  // document.
+  let explicitFile: string | undefined;
+  if (req.target.saveAs === true) {
+    const parent = BrowserWindow.getFocusedWindow() ?? win;
+    const suggested = plannedFileName(options, req.info, { width: req.width, height: req.height });
+    const picked = await (parent
+      ? dialog.showSaveDialog(parent, { title: "Save Still", defaultPath: suggested })
+      : dialog.showSaveDialog({ title: "Save Still", defaultPath: suggested }));
+    // Cancelling is an answer, not a failure: it must not fall through to a
+    // silent save in the destination folder, which is the one outcome someone
+    // who opened this dialog has ruled out.
+    if (picked.canceled || !picked.filePath) return { ok: false, cancelled: true };
+    explicitFile = picked.filePath;
+  }
+
   try {
     const r = await exportStill((params) => sup!.exportStill(params),
                                 { still, target: req.target, options, info: req.info,
+                                  ...(explicitFile ? { explicitFile } : {}),
                                   ...(fallbackDir ? { fallbackDir } : {}) },
                                 // `stored`, never the merged options: the
                                 // destination folder and the strip are read
@@ -675,6 +699,73 @@ ipcMain.handle("still:chooseDestination", async () => {
   const destination = filePaths[0];
   writeSettings(app.getPath("userData"), { still: { ...readSettings(app.getPath("userData")).still, destination } });
   return { destination };
+});
+
+/**
+ * The floating thumbnail's right-click menu (STC-296 follow-up).
+ *
+ * Built here and popped up here: `thumbnailMenuTemplate` decides the contents
+ * where a test can read them, and this turns them into the one thing no test
+ * can — a real `Menu`. Answers with the chosen id, or `null` when the menu was
+ * dismissed, so the renderer performs the action with the same code its own
+ * buttons use.
+ */
+ipcMain.handle("thumbnail:menu", async (e, ctx: ThumbMenuContext) => {
+  const owner = BrowserWindow.fromWebContents(e.sender) ?? undefined;
+  return await new Promise<ThumbMenuId | null>((resolve) => {
+    let answered = false;
+    const answer = (id: ThumbMenuId | null) => { if (!answered) { answered = true; resolve(id); } };
+    const menu = Menu.buildFromTemplate(thumbnailMenuTemplate({
+      redacting: ctx?.redacting === true, busy: ctx?.busy === true,
+    }).map((item) => item.type === "separator"
+      ? { type: "separator" as const }
+      : { label: item.label, enabled: item.enabled !== false, click: () => answer(item.id) }));
+    // `callback` fires on dismissal too, and AFTER any click — so a menu closed
+    // without a choice still settles the promise. Without it the renderer waits
+    // forever on an `await` for a menu that is no longer on screen, which is
+    // the unbounded-wait trap this repo keeps re-learning.
+    menu.popup({ ...(owner ? { window: owner } : {}), callback: () => answer(null) });
+  });
+});
+
+/**
+ * Show a SHOT's own directory in the Finder.
+ *
+ * Distinct from `still:reveal`, which shows the last saved file: a thumbnail
+ * that has not settled yet has saved nothing, and revealing some earlier
+ * shot instead of the one under the pointer would be worse than refusing.
+ * `insideTakesRoot` for the same reason every other renderer-named path gets
+ * it — a prefix test passes a `..` segment.
+ */
+ipcMain.handle("still:revealShot", async (_e, dir: string) => {
+  if (typeof dir !== "string" || !insideTakesRoot(process.env, dir) || !existsSync(dir)) return false;
+  shell.showItemInFolder(dir);
+  return true;
+});
+
+/**
+ * Throw a shot away (STC-296's right-click Delete).
+ *
+ * To the TRASH, never `rm`, and with no confirmation. `recorder:deleteTake`
+ * puts a modal in front of the same call and that is right there — a recording
+ * is minutes of work and the library is a place you browse. A shot whose panel
+ * is still on screen is seconds old with the pointer already on it, and the
+ * Trash is what makes "no confirmation" safe rather than reckless.
+ *
+ * The caller is responsible for having stopped its own settle first: this
+ * removes the directory the panel would otherwise export from.
+ */
+ipcMain.handle("still:deleteShot", async (_e, dir: string) => {
+  if (typeof dir !== "string" || !insideTakesRoot(process.env, dir)) {
+    return { ok: false, detail: "not a shot this app wrote" };
+  }
+  if (!existsSync(dir)) return { ok: true };
+  try {
+    await shell.trashItem(dir);
+    return { ok: true };
+  } catch (err: any) {
+    return { ok: false, detail: String(err?.message ?? err) };
+  }
 });
 
 /** Show the last SAVED still in the Finder. Takes no path — see `lastStillFile`. */

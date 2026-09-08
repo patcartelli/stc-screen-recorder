@@ -21,6 +21,14 @@ contextBridge.exposeInMainWorld("thumb", {
     ipcRenderer.invoke("still:writeShot", dir, redactions),
   exportStill: (req: Record<string, unknown>) => ipcRenderer.invoke("still:export", req),
   reveal: () => ipcRenderer.invoke("still:reveal"),
+  // The right-click menu (STC-296 follow-up). Main builds and pops it up and
+  // answers with the chosen id, so this window never holds a `Menu` and the
+  // template stays checkable in one place.
+  menu: (ctx: { redacting: boolean; busy: boolean }) => ipcRenderer.invoke("thumbnail:menu", ctx),
+  // A DIRECTORY, which main validates against the recordings root before it
+  // touches anything — the renderer names a take, never a path to act on.
+  revealShot: (dir: string) => ipcRenderer.invoke("still:revealShot", dir),
+  deleteShot: (dir: string) => ipcRenderer.invoke("still:deleteShot", dir),
   // Fire-and-forget notices to the window that owns this panel
   // (`thumbnail-window.ts`), not request/response: it reacts by resizing or
   // destroying the window, and has nothing to hand back.
