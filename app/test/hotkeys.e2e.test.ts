@@ -29,8 +29,6 @@ const FAKE_HELPER = join(root, "app", "test", "_fake-helper.mjs");
 let app: ElectronApplication | undefined;
 afterEach(async () => { await app?.close().catch(() => {}); app = undefined; });
 
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
 interface Launched {
   win: Page;
   recordings: string;
@@ -221,12 +219,25 @@ describe("the menu bar", () => {
     }
     const { win } = await launch();
     await win.close();
-    await sleep(500);
+
+    // The window really is gone first. Without this the Dock assertion below
+    // could fail for a completely different reason — a window that survived —
+    // and read as "the Dock did not hide". A positive discriminator, not a wait.
+    await expect.poll(() => app!.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length),
+                      { timeout: 10_000 }).toBe(0);
+
     expect(await trayAlive()).toBe(true);
     expect(await isRegistered(DEFAULT_SHORTCUTS.region!)).toBe(true);
+
     // And the Dock icon is gone, which is what "runs without a window" means
     // to someone looking at their Dock.
-    expect(await app!.evaluate(({ app: a }) => a.dock?.isVisible() ?? true)).toBe(false);
+    //
+    // POLLED, not read once. `dock.hide()` is an activation-policy change, and
+    // AppKit applies it on its own schedule — a single read taken immediately
+    // after the last window closed saw the old value on CI while every other
+    // assertion in this file passed. A fixed sleep would only move the race.
+    await expect.poll(() => app!.evaluate(({ app: a }) => a.dock?.isVisible() ?? true),
+                      { timeout: 10_000 }).toBe(false);
   }, 120_000);
 });
 
