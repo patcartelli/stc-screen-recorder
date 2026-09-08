@@ -50,15 +50,39 @@ grey halo means colour crept in under zero alpha (`bgraFromMask`).
 
 ## 2. The Dock — it should go away
 
+**This one is UNVERIFIED and is the reason this section exists.** On the GitHub
+macOS runner, `dock.isVisible()` stayed `true` with no window left — twice, once
+as a single read and once through a full 10 s poll (runs 34243729730 and
+34244375788) — while the app was demonstrably still running, still had its
+menu-bar item, and still held its shortcuts. The window count really was zero in
+both. So either `dock.hide()` does not take on that runner, or the runner's
+session does not present apps the way a desk does. **Nobody has yet watched a
+real Dock.** Take this step slowly and believe what you see over what the code
+intends.
+
 1. Launch. There is a Dock icon and a window.
-2. Close the window (⌘W). **The Dock icon disappears within a moment; the app
-   keeps running.**
+2. Close the window (⌘W). **Does the Dock icon disappear?** The app should keep
+   running either way — check the menu-bar item is still there.
 3. Menu bar → Open Library. The Dock icon comes back with the window, and the
    window comes to the FRONT — not behind whatever you were using.
 4. Menu bar → Quit. The app ends and the menu-bar item goes.
 
-If step 2 leaves the Dock icon, `setDockVisible(false)` is not being reached —
-check that `window-all-closed` still returns early only on non-darwin.
+**If step 2 leaves the Dock icon on a real Mac too**, this is a product bug, not
+a test artefact, and it is worth knowing WHICH of two things it is before
+touching anything:
+
+* `setDockVisible(false)` is not being reached — check that `window-all-closed`
+  still returns early only on non-darwin, and that `app.dock` is not undefined.
+* It is reached and macOS declines. AppKit does not always honour a
+  Regular → Accessory change, notably while the app is the active application —
+  which is exactly the state a runner with nothing else open is in, and a
+  plausible reading of the CI result. If that is what a real Mac shows too, the
+  fix is to make the change when the app RESIGNS active, not when the last
+  window closes.
+
+Try both: close the window while the recorder is frontmost, and again after
+clicking away to another app first. If only the second hides the Dock, the
+second bullet is the answer and the code needs to move.
 
 ## 3. The three hotkeys, with the app in the background
 
