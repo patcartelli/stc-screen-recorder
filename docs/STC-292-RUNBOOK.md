@@ -60,29 +60,49 @@ session does not present apps the way a desk does. **Nobody has yet watched a
 real Dock.** Take this step slowly and believe what you see over what the code
 intends.
 
+```
+helper/build.sh          # once, if the helper is not already built
+npm run app:start
+```
+
 1. Launch. There is a Dock icon and a window.
-2. Close the window (⌘W). **Does the Dock icon disappear?** The app should keep
-   running either way — check the menu-bar item is still there.
-3. Menu bar → Open Library. The Dock icon comes back with the window, and the
+2. **Close the window with ⌘W, and keep watching the Dock for about five
+   seconds.** The recorder is necessarily frontmost at this moment — you cannot
+   press ⌘W on an app that is not — and that is the point: this is the arm where
+   the policy change happens while the app is ACTIVE.
+   * **Icon goes** → it works on a real Mac and CI was an artefact. Skip to 4.
+   * **Icon stays** → do not stop here; step 3 is what tells you which bug it is.
+3. **Now click another app** — Finder, Safari, anything — so the recorder
+   resigns active, and watch the Dock again.
+   * **Icon goes only now** → macOS declined the change while the app was
+     active, and accepted it once it was not. This is the answer, and it is a
+     PRODUCT bug: `setDockVisible(false)` has to run when the app resigns
+     active as well as when the last window closes. Say so and it gets fixed.
+   * **Icon still there** → not the active-application story. Check the
+     menu-bar item still opens and the hotkeys still fire (they should — that
+     part is proven), then report it: the next step is instrumenting
+     `setDockVisible` to say whether it ran and what `app.dock` was, because
+     the remaining candidate is that it is never reached or throws.
+4. Menu bar → Open Library. The Dock icon comes back with the window, and the
    window comes to the FRONT — not behind whatever you were using.
-4. Menu bar → Quit. The app ends and the menu-bar item goes.
+5. Menu bar → Quit. The app ends and the menu-bar item goes.
 
-**If step 2 leaves the Dock icon on a real Mac too**, this is a product bug, not
-a test artefact, and it is worth knowing WHICH of two things it is before
-touching anything:
+**An objective reading, if you would rather not judge by eye.** With no window
+open:
 
-* `setDockVisible(false)` is not being reached — check that `window-all-closed`
-  still returns early only on non-darwin, and that `app.dock` is not undefined.
-* It is reached and macOS declines. AppKit does not always honour a
-  Regular → Accessory change, notably while the app is the active application —
-  which is exactly the state a runner with nothing else open is in, and a
-  plausible reading of the CI result. If that is what a real Mac shows too, the
-  fix is to make the change when the app RESIGNS active, not when the last
-  window closes.
+```
+osascript -e 'tell application "System Events" to get background only of process "Electron"'
+```
 
-Try both: close the window while the recorder is frontmost, and again after
-clicking away to another app first. If only the second hides the Dock, the
-second bullet is the answer and the code needs to move.
+`true` means macOS has the app as an accessory — the Dock icon is gone and the
+policy change took. `false` means it did not. The first run raises an Automation
+prompt for the terminal; allow it. (`"Electron"` is the process name for a dev
+run; a packaged build would be named after the app.)
+
+**Why this matters beyond tidiness.** The Dock icon is half of the menu-bar-first
+decision. The other half — no window, still running, hotkeys still bound — is
+proven by `app/test/hotkeys.e2e.test.ts` and holds. Nothing about capture breaks
+if the icon stays; it just is not the app that was designed.
 
 ## 3. The three hotkeys, with the app in the background
 
