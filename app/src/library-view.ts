@@ -62,6 +62,7 @@ export interface LibraryCallbacks {
  * longer contains it.
  */
 let painting: IntersectionObserver | undefined;
+let fallbackTimer: number | undefined;
 
 const el = <K extends keyof HTMLElementTagNameMap>(
   tag: K, className?: string, text?: string,
@@ -108,15 +109,59 @@ function thumb(item: LibraryItem, cb: LibraryCallbacks): HTMLElement {
   // Deferred until the tile is actually on screen — see `painting`.
   painting?.observe(box);
   box.dataset.paint = "pending";
-  paintQueue.set(box, () => Promise.resolve(cb.paintThumbnail(item, img)).catch(() => {
+  paintQueue.set(box, () => Promise.resolve(cb.paintThumbnail(item, img)).catch((e) => {
     box.classList.add("empty");
+    box.dataset.paint = "failed";
     img.remove();
+    // Reported, not swallowed. A tile that cannot draw costs its picture and
+    // nothing else — that part is deliberate — but the FAILURE being silent
+    // meant a CI run where no thumbnail was ever written looked exactly like
+    // one where the tile was simply never scrolled into view, and those are
+    // different bugs. CLAUDE.md's own rule: a diagnostic that lies is worse
+    // than one that admits ignorance.
+    console.error(`[library] could not draw a thumbnail for ${item.id}:`, e);
   }));
   return box;
 }
 
 /** What each pending tile should do once it is visible. Cleared with the observer. */
 const paintQueue = new WeakMap<HTMLElement, () => Promise<void>>();
+
+/**
+ * How long to wait for the observer before painting what is plainly on screen
+ * anyway.
+ *
+ * `IntersectionObserver` not firing was the CI failure this exists for: the
+ * grid drew, the badges were right, and no thumbnail was ever rendered — which
+ * left three tests waiting twenty seconds for a `thumb.png` that could not
+ * arrive. Whatever the runner's reason (an occluded or never-composited
+ * window), a tile that the observer forgets is a PERMANENTLY blank tile, and
+ * blank is indistinguishable from "not scrolled to yet".
+ *
+ * So laziness is an optimisation rather than a correctness dependency: after
+ * this long, any pending tile whose box actually intersects the viewport is
+ * painted. Only those — a blanket sweep would paint all 500 and defeat the
+ * point.
+ */
+const PAINT_FALLBACK_MS = 400;
+
+/** Is this tile's box within the viewport right now, by geometry alone? */
+function onScreen(box: HTMLElement): boolean {
+  const r = box.getBoundingClientRect();
+  if (r.width === 0 && r.height === 0) return false;
+  const h = window.innerHeight || document.documentElement.clientHeight;
+  const w = window.innerWidth || document.documentElement.clientWidth;
+  return r.bottom > 0 && r.top < h && r.right > 0 && r.left < w;
+}
+
+/** Paint one pending tile, exactly once. */
+function paintNow(box: HTMLElement): void {
+  const run = paintQueue.get(box);
+  if (!run) return;
+  paintQueue.delete(box);
+  box.dataset.paint = "done";
+  void run();
+}
 
 function titleFor(item: LibraryItem): HTMLElement {
   const title = el("div", "libtitle");
@@ -195,6 +240,7 @@ function tile(item: LibraryItem, cb: LibraryCallbacks): HTMLElement {
 export function renderLibrary(host: HTMLElement, list: LibraryList,
                               cb: LibraryCallbacks): void {
   painting?.disconnect();
+  clearTimeout(fallbackTimer);
   // `rootMargin` paints a screenful ahead, so a tile is ready by the time it
   // arrives rather than popping in after it. IntersectionObserver is absent
   // under some test runners; falling back to painting immediately keeps the
@@ -205,8 +251,7 @@ export function renderLibrary(host: HTMLElement, list: LibraryList,
           if (!e.isIntersecting) continue;
           const box = e.target as HTMLElement;
           obs.unobserve(box);
-          const run = paintQueue.get(box);
-          if (run) { box.dataset.paint = "done"; void run(); }
+          paintNow(box);
         }
       }, { rootMargin: "200px" })
     : undefined;
@@ -227,14 +272,21 @@ export function renderLibrary(host: HTMLElement, list: LibraryList,
   grid.id = "libgrid";
   for (const item of list.items) grid.append(tile(item, cb));
   host.append(grid);
-  // No observer (no IntersectionObserver in this environment): paint the lot,
-  // rather than leaving every tile blank forever.
+  // No observer at all in this environment: paint the lot, rather than
+  // leaving every tile blank forever.
   if (!painting) {
-    for (const box of grid.querySelectorAll<HTMLElement>(".libthumb")) {
-      const run = paintQueue.get(box);
-      if (run) { box.dataset.paint = "done"; void run(); }
-    }
+    for (const box of grid.querySelectorAll<HTMLElement>(".libthumb")) paintNow(box);
+    return;
   }
+  // And a backstop for an observer that exists but never calls back — see
+  // PAINT_FALLBACK_MS. Only the tiles genuinely on screen, so a long library
+  // still paints as it is scrolled.
+  clearTimeout(fallbackTimer);
+  fallbackTimer = setTimeout(() => {
+    for (const box of grid.querySelectorAll<HTMLElement>(".libthumb")) {
+      if (box.dataset.paint === "pending" && onScreen(box)) paintNow(box);
+    }
+  }, PAINT_FALLBACK_MS) as unknown as number;
 
   for (const b of list.invalid) {
     host.append(el("div", "broken", `${b.name} — ${b.reason}`));

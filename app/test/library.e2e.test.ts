@@ -26,7 +26,7 @@ const FAKE_HELPER = join(root, "app", "test", "_fake-helper.mjs");
 let app: ElectronApplication | undefined;
 afterEach(async () => { await app?.close().catch(() => {}); app = undefined; });
 
-interface Launched { win: Page; recordings: string }
+interface Launched { win: Page; recordings: string; errors: string[] }
 
 /** `seed` populates the recordings root before Electron ever sees it. */
 async function launch(seed: (recordings: string) => void): Promise<Launched> {
@@ -48,8 +48,26 @@ async function launch(seed: (recordings: string) => void): Promise<Launched> {
     },
   });
   const win = await app.firstWindow();
+  // Collected so a failing poll can SAY why rather than just timing out. The
+  // thumbnail path deliberately swallows a render failure — a tile that cannot
+  // draw must cost its picture and nothing else — which on CI made "the render
+  // threw" and "the tile was never painted" look identical for twenty seconds.
+  const errors: string[] = [];
+  win.on("console", (m) => { if (m.type() === "error") errors.push(m.text()); });
+  win.on("pageerror", (e) => errors.push(String(e)));
   await win.waitForSelector("#capturestill");
-  return { win, recordings };
+  return { win, recordings, errors };
+}
+
+/** Poll for a cached thumbnail, and report the renderer's own errors if it never arrives. */
+async function expectThumbnail(dir: string, errors: string[]): Promise<void> {
+  try {
+    await expect.poll(() => existsSync(join(dir, THUMBNAIL_FILE)), { timeout: 20_000 }).toBe(true);
+  } catch (e) {
+    throw new Error(`no ${THUMBNAIL_FILE} in ${dir} after 20s. Renderer errors:\n`
+      + (errors.length ? errors.join("\n") : "(none — the tile was never painted at all)")
+      + `\n${String(e)}`);
+  }
 }
 
 /** The badges currently drawn, in grid order. */
@@ -136,15 +154,14 @@ describe("the library grid", () => {
 
 describe("decorated thumbnails", () => {
   test("a still's picture is rendered and cached beside its document", async () => {
-    const { recordings } = await launch((dir) => {
+    const { recordings, errors } = await launch((dir) => {
       makeStillFolder("2026-09-08_12-00-00", { into: dir });
     });
     const takeDir = join(recordings, "2026-09-08_12-00-00");
 
     // Polled on the FILE, not on the <img>: the picture appearing is what the
     // cache is for, and the write is the last step of the render.
-    await expect.poll(() => existsSync(join(takeDir, THUMBNAIL_FILE)),
-                      { timeout: 20_000 }).toBe(true);
+    await expectThumbnail(takeDir, errors);
     // A real PNG, not an empty file — the main-process guard refuses anything
     // that is not, so a written file is already proof it had the magic bytes.
     expect(statSync(join(takeDir, THUMBNAIL_FILE)).size).toBeGreaterThan(0);
@@ -157,12 +174,11 @@ describe("decorated thumbnails", () => {
    * thing that would otherwise be left behind is somewhere it cannot be.
    */
   test("the cached thumbnail lives inside the take, so deleting takes it too", async () => {
-    const { recordings } = await launch((dir) => {
+    const { recordings, errors } = await launch((dir) => {
       makeStillFolder("2026-09-08_12-00-00", { into: dir });
     });
     const takeDir = join(recordings, "2026-09-08_12-00-00");
-    await expect.poll(() => existsSync(join(takeDir, THUMBNAIL_FILE)),
-                      { timeout: 20_000 }).toBe(true);
+    await expectThumbnail(takeDir, errors);
     // Nothing anywhere else: the whole cache for this shot is these bytes.
     expect(readdirSync(recordings)).toEqual(["2026-09-08_12-00-00"]);
     expect(readdirSync(takeDir).sort()).toEqual(["frame.png", "shot.json", THUMBNAIL_FILE].sort());
@@ -208,13 +224,12 @@ describe("duplicate", () => {
    * than an absence that a timing change would quietly satisfy.
    */
   test("duplicate does not carry the original's cached thumbnail across", async () => {
-    const { win, recordings } = await launch((dir) => {
+    const { win, recordings, errors } = await launch((dir) => {
       makeStillFolder("2026-09-08_12-00-00", { into: dir });
     });
     const original = join(recordings, "2026-09-08_12-00-00");
     await expect.poll(() => badges(win), { timeout: 15_000 }).toEqual(["Still"]);
-    await expect.poll(() => existsSync(join(original, THUMBNAIL_FILE)),
-                      { timeout: 20_000 }).toBe(true);
+    await expectThumbnail(original, errors);
     // A sentinel the real renderer would never produce: a 1x1 PNG.
     const SENTINEL = Buffer.from(
       "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
