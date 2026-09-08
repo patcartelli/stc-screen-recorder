@@ -37,10 +37,20 @@ export interface Settings {
    * default the next time the file is read.
    */
   shortcuts: Shortcuts;
+  /**
+   * Whether a completed still capture makes the system shutter noise
+   * (STC-292). On by default, because macOS's own screenshot does.
+   *
+   * It only ever SILENCES: with this ticked the sound still follows the Mac's
+   * "Play user interface sound effects" setting and its alert volume. There is
+   * no combination that makes a noise the system was told not to make.
+   */
+  shutterSound: boolean;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
   camera: false, displayId: null, shortcuts: { ...DEFAULT_SHORTCUTS },
+  shutterSound: true,
 };
 
 /** A display id is a positive integer; anything else is "automatic". */
@@ -96,6 +106,8 @@ export function readSettings(dir: string): Settings {
     camera: typeof doc.camera === "boolean" ? doc.camera : DEFAULT_SETTINGS.camera,
     displayId: cleanDisplayId(doc.displayId),
     shortcuts: cleanShortcuts(doc.shortcuts),
+    shutterSound: typeof doc.shutterSound === "boolean"
+      ? doc.shutterSound : DEFAULT_SETTINGS.shutterSound,
   };
 }
 
@@ -113,6 +125,11 @@ export function writeSettings(dir: string, patch: Partial<Settings>): Settings {
     camera: merged.camera === true,
     displayId: cleanDisplayId(merged.displayId),
     shortcuts: cleanShortcuts(merged.shortcuts),
+    // Not `=== true`: the default is ON, so an absent or malformed value must
+    // fall back to on rather than to silence. The camera's `=== true` is the
+    // opposite case for the opposite reason — it defaults off because it turns
+    // on a physical LED.
+    shutterSound: merged.shutterSound !== false,
   };
   try {
     writeFileSync(join(dir, FILE), JSON.stringify(clean, null, 2));

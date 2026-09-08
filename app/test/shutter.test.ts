@@ -18,6 +18,7 @@ import {
 const deps = (o: Partial<ShutterDeps> = {}): Partial<ShutterDeps> => ({
   env: {},
   platform: "darwin",
+  enabled: true,
   exists: () => true,
   readDefault: async () => undefined,
   play: async () => {},
@@ -49,6 +50,31 @@ describe("deciding", () => {
 
   test("an unparseable volume falls back to afplay's own default rather than to silence", () => {
     expect(decideShutter({ alertVolume: "banana" })).toEqual({ play: true, outcome: "played" });
+  });
+
+  test("the app's own switch silences it, and is named apart from the system's", () => {
+    // "You turned this off in the recorder" and "you turned off UI sounds for
+    // the whole Mac" are different states. One outcome for both would make the
+    // preference look broken to anyone reading a log after unticking one.
+    expect(decideShutter({ appEnabled: false, uiAudio: "1", alertVolume: "1" }))
+      .toEqual({ play: false, outcome: "off-in-app" });
+    expect(decideShutter({ appEnabled: false }).outcome)
+      .not.toBe(decideShutter({ uiAudio: "0" }).outcome);
+  });
+
+  test("an unset app preference is ON — the default is a noise, like macOS's own", () => {
+    expect(decideShutter({})).toMatchObject({ play: true });
+    expect(decideShutter({ appEnabled: undefined })).toMatchObject({ play: true });
+    expect(decideShutter({ appEnabled: true })).toMatchObject({ play: true });
+  });
+
+  test("the app's switch can only ever silence, never override the system's", () => {
+    // Ticked in the app + off on the Mac is still silence. There must be no
+    // combination that makes a noise the Mac was told not to make.
+    expect(decideShutter({ appEnabled: true, uiAudio: "0" }))
+      .toEqual({ play: false, outcome: "off" });
+    expect(decideShutter({ appEnabled: true, alertVolume: "0" }))
+      .toEqual({ play: false, outcome: "silent" });
   });
 
   test("suppression wins over everything and says so", () => {
@@ -107,6 +133,19 @@ describe("playing", () => {
       play: async () => { throw new Error("afplay: no audio device"); },
     }));
     expect(outcome).toBe("failed");
+  });
+
+  test("the app's switch off costs no subprocess — the answer is already settled", async () => {
+    let asked = 0;
+    let played = false;
+    const outcome = await playShutter(deps({
+      enabled: false,
+      readDefault: async () => { asked++; return "1"; },
+      play: async () => { played = true; },
+    }));
+    expect(outcome).toBe("off-in-app");
+    expect(played).toBe(false);
+    expect(asked, "asked `defaults` for a setting it did not need").toBe(0);
   });
 
   test("STC_NO_SHUTTER suppresses it without consulting anything", async () => {

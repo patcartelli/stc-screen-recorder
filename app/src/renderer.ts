@@ -15,8 +15,9 @@ interface StillResult {
   source?: string;
 }
 declare const recorder: {
-  getSettings: () => Promise<{ camera: boolean; displayId: number | null }>;
-  setSettings: (p: { camera?: boolean; displayId?: number | null }) => Promise<{ camera: boolean; displayId: number | null }>;
+  getSettings: () => Promise<{ camera: boolean; displayId: number | null; shutterSound: boolean }>;
+  setSettings: (p: { camera?: boolean; displayId?: number | null; shutterSound?: boolean })
+    => Promise<{ camera: boolean; displayId: number | null; shutterSound: boolean }>;
   devices(): Promise<{ displays?: DisplayInfo[]; stalled?: boolean; detail?: string }>;
   status(): Promise<{ state: string; pid?: number }>;
   takes(): Promise<{ takes: Take[]; invalid: { name: string; reason: string }[] }>;
@@ -1007,6 +1008,36 @@ document.addEventListener("keydown", (e) => {
   }
   void applyShortcut(action, parsed.accelerator);
 }, true);
+
+/**
+ * Whether a capture makes a noise.
+ *
+ * Here rather than only in System Settings because a capture started by a
+ * hotkey is the one the sound exists for, and someone who wants it quiet
+ * should not have to know that macOS keeps the switch under "Play user
+ * interface sound effects". It only ever silences: ticked, the sound still
+ * follows the Mac's own setting and alert volume.
+ */
+const shutterBox = $("shuttersound") as HTMLInputElement;
+
+void (async () => {
+  try {
+    shutterBox.checked = (await recorder.getSettings()).shutterSound;
+  } catch {
+    // The default is ON, so a failed read must not present as silence.
+    shutterBox.checked = true;
+  }
+})();
+
+shutterBox.addEventListener("change", async () => {
+  try {
+    // Show what was actually stored, not what was clicked.
+    shutterBox.checked = (await recorder.setSettings({ shutterSound: shutterBox.checked })).shutterSound;
+  } catch (e) {
+    shutterBox.checked = !shutterBox.checked;
+    alertUser(`Could not save the shutter sound setting: ${String(e)}`);
+  }
+});
 
 ($("resetshortcuts") as HTMLButtonElement).addEventListener("click", async () => {
   listening = undefined;

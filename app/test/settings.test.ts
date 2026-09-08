@@ -17,7 +17,7 @@ const dir = () => mkdtempSync(join(tmpdir(), "stc-settings-"));
 describe("the camera preference", () => {
   test("defaults to off when nothing has been saved", () => {
     expect(readSettings(dir()))
-      .toEqual({ camera: false, displayId: null, shortcuts: DEFAULT_SHORTCUTS });
+      .toEqual({ camera: false, displayId: null, shortcuts: DEFAULT_SHORTCUTS, shutterSound: true });
     expect(DEFAULT_SETTINGS.camera).toBe(false);
   });
 
@@ -52,7 +52,7 @@ describe("the camera preference", () => {
     const d = dir();
     writeSettings(d, { camera: true, nonsense: 1 } as never);
     expect(JSON.parse(readFileSync(join(d, "settings.json"), "utf8")))
-      .toEqual({ camera: true, displayId: null, shortcuts: DEFAULT_SHORTCUTS });
+      .toEqual({ camera: true, displayId: null, shortcuts: DEFAULT_SHORTCUTS, shutterSound: true });
   });
 
   test("an unwritable directory does not throw — the preference is not worth a crash", () => {
@@ -102,7 +102,42 @@ describe("the display preference (STC-247)", () => {
     writeSettings(d, { displayId: 2 });
     writeSettings(d, { camera: true });
     expect(readSettings(d))
-      .toEqual({ camera: true, displayId: 2, shortcuts: DEFAULT_SHORTCUTS });
+      .toEqual({ camera: true, displayId: 2, shortcuts: DEFAULT_SHORTCUTS, shutterSound: true });
+  });
+});
+
+/**
+ * The shutter sound (STC-292). Unlike the camera, this defaults ON — macOS's
+ * own screenshot makes a noise, and a capture with no window and no overlay has
+ * no other feedback at all. Which is why every fallback here goes to ON, the
+ * mirror of the camera's `=== true`.
+ */
+describe("the shutter sound preference", () => {
+  test("defaults to on", () => {
+    expect(readSettings(dir()).shutterSound).toBe(true);
+  });
+
+  test("round-trips, and being off survives a restart", () => {
+    const d = dir();
+    writeSettings(d, { shutterSound: false });
+    expect(readSettings(d).shutterSound).toBe(false);
+    writeSettings(d, { shutterSound: true });
+    expect(readSettings(d).shutterSound).toBe(true);
+  });
+
+  test("a non-boolean is not a preference, and falls back to ON not to silence", () => {
+    const d = dir();
+    for (const bad of ["false", 0, null, {}]) {
+      writeFileSync(join(d, "settings.json"), JSON.stringify({ shutterSound: bad }));
+      expect(readSettings(d).shutterSound, JSON.stringify(bad)).toBe(true);
+    }
+  });
+
+  test("a partial update leaves it alone", () => {
+    const d = dir();
+    writeSettings(d, { shutterSound: false });
+    writeSettings(d, { camera: true });
+    expect(readSettings(d).shutterSound).toBe(false);
   });
 });
 

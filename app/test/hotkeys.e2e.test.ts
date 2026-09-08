@@ -189,6 +189,27 @@ describe("the capture shortcuts", () => {
   }, 120_000);
 });
 
+describe("the shutter sound preference", () => {
+  test("is on by default, and being turned off survives a relaunch", async () => {
+    // The preference exists because the system setting is not where anyone
+    // looks for it — this is the control in the app's own window.
+    const userData = mkdtempSync(join(tmpdir(), "stc-ud-"));
+    const { win } = await launch({ userData });
+    const box = win.locator("#shuttersound");
+    expect(await box.isChecked()).toBe(true);
+
+    await box.uncheck();
+    await expect.poll(() => existsSync(join(userData, "settings.json")) &&
+                            JSON.parse(readFileSync(join(userData, "settings.json"), "utf8")).shutterSound,
+                      { timeout: 10_000 }).toBe(false);
+
+    await app!.close();
+    app = undefined;
+    const second = await launch({ userData });
+    expect(await second.win.locator("#shuttersound").isChecked()).toBe(false);
+  }, 180_000);
+});
+
 const trayAlive = () => app!.evaluate(() => {
   const t = (globalThis as any).__stcTray;
   return Boolean(t) && !t.isDestroyed();

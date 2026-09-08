@@ -56,6 +56,7 @@ export const SHUTTER_DEFAULTS_MS = 1_000;
 
 export type ShutterOutcome =
   | "played"
+  | "off-in-app"     // the app's own Shutter sound preference is unticked
   | "off"            // the user turned UI sound effects off
   | "silent"         // alert volume is zero
   | "no-sound-file"  // this macOS does not keep the sound where we look
@@ -81,8 +82,17 @@ export function decideShutter(o: {
   uiAudio?: string | undefined;
   alertVolume?: string | undefined;
   suppressed?: boolean;
+  /** The app's own preference. `undefined` means unset, which is on. */
+  appEnabled?: boolean | undefined;
 }): ShutterDecision {
   if (o.suppressed) return { play: false, outcome: "suppressed" };
+  // The app's switch is checked BEFORE the system's, and answers for itself:
+  // "you turned this off in the recorder" and "you turned off UI sounds for
+  // the whole Mac" are different states, and a single "off" would make the
+  // preference look broken to anyone reading a log after unticking one of them.
+  // Either being off is enough — this only ever silences, never overrides a
+  // system setting to make noise the Mac was told not to make.
+  if (o.appEnabled === false) return { play: false, outcome: "off-in-app" };
   const enabled = o.uiAudio === undefined ? true : o.uiAudio.trim() !== "0";
   if (!enabled) return { play: false, outcome: "off" };
   const raw = o.alertVolume === undefined ? undefined : Number(o.alertVolume.trim());
@@ -108,6 +118,8 @@ export function shutterArgs(file: string, volume?: number): string[] {
 
 export interface ShutterDeps {
   env: Record<string, string | undefined>;
+  /** The app's Shutter sound preference (settings.json). Defaults to on. */
+  enabled: boolean;
   /**
    * Injected rather than read from `process` so the whole decision runs on any
    * machine. A `skipIf(platform !== "darwin")` would leave the interesting
@@ -125,6 +137,7 @@ export interface ShutterDeps {
 
 const defaultDeps: ShutterDeps = {
   env: process.env,
+  enabled: true,
   platform: process.platform,
   exists: existsSync,
   readDefault: (key) => run("defaults", ["read", "-g", key], SHUTTER_DEFAULTS_MS)
@@ -151,13 +164,17 @@ function run(file: string, args: string[], timeout: number): Promise<string> {
 export async function playShutter(deps: Partial<ShutterDeps> = {}): Promise<ShutterOutcome> {
   const d: ShutterDeps = { ...defaultDeps, ...deps };
   const suppressed = d.env.STC_NO_SHUTTER === "1" || d.platform !== "darwin";
-  const [uiAudio, alertVolume] = suppressed
+  // Nothing is asked of `defaults` once the answer is already settled: the
+  // app's own switch being off costs no subprocess, the same way suppression
+  // does not.
+  const silent = suppressed || d.enabled === false;
+  const [uiAudio, alertVolume] = silent
     ? [undefined, undefined]
     : await Promise.all([
         d.readDefault("com.apple.sound.uiaudio.enabled"),
         d.readDefault("com.apple.sound.beep.volume"),
       ]);
-  const decision = decideShutter({ uiAudio, alertVolume, suppressed });
+  const decision = decideShutter({ uiAudio, alertVolume, suppressed, appEnabled: d.enabled });
   if (!decision.play) return decision.outcome;
 
   const file = d.env.STC_SHUTTER_SOUND ?? pickShutterSound(d.exists);

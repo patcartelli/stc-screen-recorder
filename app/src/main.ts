@@ -279,7 +279,12 @@ async function captureStill(action: CaptureAction, source: CaptureSource): Promi
     // overlay was ever on screen — so it is played on every successful shot,
     // for the same reason macOS plays one. Not awaited: the shot is already on
     // disk, and a wedged speaker must not delay the answer.
-    void playShutter().catch(() => {});
+    //
+    // The preference is read HERE rather than cached at launch, for the same
+    // reason the system's own sound setting is: someone who has just unticked
+    // it means the next capture, not the next launch.
+    void playShutter({ enabled: readSettings(app.getPath("userData")).shutterSound })
+      .catch(() => {});
     // The helper's reply is a JSON line, so its fields arrive as `unknown`;
     // named here rather than spread, so a renamed field is a type error and not
     // a silently absent one.

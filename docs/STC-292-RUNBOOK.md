@@ -22,7 +22,7 @@ file. It is the part no automated test in this repo can reach.
 ## Still unverified
 
 * **Any hotkey during a live recording.** §4.
-* **The shutter obeying the setting when it is turned OFF**, and at zero alert
+* **The shutter obeying EITHER switch when turned off**, and at zero alert
   volume. Only the on-and-audible case has been heard. §5.
 * **Rebinding by hand, and the third-party conflict wording.** §6 — step 5 needs
   a second app holding a key and cannot be produced any other way.
@@ -185,15 +185,29 @@ The system's own `Grab.aif`, at the alert volume, through `afplay`.
 
 **Step 1 is confirmed 2026-09-08 — the shutter is audible on a real capture, so
 the sound file is where this expects it to be on current macOS.** Steps 2-4, the
-ones that prove it OBEYS the setting rather than merely making a noise, are the
+ones that prove it OBEYS a setting rather than merely making a noise, are the
 part still to do.
 
-1. Sound on: System Settings › Sound › **Play user interface sound effects**
-   ticked. Press ⌃⌥⇧⌘3. **One shutter, at the same volume as macOS's own ⌘⇧3.**
-2. Untick it. Press ⌃⌥⇧⌘3 again. **Silence, and the shot is still written.**
-3. Alert volume to zero. Silence, shot still written.
-4. Re-tick. Sound returns without relaunching the app — the setting is read at
-   each capture, not cached.
+There are now TWO switches, and the app's is the one to reach for:
+
+* **Shutter sound**, in the recorder's own window beside Restore defaults. On by
+  default. Added because the first person to look for a way to silence it looked
+  here and there was nothing — a preference nobody can find is not a preference.
+* **macOS's "Play user interface sound effects"**, which still governs. The app's
+  switch can only ever SILENCE: ticked, the sound still follows the Mac's setting
+  and its alert volume. No combination makes a noise the Mac was told not to make.
+
+1. Both switches on. Press ⌃⌥⇧⌘3. **One shutter, at the same volume as macOS's
+   own ⌘⇧3.** ✅ confirmed 2026-09-08.
+2. Untick **Shutter sound** in the recorder's window. Press ⌃⌥⇧⌘3 again.
+   **Silence, and the shot is still written.** No relaunch — the preference is
+   read at each capture, not cached at launch.
+3. Re-tick it, then untick macOS's **Play user interface sound effects**
+   (System Settings › Sound). Press ⌃⌥⇧⌘3. **Silence, shot still written** —
+   this is the half that proves the system setting is honoured, which the app's
+   own switch does not test.
+4. Alert volume to zero. Silence, shot still written.
+5. Restore both. Sound returns without relaunching the app.
 
 **If it is silent at step 1**, the sound file has moved. Find it —
 `ls /System/Library/Components/CoreAudio.component/Contents/*/SystemSounds/system/`
