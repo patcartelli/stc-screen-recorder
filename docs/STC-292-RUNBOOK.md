@@ -15,10 +15,35 @@ file is for.
 | ⌃⌥⇧⌘3 with another app frontmost: fires, **no overlay**, one shutter sound, a shot on disk | ✅ §3, §5 |
 | ⌃⌥⇧⌘1 and ⌃⌥⇧⌘2 — the overlay opens and a capture completes | ✅ §3 |
 | **Shutter sound** unticked in the app: silence, and the shot still saves | ✅ §5 |
+| **The permission round trip — the third acceptance criterion** | ✅ **§7** |
 
 That is the whole full-display hotkey path, end to end, on a real Mac — the
 hotkey reaching a background app, the overlay-less capture, the sound, and the
 file. It is the part no automated test in this repo can reach.
+
+### The permission round trip passed — what it took, and what it means
+
+`tccutil reset` for `com.github.Electron`, then launched via `open` so Electron
+is its own responsible process rather than a child of the terminal. In order:
+**Files and Folders › Desktop** at launch, then **Screen Recording** on the
+first ⌃⌥⇧⌘1, then — after the quit and relaunch an SCK grant requires — the
+overlay, a region drag, and `shot.json` + `frame.png` on disk. Electron was
+never listed under Accessibility at any point.
+
+Read it precisely, because the first attempt looked identical and proved
+nothing (below): the app was **asked** for a Screen Recording grant of its own
+and the capture worked once it had one. That is the criterion. The Desktop
+prompt is a consequence of writing takes to `~/Desktop/stc`, not of how capture
+works — see §7 for why the ticket's "only Screen Recording granted" is best
+recorded as *only Screen Recording among the grants CAPTURE needs*.
+
+**The attempt that proved nothing, kept because it is the trap.** The same
+reset, run correctly, produced no prompt at all — the app was launched with
+`npm run app:start`, iTerm2 holds Screen Recording, and Electron inherited it
+as a child process. A working capture and no prompt reads as a pass and was the
+question never being asked. Only the Accessibility half survived that run,
+because a missing Accessibility grant would have failed the capture wherever
+the Screen Recording grant came from.
 
 ## Still unverified
 
@@ -27,13 +52,18 @@ file. It is the part no automated test in this repo can reach.
   system one is not, and only the second proves `com.apple.sound.uiaudio.enabled`
   is actually read. Also zero alert volume. §5 steps 3-4.
 * **Rebinding by hand, and the third-party conflict wording.** §6 — step 5 needs
-  a second app holding a key and cannot be produced any other way.
-* **The permission round trip** — `tccutil reset`, Screen Recording only, hotkey
-  to saved shot. §7. This is the ticket's third acceptance criterion and the
-  largest thing still open.
+  a second app holding a key. NB it does not need a THIRD-PARTY app: the code
+  cannot distinguish a foreign holder from a system binding absent from
+  `SYSTEM_CLAIMED`, since both are `globalShortcut.register` returning false, so
+  a shortcut assigned by hand in System Settings › Keyboard produces the same
+  wording.
+
+None of the three is an acceptance criterion; all three are now the only things
+left in this file.
 
 Everything below assumes `npm run app:build && npx electron .` (or
-`npm run app:start`) on the Mac, with the real helper built.
+`npm run app:start`) on the Mac, with the real helper built — **except §7**,
+which must be launched via `open` for exactly the reason above.
 
 ---
 
@@ -245,17 +275,94 @@ and the fix is to add it to `SYSTEM_CLAIMED`, not to widen the report.
 
 ## 7. The permission story — the acceptance criterion
 
+**PASSED on hardware 2026-09-08.** Kept in full because the route to it is the
+point: the first attempt was run correctly, produced no prompt, and proved
+nothing. Re-run this whole section after any change to how the app is launched
+or where it writes.
+
 The one that needs a clean machine, or a reset.
 
+**The bundle id is `com.github.Electron`.** `npm run app:start` is
+`electron .` with no packaging step, so macOS attributes every grant to
+Electron.app itself, not to anything named after this project. Confirm it
+rather than trusting this line:
+
 ```
-tccutil reset ScreenCapture <bundle-id>
-tccutil reset Accessibility <bundle-id>
+/usr/libexec/PlistBuddy -c 'Print CFBundleIdentifier' \
+  node_modules/electron/dist/Electron.app/Contents/Info.plist
 ```
+
+**Quit the recorder — and note that closing its window is not quitting it.**
+This ticket made the app menu-bar-first, so ⌘W leaves it running with its
+menu-bar item and its hotkeys still bound. Use the menu-bar icon (the four
+corner brackets) › **Quit stc recorder**, or ⌘Q with a recorder window
+frontmost, or Ctrl+C in the terminal running `npm run app:start`.
+
+Then confirm nothing is lingering. A leftover `electron .` holds the display,
+so the first capture after the reset fails as `-3805` — which reads as "the
+grant did not work" and is not that at all:
+
+```
+ps -Ao pid,command | grep '[s]tc-screen-recorder/node_modules/electron'
+```
+
+No output means you are clear. A line means it is still up: the first column
+is the PID, so `kill <pid>` and run the check again.
+
+Then:
+
+```
+tccutil reset ScreenCapture com.github.Electron
+tccutil reset Accessibility com.github.Electron
+```
+
+**Never run `tccutil reset ScreenCapture` with no bundle id** — that resets
+every app on the machine, not this one. And note the id is shared: any other
+Electron app run from a checkout on this Mac loses its grant too and will
+re-prompt.
+
+**Confirm the reset took before believing anything after it.** Open System
+Settings › Privacy & Security › Screen & System Audio Recording; Electron must
+be **gone from the list**, not merely switched off. A reset that silently did
+nothing leaves every step below asserting the grant it was meant to remove.
+
+### Do NOT launch it from a terminal — that is the trap this section is for
+
+**Observed 2026-09-08: the reset was run correctly and the app was never
+prompted.** Not because the reset failed, but because `npm run app:start` makes
+Electron a CHILD of the terminal, and iTerm2 already holds Screen Recording —
+it has to, since `npm run test:capture` spawns the helper directly and the
+helper inherits the launching process's TCC identity (CLAUDE.md). The whole
+chain, terminal → node → Electron → `stc-helper`, resolved to iTerm's grant.
+No prompt, a working capture, and `com.github.Electron` being reset made no
+difference to any of it.
+
+That run tells you nothing about the acceptance criterion. It cannot: the
+question is whether the APP needs only Screen Recording, and launched this way
+the app never needed a grant of its own at all.
+
+**The tell**, in Privacy & Security › Screen & System Audio Recording: your
+terminal is listed and switched on. If it is, anything launched from it is
+borrowing that grant.
+
+So launch it the way CLAUDE.md says permission work has to be done — via
+`open`, so it is launched by launchd and is its own responsible process, which
+is the whole reason `tools/test-host` exists:
+
+```
+npm run app:build
+open -a "$(pwd)/node_modules/electron/dist/Electron.app" --args "$(pwd)"
+```
+
+Safe to launch detached from the checkout: the helper binary is resolved from
+`import.meta.url` (`app/src/main.ts`'s `HELPER`) and takes go to
+`~/Desktop/stc` (`takesRoot`), so neither depends on the working directory.
 
 Then, **without ever running a recording**:
 
-1. Launch. Grant Screen Recording when asked (or in System Settings ›
-   Privacy & Security › Screen & System Audio Recording).
+1. Grant Screen Recording when asked — and being ASKED is itself half the
+   result. If no prompt appears, stop: something is still inheriting a grant,
+   and every step below is measuring that instead.
 2. Do **not** grant Accessibility. Confirm the app is not even listed under
    Privacy & Security › Accessibility.
 3. Press ⌃⌥⇧⌘1. The overlay appears, a region is captured, `shot.json` and
@@ -268,6 +375,53 @@ any of this — which is why media keys are refused as bindings
 (`hotkeys.ts`, `needs-accessibility`): Electron registers them through a
 CGEventTap, and binding one would quietly reintroduce the dependency this
 criterion exists to rule out.
+
+### The criterion says "only Screen Recording" and that is not literally true
+
+**Observed 2026-09-08, launched via `open`:** the first prompt is not Screen
+Recording at all. It is **Files and Folders › Desktop**, at launch, because
+takes live in `~/Desktop/stc` (`takesRoot`) and the app enumerates that folder
+for the take library before anything is captured. Desktop is TCC-protected
+alongside Documents and Downloads.
+
+Launched from a terminal you never see it — the terminal already has Desktop
+access and the app inherits it — which is the same borrowed-grant effect that
+hid the Screen Recording question, showing up on a second service.
+
+It is not a bug and nothing here should change to avoid it: `~/Desktop/stc`
+over a temp dir is a deliberate decision (CLAUDE.md, "a take is a deliverable,
+not scratch"), and a Files and Folders prompt is an ordinary thing for an app
+that writes where the user can find its output.
+
+But it does mean the ticket's wording — "install, hit the hotkey, and get a
+screenshot with only Screen Recording granted" — is not literally achievable.
+The honest version of the criterion is **only Screen Recording among the
+grants the CAPTURE needs**: no Accessibility, no Input Monitoring, no
+automation. Desktop access is a consequence of where output is written, not of
+how capture works. Record the pass in those terms rather than pretending the
+prompt did not appear.
+
+**Expect the Screen Recording prompt LATER**, on the first ⌃⌥⇧⌘1 — TCC asks
+only when something tries to capture, not at launch. And expect that first
+capture to fail even after you allow it: a ScreenCaptureKit grant does not
+apply to a running process. Quit properly (menu-bar › Quit, not ⌘W), relaunch
+with the same `open` command, and press again. That second press is the one
+that must produce a shot.
+
+### The cheaper check, if the reset is not to hand
+
+The criterion's substance is that capture does not DEPEND on Accessibility, and
+that can be falsified without resetting anything. Electron is probably already
+listed under Privacy & Security › Accessibility from the recorder's event tap —
+which is exactly why step 2 above says "without ever running a recording".
+
+Toggle Accessibility **off** for Electron, quit, relaunch, press ⌃⌥⇧⌘1. A shot
+on disk means the hotkey path does not need the grant.
+
+This is NOT a substitute for the reset: it leaves the fresh-install half — that
+a user who has never recorded is never prompted for Accessibility and never
+appears in that list at all — unproven. It rules out the thing that would be a
+bug; the reset proves the story the ticket actually asks for.
 
 ## 8. What is deliberately not here
 
