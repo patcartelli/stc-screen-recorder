@@ -104,3 +104,20 @@ jq '.stop' ~/Desktop/stc/<take>/anchors.json
 Paste the `devices` listing, the grant test's stderr line, and the four
 outcomes (picked display previewed/exported; Automatic; both unplug arms)
 into STC-247. CLAUDE.md's row → done with the date and what was watched.
+
+## Results — run 2026-09-08 on the Mac, two displays
+
+| step | result |
+|---|---|
+| 1 `devices` | HP Z27 id 4 **main** @ 0,0 1920×1080 pt (3840×2160 px); Built-in Retina Display id 1 @ 1920,0 1800×1169 pt (3600×2338 px). The external is main; the built-in sits to its right. |
+| 2 grant test | both pass. Target was the built-in (non-main): 24 frames / 241 pointer events in 3 s, 36 outside the display (the mouse started on the HP, where the terminal is). Bogus id refused with `display-not-found`, helper idle after. |
+| 3 picked take | `2026-09-08_10-07-24`, built-in picked, 21.7 s, 1723 pointer events. `anchors.display` = id 1 @ 1920,0 1800×1169; capture 3326×2160 (scaled under the 4K cap). Preview showed the built-in's content. `export-one.mjs` 15 s WATCHED: cursor where the pointer was, no whole-screen offset. |
+| 3 Automatic | `2026-09-08_10-17-06`: id 4 @ 0,0 — the HP, main and listed first. Observed order, not a promise. |
+| 4 unplug, HP recorded | alert shown, take ended itself, `stop.reason: display-reconfigured`. |
+| 4 unplug, built-in recorded | same outcome with the captured display still present — P7's "correct and annoying", recorded as designed. |
+
+Two things noticed on the way that are NOT this ticket: `export-one.mjs` prints only its
+usage line for a wrong path (the mp4 instead of its folder, or a path missing its leading
+slash), which cost two tries — it should say what it could not find. And with the lid OPEN
+the camera opened and delivered no frames for the whole first take (STC-286's watchdog
+fired at 3 s); the device it opened was not captured. Both are follow-ups.
