@@ -233,6 +233,9 @@ final class CameraCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
     }
 
     /// Exact PTS in nanoseconds, as pure integer arithmetic — no `Double`.
+    /// SPACE: `CMTime` → session ns (`- t0Ns` at the call site). No timebase
+    /// is involved — see `transform/src/spaces.ts` for the whole vocabulary.
+    ///
     /// `CMTimeConvertScale` rescales the `CMTime`'s existing timescale to
     /// 1_000_000_000 (often a no-op: capture buffers commonly already carry
     /// a nanosecond timescale), and the result's `.value` IS the nanosecond

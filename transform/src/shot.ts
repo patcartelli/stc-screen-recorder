@@ -1,4 +1,5 @@
 import type { CursorShape } from "./types.js";
+import type { Rect } from "./spaces.js";
 import {
   ANNOTATION_TEXT_SIZES, ANNOTATION_WEIGHTS, MAX_ANNOTATION_TEXT,
   type Annotation, type AnnotationTextSize, type AnnotationWeight, type BoxShape,
@@ -30,7 +31,9 @@ export type DecorationMode =
   | "window-shadow-custom-background";
 export type CanvasPreset = "natural" | "16:9" | "4:3" | "1:1";
 
-export interface Rect { x: number; y: number; width: number; height: number }
+// Geometry types have ONE declaration (STC-314). Re-exported because
+// `Rect` has been part of this module's surface since shot-1.
+export type { Rect } from "./spaces.js";
 
 export interface ShotDisplay {
   id: number;

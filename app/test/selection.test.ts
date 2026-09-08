@@ -1,6 +1,6 @@
 import { describe, test, expect } from "vitest";
 import {
-  reduce, confirm, initialState, dragRect, resizeRect, moveRect, roundRect,
+  reduce, confirm, initialState, dragRect, resizeRect, moveRect, snapRectEdges,
   dominantDisplay, toDisplayLocal, windowUnderPoint, intersect, pixelSize,
   MIN_SELECTION_POINTS, NUDGE_POINTS_SHIFT,
   type SelectionState, type SelectionContext, type SelectionEvent, type Rect,
@@ -128,7 +128,7 @@ describe("geometry", () => {
 
   test("rounding keeps the far edge where it was, not the width", () => {
     // Naively rounding x and width separately loses a point here.
-    expect(roundRect({ x: 10.6, y: 0, width: 100.1, height: 10 }))
+    expect(snapRectEdges({ x: 10.6, y: 0, width: 100.1, height: 10 }))
       .toEqual({ x: 11, y: 0, width: 100, height: 10 });
   });
 

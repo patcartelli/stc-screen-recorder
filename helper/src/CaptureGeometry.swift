@@ -8,6 +8,10 @@ let MAX_CAPTURE_HEIGHT = 2160
 
 /// Capture dimensions for a display of the given pixel size.
 ///
+/// SPACE: display pixels → capture pixels. `transform/src/spaces.ts` names
+/// every space and owns every conversion the transform can reach; this clamp
+/// cannot move there because only the helper knows the encode ceiling applies.
+///
 /// Not hypothetical rounding: this machine's built-in display is 6016x3384, so
 /// capturing native would silently land on the software path and never reach
 /// 60 fps. Aspect ratio is preserved; both dimensions are floored to even

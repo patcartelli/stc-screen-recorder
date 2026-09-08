@@ -1,5 +1,9 @@
 import type { CursorState, CursorStyle, Project, Session } from "./types.js";
 import { frameIndexAt, tickOf } from "./time.js";
+import {
+  displayToOutput, fixedCornerPipUv, mapPoint, mapVector, outputRect, roundRect,
+  uvRectToPixels,
+} from "./spaces.js";
 import { createCursorSim, type CursorSim } from "./cursor.js";
 
 /**
@@ -61,16 +65,16 @@ function pipStateAt(project: Project, session: Session, tNs: number): PipState |
   const frameIndex = frameIndexAt(frames, tNs);
   if (frameIndex === null) return null;
 
-  const width = Math.round(project.output.width * pip.widthPct);
-  const height = Math.round((width * cam.height) / cam.width);
-  return {
-    frameIndex,
-    framePtsNs: frames[frameIndex]!,
-    x: project.output.width - width - pip.marginPx,
-    y: project.output.height - height - pip.marginPx,
-    width,
-    height,
-  };
+  // A crop in UV over the output, not a corner in output pixels (STC-314):
+  // the camera lives in the same space as a zoom crop, so whatever comes to
+  // move a zoom can move the camera without a second answer to "where does
+  // the PiP go". Rounded because this rectangle places a DECODED FRAME, and a
+  // frame at a half-pixel offset is a frame resampled across every edge.
+  const rect = roundRect(uvRectToPixels(
+    fixedCornerPipUv(pip, project.output, cam),
+    outputRect(project.output),
+  ));
+  return { frameIndex, framePtsNs: frames[frameIndex]!, ...rect };
 }
 
 const simCache = new WeakMap<Session, CursorSim>();
@@ -86,25 +90,28 @@ export function render(project: Project, session: Session, tNs: number): FrameSt
   const frameIndex = frameIndexAt(session.frames, tNs);
   const s = sim.stateAt(tick);
 
-  // global points → display-local points → output pixels
-  const { display } = session.anchors;
-  const sx = project.output.width / display.pointWidth;
-  const sy = project.output.height / display.pointHeight;
+  // global points → display-local points → output pixels. spaces.ts owns the
+  // rule; this stays the only event-space conversion in the transform.
+  const m = displayToOutput(session.anchors.display, project.output);
+  const at = mapPoint(m, s);
+  // A velocity is a DIFFERENCE of global points, so it scales without
+  // translating — hence the second call rather than a flag.
+  const vel = mapVector(m, { x: s.vx, y: s.vy });
 
   return {
     tick,
     frameIndex,
     framePtsNs: frameIndex === null ? null : session.frames[frameIndex]!,
     cursor: {
-      x: (s.x - display.originX) * sx,
-      y: (s.y - display.originY) * sy,
-      vx: s.vx * sx,
-      vy: s.vy * sy,
+      x: at.x,
+      y: at.y,
+      vx: vel.x,
+      vy: vel.y,
       pressed: s.pressed,
       visible: s.visible,
       shape: s.shape,
       style: project.cursor.style,
-      pxPerPoint: project.cursor.scale * sx,
+      pxPerPoint: project.cursor.scale * m.sx,
     },
     pip: pipStateAt(project, session, tNs),
   };
