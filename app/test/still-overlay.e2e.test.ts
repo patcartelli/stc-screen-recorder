@@ -41,8 +41,11 @@ async function launch(extraEnv: Record<string, string> = {}): Promise<Launched> 
   app = await electron.launch({
     args: [root, `--user-data-dir=${mkdtempSync(join(tmpdir(), "stc-ud-"))}`],
     cwd: root,
+    // The overlay must not take input from the window server while this suite
+    // is injecting its own: a real pointermove landing mid-gesture rewrites the
+    // marquee, which is what made this file flaky on master. See overlay.ts.
     env: { ...process.env, STC_RECORDINGS_DIR: recordings, STC_HELPER_BIN: FAKE_HELPER,
-           STC_FAKE_STILL_LOG: stillLog, ...extraEnv },
+           STC_FAKE_STILL_LOG: stillLog, STC_OVERLAY_SYNTHETIC_INPUT: "1", ...extraEnv },
   });
   const win = await app.firstWindow();
   await win.waitForSelector("#capturestill");
@@ -82,6 +85,36 @@ async function send(overlay: Page, event: unknown): Promise<void> {
   await overlay.evaluate((e) => (window as any).overlay.send(e), event);
 }
 
+/**
+ * Wait until the drag has produced a selection the overlay would actually
+ * confirm, and say what it saw if it never does.
+ *
+ * Not a sleep, and not politeness: `#size` is drawn from `confirm()`'s own
+ * result (overlay.ts), so text in that chip IS the precondition Return needs.
+ * Without this the tests pressed Return on a hope — and when the hope failed
+ * they said nothing useful, because `reduce` treats an unconfirmable Return as
+ * a NO-OP: the overlay stays open, the promise never settles, and the caller
+ * waits out its own timeout with an empty string to show for it. That is how
+ * this file went red on two master runs (#209, #213) with
+ * `expected '' to contain 'macOS 14'` and no clue as to why.
+ *
+ * The failure message carries the overlay's state, so the next one names which
+ * of `confirm()`'s five refusals fired instead of leaving it to be guessed.
+ */
+async function awaitConfirmable(overlay: Page, ms = 15_000): Promise<void> {
+  const start = Date.now();
+  for (;;) {
+    if ((await overlay.textContent("#size"))?.trim()) return;
+    if (Date.now() - start > ms) {
+      const seen = await overlay.evaluate(() => JSON.stringify((window as any).__overlayState ?? null));
+      throw new Error(
+        `the drag never produced a confirmable selection within ${ms}ms — ` +
+        `Return would be a no-op and the overlay would hang. Overlay state: ${seen}`);
+    }
+    await sleep(50);
+  }
+}
+
 const readRequests = (log: string): any[] =>
   existsSync(log)
     ? readFileSync(log, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l))
@@ -102,6 +135,7 @@ describe("the selection overlay", () => {
     await send(overlay, { t: "pointerdown", at: from });
     await send(overlay, { t: "pointermove", at: to });
     await send(overlay, { t: "pointerup", at: to });
+    await awaitConfirmable(overlay);
     await send(overlay, { t: "key", key: "Enter" });
 
     await expect.poll(() => win.textContent("#stillstatus"), { timeout: 15_000 })
@@ -140,6 +174,7 @@ describe("the selection overlay", () => {
     await send(overlay, { t: "pointerdown", at: { x: b.x + 50, y: b.y + 50 } });
     await send(overlay, { t: "pointermove", at: { x: b.x + 250, y: b.y + 250 } });
     await send(overlay, { t: "pointerup", at: { x: b.x + 250, y: b.y + 250 } });
+    await awaitConfirmable(overlay);
     await send(overlay, { t: "key", key: "Escape" });
 
     await expect.poll(() => app!.windows().filter((p) => p.url().includes("overlay.html")).length,
@@ -182,6 +217,7 @@ describe("the selection overlay", () => {
     await send(overlay, { t: "pointerdown", at: { x: b.x + 10, y: b.y + 10 } });
     await send(overlay, { t: "pointermove", at: { x: b.x + 210, y: b.y + 110 } });
     await send(overlay, { t: "pointerup", at: { x: b.x + 210, y: b.y + 110 } });
+    await awaitConfirmable(overlay);
     await send(overlay, { t: "key", key: "Enter" });
 
     await expect.poll(() => win.textContent("#alert"), { timeout: 15_000 })
