@@ -221,10 +221,17 @@ describe("the post-capture floating thumbnail", () => {
     });
     const r = await captureDisplay(win);
     expect(r.ok).toBe(true);
+    // No UI ever appears for a skipped capture, so there is no window to poll
+    // for first — `noThumbnailWindow` alone would succeed on its very first
+    // check, before the silent panel has even been created, and prove
+    // nothing (the exact "success by finding nothing to do" trap CLAUDE.md
+    // warns about). Wait on the actual effect instead: the export reaching
+    // the helper.
+    await expect.poll(() => readRequests(stillLog).some((x) => x.rgba !== undefined),
+                       { timeout: 15_000 }).toBe(true);
     // A skipped panel is still, briefly, a real (hidden) window compositing in
     // the background — see thumbnail-window.ts's `silent` mode — so what is
-    // checkable is that it does not OUTLAST its own export, not that it never
-    // existed for an instant.
+    // checkable now is that it does not OUTLAST its own export.
     await noThumbnailWindow(15_000);
     // The ticket's own words are "go straight to clipboard" — never the file
     // destination, whatever the (otherwise inapplicable) settle-action says.

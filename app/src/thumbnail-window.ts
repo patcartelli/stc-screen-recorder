@@ -27,15 +27,12 @@ import { HIDE_SETTLE_MS, windowIdOf } from "./overlay-session.js";
  *
  * ## The `skip` panel drives itself
  *
- * CI's first real run (STC-296) found that a window created `show: false` and
- * never once shown cannot reliably be pushed through "hide, then send it a
- * message" the way a window that WAS visible can — the settle message this
- * side sent such a window went nowhere, with no error, and no export ever
- * reached the helper. Whether that is a missing native surface, a Chromium
- * background-priority effect, or something else was not chased further; a
- * `silent` panel instead composites and exports itself the moment it can
- * (`?silent=1`, `thumbnail-renderer.ts`), reporting only `"done"` when it is
- * finished. Nothing here ever has to talk INTO a window that was never shown.
+ * A `silent` panel is never shown at all — there is nothing to animate or
+ * expand into — so it has no reason to wait on a "painted" round trip through
+ * main the way a visible panel does before its timer can start. It composites
+ * and exports itself the moment `draw()` finishes (`?silent=1`,
+ * `thumbnail-renderer.ts`) and reports only `"done"` when it is. One fewer
+ * message crossing the process boundary for a window nobody ever sees.
  */
 
 const COLLAPSED_SIZE: Size = { width: 220, height: 150 };
@@ -182,13 +179,7 @@ class ThumbnailSession {
   private onEvent(ev: ThumbEvent): void {
     if (this.done) return;
     if (ev.kind === "painted") {
-      // Never sent by a `silent` panel — it composites and exports itself the
-      // instant it can, with no rAF/main round trip at all. That is not an
-      // optimisation: a window this never shows may never realise a native
-      // surface at all, and driving its next step from a message this side
-      // sends IT (hide, then a "settle" push) turned out not to be reliable —
-      // see the constructor's own note. Self-driving removes the dependency
-      // on this window ever being anything but a hidden compositing sandbox.
+      // Never sent by a `silent` panel — see the class doc's "drives itself".
       this.win.showInactive();
       this.armTimer();
     } else if (ev.kind === "expanded") {

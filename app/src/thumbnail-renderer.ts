@@ -58,10 +58,9 @@ const settleAction = params.get("settleAction") === "copy" ? "copy" : "save";
 const shot: Shot = parseShot(JSON.parse(params.get("shot") ?? "null"));
 /**
  * The "skip the panel" preference (STC-296): this window is never shown at
- * all, so it composites and exports itself the instant it can, rather than
- * waiting on a round trip through main. See `thumbnail-window.ts`'s header
- * for why — a window that never shows cannot reliably be driven the other
- * way, and a silent panel has nothing to show anyone regardless.
+ * all, so it composites and exports itself the instant it can rather than
+ * waiting on a "painted" round trip through main first — there is nothing to
+ * animate or expand into, so nothing to wait for.
  */
 const silent = params.get("silent") === "1";
 
