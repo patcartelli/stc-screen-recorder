@@ -4,6 +4,7 @@ import {
 import { decorationForMode, layoutStill, pxPerPointOf } from "@transform/still-decorate";
 import { renderStill, sampleRedactionFills } from "@transform/still-render";
 import { normaliseRegion, undoLast } from "@transform/still-redact";
+import { discardDirection, isDiscardSwipe, parseCorner, swipeOffset } from "./thumbnail.js";
 import { colorSpaceFor, planRender, stillIsBlocked, type ExportOptions } from "@transform/still-export";
 
 /**
@@ -22,9 +23,9 @@ import { colorSpaceFor, planRender, stillIsBlocked, type ExportOptions } from "@
  *
  * ## What is deliberately not here
  *
- * True OS drag-out, swipe-to-discard, and multiple captures stacking rather
- * than replacing are still follow-up work — see CLAUDE.md. The right-click
- * menu has landed (`thumbnail-menu.ts`). Format, quality and scale are NOT controls here either: they are
+ * True OS drag-out and multiple captures stacking rather than replacing are
+ * still follow-up work — see CLAUDE.md. The right-click menu
+ * (`thumbnail-menu.ts`) and swipe-to-discard have landed. Format, quality and scale are NOT controls here either: they are
  * `still` settings, read once from the stored preference, the same as every
  * other exit out of the app. Only the decoration MODE is a per-shot choice,
  * because the ticket names it as one ("the five output modes as a preset
@@ -76,6 +77,8 @@ const shot: Shot = parseShot(JSON.parse(params.get("shot") ?? "null"));
  * animate or expand into, so nothing to wait for.
  */
 const silent = params.get("silent") === "1";
+/** Which way this panel leaves the screen — see `discardDirection`. */
+const corner = parseCorner(params.get("corner"));
 
 /** How big the collapsed, expanded and redacting canvases are allowed to be, in CSS px. */
 const COLLAPSED_BOX = { width: 200, height: 118 };
@@ -370,6 +373,11 @@ async function settle(): Promise<void> {
 // ---- wiring ----------------------------------------------------------------
 
 card.addEventListener("click", (e) => {
+  // A swipe ends with a click event too, and expanding a panel the user has
+  // just thrown at the edge of the screen would be the opposite of what they
+  // did. `swiped` is cleared on the next pointerdown, not here, because the
+  // click arrives after pointerup.
+  if (swiped) return;
   // Once expanded, the card is a panel with its own controls; only the
   // collapsed thumbnail itself is a single big click target.
   if (!expanded && e.target !== copyBtn && e.target !== saveBtn) expand();
@@ -425,6 +433,99 @@ doneRedactBtn.addEventListener("click", (e) => { e.stopPropagation(); setRedacti
 
 closeBtn.addEventListener("click", (e) => { e.stopPropagation(); void settle(); });
 
+// ---- swipe to discard (STC-296 follow-up) ----------------------------------
+
+/** The gesture in progress, in client pixels. */
+let swipeFrom: { x: number; y: number } | undefined;
+/**
+ * The last gesture threw the shot away.
+ *
+ * Read by the `click` handler, which fires AFTER `pointerup` — so it is
+ * cleared on the next `pointerdown` rather than at the end of the swipe, or
+ * the click that concludes a swipe would expand the panel the user has just
+ * discarded.
+ */
+let swiped = false;
+
+card.addEventListener("pointerdown", (e) => {
+  swiped = false;
+  // Only the collapsed thumbnail swipes. Expanded, the card is a panel of
+  // controls and — in redact mode — a drag surface with a completely
+  // different meaning, and one drag cannot mean both.
+  if (expanded || settling) return;
+  swipeFrom = { x: e.clientX, y: e.clientY };
+  // Transition off while the card tracks the pointer; back on for the release
+  // so both outcomes animate. See `#card.dragging` in thumbnail.html.
+  card.classList.add("dragging");
+  card.setPointerCapture(e.pointerId);
+});
+
+card.addEventListener("pointermove", (e) => {
+  if (!swipeFrom) return;
+  const off = swipeOffset(e.clientX - swipeFrom.x, e.clientY - swipeFrom.y, corner);
+  // Follows the pointer only outward; a drag the wrong way leaves it put, so
+  // "you cannot discard in that direction" needs no explaining.
+  card.style.transform = off === 0 ? "" : `translateX(${off * discardDirection(corner)}px)`;
+  // Fading as it goes is what makes the threshold legible without a number on
+  // screen: by the time it is faint, releasing will throw it away.
+  card.style.opacity = off === 0 ? "" : String(Math.max(0.25, 1 - off / 260));
+});
+
+card.addEventListener("pointerup", (e) => {
+  const from = swipeFrom;
+  if (!from) return;
+  swipeFrom = undefined;
+  card.classList.remove("dragging");
+  const dx = e.clientX - from.x;
+  const dy = e.clientY - from.y;
+  if (!isDiscardSwipe(dx, dy, corner)) {
+    // Short of the threshold: back to its corner, and the click that follows
+    // is a real click, so it still expands.
+    card.style.transform = "";
+    card.style.opacity = "";
+    return;
+  }
+  swiped = true;
+  void discard();
+});
+
+// A cancelled pointer (another window taking it, the panel being hidden for a
+// capture) is not a release: put the panel back rather than leaving it
+// stranded mid-gesture with no pointerup ever coming.
+card.addEventListener("pointercancel", () => {
+  if (!swipeFrom) return;
+  swipeFrom = undefined;
+  card.classList.remove("dragging");
+  card.style.transform = "";
+  card.style.opacity = "";
+});
+
+/**
+ * Throw the shot away — the swipe's outcome, and the same thing the
+ * right-click Delete does: to the Trash, not `rm`.
+ *
+ * `settling` FIRST, before anything is awaited, for the same reason Delete
+ * does it: the timeout can fire while the trash call is in flight, and a
+ * settle that got through would export the shot being discarded.
+ */
+async function discard(): Promise<void> {
+  settling = true;
+  card.style.transform = `translateX(${420 * discardDirection(corner)}px)`;
+  card.style.opacity = "0";
+  const r = await window.thumb.deleteShot(dir);
+  if (!r.ok) {
+    // Nothing was thrown away, so the panel comes back rather than vanishing
+    // and leaving the user to guess whether the shot survived.
+    settling = false;
+    swiped = false;
+    card.style.transform = "";
+    card.style.opacity = "";
+    setStatus(`Could not discard: ${r.detail ?? "unknown error"}`);
+    return;
+  }
+  window.thumb.event({ kind: "done" });
+}
+
 /**
  * The right-click menu (STC-296's follow-up).
  *
@@ -463,15 +564,10 @@ document.addEventListener("contextmenu", (e) => {
       if (!await window.thumb.revealShot(dir)) setStatus("Nothing to show yet.");
       return;
     }
-    if (id === "delete") {
-      // `settling` FIRST, before anything is awaited: the timeout can fire
-      // while the trash call is in flight, and a settle that got through would
-      // export the shot this is throwing away.
-      settling = true;
-      const r = await window.thumb.deleteShot(dir);
-      if (!r.ok) { settling = false; setStatus(`Could not delete: ${r.detail ?? "unknown error"}`); return; }
-      window.thumb.event({ kind: "done" });
-    }
+    // The same `discard()` the swipe uses. Two ways to throw a shot away that
+    // disagreed about where it went would be the defect, not the second
+    // gesture, and the cheapest way for them not to disagree is one function.
+    if (id === "delete") await discard();
   })();
 });
 
