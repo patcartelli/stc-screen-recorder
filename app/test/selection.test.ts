@@ -383,4 +383,34 @@ describe("robustness", () => {
     const state = run(drag([100, 100], [300, 300])).state;
     expect(confirm(state, { displays: [], windows: [] })).toBeUndefined();
   });
+
+  /**
+   * The consequence of the test above, which nothing used to state.
+   *
+   * `confirm` returning undefined is not merely "no outcome yet": `reduce`
+   * makes Return a NO-OP, so the overlay stays open and `openOverlay`'s promise
+   * — the one `still:capture` awaits — is never settled by anything. A wait
+   * with no bound and no reason, which is the failure this codebase keeps
+   * re-learning.
+   *
+   * It reached CI as `expected '' to contain 'macOS 14'` on master runs #209
+   * and #213: no alert, no status, no error, because the app was still politely
+   * waiting for a selection the user had already made. `OverlaySession` now
+   * keeps its display list live so a context that settles late cannot strand a
+   * confirm; this holds the property the fix depends on.
+   */
+  test("a Return that cannot confirm is a no-op, which is what strands the caller", () => {
+    const state = run(drag([100, 100], [300, 300])).state;
+    const stale = { displays: [], windows: [] };
+    // The rect is real and large enough — only the display list is wrong.
+    expect(state.rect).toBeDefined();
+    const r = reduce(state, { t: "key", key: "Enter" }, stale);
+    expect(r.outcome).toBeUndefined();
+    expect(r.state).toEqual(state);
+    // And with the displays the user is actually looking at, the SAME state
+    // and the SAME keypress confirm. A control that differs only by the thing
+    // under test, so this cannot pass for an unrelated reason.
+    expect(reduce(state, { t: "key", key: "Enter" }, ctx).outcome)
+      .toMatchObject({ kind: "region" });
+  });
 });
