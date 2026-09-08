@@ -231,6 +231,12 @@ describe("the post-capture floating thumbnail", () => {
     expect(readdirSync(destDir).length).toBe(0);
     const exported = readRequests(stillLog).find((x) => x.rgba !== undefined);
     expect(exported?.clipboard).toBe(true);
-    expect(exported?.file).toBeUndefined();
+    // A copy still writes a file too — still-io.ts's `destinationDir`, so the
+    // pasteboard's file URL points at something real — but to the CACHE, never
+    // the chosen destination folder. `destDir` staying empty above is the
+    // proof; a cache-directory path here is expected, not a leak of the file
+    // the "straight to clipboard" wording promises not to write.
+    expect(exported?.file).toBeDefined();
+    expect(exported?.file).not.toContain(destDir);
   }, 60_000);
 });

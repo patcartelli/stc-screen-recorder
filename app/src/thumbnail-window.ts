@@ -24,6 +24,18 @@ import { HIDE_SETTLE_MS, windowIdOf } from "./overlay-session.js";
  * invisible until the renderer confirms it is done — visually gone at once,
  * while the save it promised still happens. A backstop bounds that wait: a
  * renderer that never answers must not leak a hidden window forever.
+ *
+ * ## The `skip` panel drives itself
+ *
+ * CI's first real run (STC-296) found that a window created `show: false` and
+ * never once shown cannot reliably be pushed through "hide, then send it a
+ * message" the way a window that WAS visible can — the settle message this
+ * side sent such a window went nowhere, with no error, and no export ever
+ * reached the helper. Whether that is a missing native surface, a Chromium
+ * background-priority effect, or something else was not chased further; a
+ * `silent` panel instead composites and exports itself the moment it can
+ * (`?silent=1`, `thumbnail-renderer.ts`), reporting only `"done"` when it is
+ * finished. Nothing here ever has to talk INTO a window that was never shown.
  */
 
 const COLLAPSED_SIZE: Size = { width: 220, height: 150 };
@@ -148,6 +160,7 @@ class ThumbnailSession {
         dir: opts.dir,
         shot: JSON.stringify(opts.shot),
         settleAction: opts.settleAction,
+        ...(opts.silent ? { silent: "1" } : {}),
       },
     });
     this.win.webContents.on("ipc-message", (_e, channel, ev: ThumbEvent) => {
@@ -169,7 +182,13 @@ class ThumbnailSession {
   private onEvent(ev: ThumbEvent): void {
     if (this.done) return;
     if (ev.kind === "painted") {
-      if (this.opts.silent) { this.settleAndDestroy(); return; }
+      // Never sent by a `silent` panel — it composites and exports itself the
+      // instant it can, with no rAF/main round trip at all. That is not an
+      // optimisation: a window this never shows may never realise a native
+      // surface at all, and driving its next step from a message this side
+      // sends IT (hide, then a "settle" push) turned out not to be reliable —
+      // see the constructor's own note. Self-driving removes the dependency
+      // on this window ever being anything but a hidden compositing sandbox.
       this.win.showInactive();
       this.armTimer();
     } else if (ev.kind === "expanded") {

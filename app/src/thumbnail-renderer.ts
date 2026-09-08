@@ -56,6 +56,14 @@ const params = new URLSearchParams(location.search);
 const dir = params.get("dir") ?? "";
 const settleAction = params.get("settleAction") === "copy" ? "copy" : "save";
 const shot: Shot = parseShot(JSON.parse(params.get("shot") ?? "null"));
+/**
+ * The "skip the panel" preference (STC-296): this window is never shown at
+ * all, so it composites and exports itself the instant it can, rather than
+ * waiting on a round trip through main. See `thumbnail-window.ts`'s header
+ * for why — a window that never shows cannot reliably be driven the other
+ * way, and a silent panel has nothing to show anyone regardless.
+ */
+const silent = params.get("silent") === "1";
 
 /** How big the collapsed and expanded canvases are allowed to be, in CSS px. */
 const COLLAPSED_BOX = { width: 200, height: 118 };
@@ -219,6 +227,9 @@ void (async () => {
   const bytes = await window.thumb.getFrame(dir, shot.frame.file);
   frame = await createImageBitmap(new Blob([bytes], { type: "image/png" }));
   await draw();
+  // A silent panel is never shown, so there is nothing to paint FOR — settle
+  // immediately, with no rAF and no round trip through main.
+  if (silent) { void settle(); return; }
   // Painted — safe to show without a flash of empty content.
   requestAnimationFrame(() => {
     card.classList.add("in");
