@@ -90,4 +90,9 @@ found so far; `PHASE-1.md` and `PHASE-2.md` are the phase plans as shipped;
 
 ## Licence
 
-*[not yet chosen — STC-302]*
+[PolyForm Noncommercial 1.0.0](LICENSE.md). Read it, fork it, change it, build on it — for any
+noncommercial purpose, including study, hobby projects, and use inside a school, charity or public
+body. Commercial use, including selling it or a derivative of it, is not granted here; ask.
+
+GitHub's licence detector does not recognise PolyForm, so the sidebar will say nothing. `LICENSE.md`
+is the licence.
