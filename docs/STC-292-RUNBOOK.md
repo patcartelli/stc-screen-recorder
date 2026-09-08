@@ -14,6 +14,7 @@ file is for.
 | Open Library brings the icon back and the window to the FRONT | ✅ §2 |
 | ⌃⌥⇧⌘3 with another app frontmost: fires, **no overlay**, one shutter sound, a shot on disk | ✅ §3, §5 |
 | ⌃⌥⇧⌘1 and ⌃⌥⇧⌘2 — the overlay opens and a capture completes | ✅ §3 |
+| **Shutter sound** unticked in the app: silence, and the shot still saves | ✅ §5 |
 
 That is the whole full-display hotkey path, end to end, on a real Mac — the
 hotkey reaching a background app, the overlay-less capture, the sound, and the
@@ -22,8 +23,9 @@ file. It is the part no automated test in this repo can reach.
 ## Still unverified
 
 * **Any hotkey during a live recording.** §4.
-* **The shutter obeying EITHER switch when turned off**, and at zero alert
-  volume. Only the on-and-audible case has been heard. §5.
+* **The shutter obeying MACOS's switch** — the app's own is confirmed, the
+  system one is not, and only the second proves `com.apple.sound.uiaudio.enabled`
+  is actually read. Also zero alert volume. §5 steps 3-4.
 * **Rebinding by hand, and the third-party conflict wording.** §6 — step 5 needs
   a second app holding a key and cannot be produced any other way.
 * **The permission round trip** — `tccutil reset`, Screen Recording only, hotkey
@@ -201,7 +203,7 @@ There are now TWO switches, and the app's is the one to reach for:
    own ⌘⇧3.** ✅ confirmed 2026-09-08.
 2. Untick **Shutter sound** in the recorder's window. Press ⌃⌥⇧⌘3 again.
    **Silence, and the shot is still written.** No relaunch — the preference is
-   read at each capture, not cached at launch.
+   read at each capture, not cached at launch. ✅ confirmed 2026-09-08.
 3. Re-tick it, then untick macOS's **Play user interface sound effects**
    (System Settings › Sound). Press ⌃⌥⇧⌘3. **Silence, shot still written** —
    this is the half that proves the system setting is honoured, which the app's
