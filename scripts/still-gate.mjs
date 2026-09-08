@@ -86,13 +86,79 @@ try {
   for (const mode of Object.keys(by)) {
     const p = by[mode];
     const { r, g, b, a } = p.interior;
+    // Against the probe's OWN capture colour, not one global constant: gate 1
+    // renders light and dark captures (STC-301), and a single expected fill
+    // made this loop assert that a light capture was blue. The probe carries
+    // its fill for exactly this reason.
+    const f = p.fill ?? fill;
     if (a !== 255) fail(`${mode}: the window's interior is not opaque (alpha ${a})`);
-    else if (Math.abs(r - fill.r) > 2 || Math.abs(g - fill.g) > 2 || Math.abs(b - fill.b) > 2) {
-      fail(`${mode}: the window's interior is ${r},${g},${b}, not the captured ${fill.r},${fill.g},${fill.b}` +
+    else if (Math.abs(r - f.r) > 2 || Math.abs(g - f.g) > 2 || Math.abs(b - f.b) > 2) {
+      fail(`${mode}: the window's interior is ${r},${g},${b}, not the captured ${f.r},${f.g},${f.b}` +
            " — decoration must not tint the capture");
     }
   }
   ok("every mode leaves the captured pixels exactly as they arrived");
+
+  // ── gate 1: both appearances (STC-301) ───────────────────────────────────
+  //
+  // The ticket asks for light and dark, and the reason is that the SAME bug
+  // shows up differently in each: a premultiplied-alpha mistake darkens a
+  // partially transparent edge toward black, which is glaring on a light
+  // capture and nearly invisible on a dark one — where the same class of
+  // error instead slides the edge toward white. One appearance covers half the
+  // failure.
+  //
+  // Asserted as PROPERTIES rather than against golden PNGs. The ticket names
+  // goldens; STC-291 already refused them here and CLAUDE.md records why —
+  // gradients, blurred shadows and antialiased curves are Skia's output, this
+  // project's pre-encode hashes already differ between rasterisation backends,
+  // and a committed reference would go red on a Chromium bump rather than on a
+  // regression. See docs/STC-301-GATES.md for the full disagreement.
+  for (const name of ["light", "dark"]) {
+    const p = by[`window-only@${name}`];
+    if (!p) fail(`no ${name} appearance probe — the harness stopped rendering one`);
+    const f = p.fill;
+
+    // Outside the rounded corner: nothing at all, whatever the capture's
+    // colour. A dark capture that leaked would be easy to miss by eye.
+    if (p.outsideCorner.a !== 0) {
+      fail(`window-only@${name}: alpha ${p.outsideCorner.a} outside the rounded corner`);
+    }
+
+    // The interior really is the fill, so the probe is measuring what it thinks.
+    const i = p.interior;
+    if (i.a !== 255 || Math.abs(i.r - f.r) > 2 || Math.abs(i.g - f.g) > 2 || Math.abs(i.b - f.b) > 2) {
+      fail(`window-only@${name}: the interior is ${i.r},${i.g},${i.b} at alpha ${i.a}, ` +
+           `not the capture's ${f.r},${f.g},${f.b}`);
+    }
+
+    // The edge keeps the capture's OWN colour at every alpha. This is the
+    // assertion that catches the premultiply mistake, in whichever direction
+    // it goes, because it compares against the fill rather than against black.
+    if (p.fringe.length === 0) {
+      fail(`window-only@${name}: no antialiased pixels on the corner curve — ` +
+           "there is no edge to be wrong about, so this proves nothing");
+    }
+    //
+    // The tolerance is 8, not the 24 the older fringe check uses, and the
+    // difference was MEASURED rather than chosen. Injecting the premultiply
+    // mistake drifts a light capture by 245 and a dark one by only 26 — the
+    // same bug, an order of magnitude less signal — because the furthest a
+    // near-black fill can slide toward black is its own magnitude. At 24 the
+    // dark half would have caught it by a margin of two, which is not a check
+    // anyone should rely on. A clean render drifts by 1 on both, so 8 leaves
+    // real margin in the direction that matters.
+    const drift = p.fringe
+      .map((q) => ({ q, d: Math.max(Math.abs(q.r - f.r), Math.abs(q.g - f.g), Math.abs(q.b - f.b)) }))
+      .sort((x, y) => y.d - x.d)[0];
+    if (drift.d > 8) {
+      fail(`window-only@${name}: a corner pixel is ${drift.q.r},${drift.q.g},${drift.q.b} ` +
+           `at alpha ${drift.q.a}, ${drift.d} from the capture's ${f.r},${f.g},${f.b} — ` +
+           `the edge is sliding toward ${drift.q.r < f.r ? "black" : "white"}, ` +
+           "which is a premultiplied-alpha mistake");
+    }
+    ok(`${name} appearance: ${p.fringe.length} corner pixels, worst drift ${drift.d}`);
+  }
 
   // ── annotations over a transparent mode (STC-295) ────────────────────────
   //

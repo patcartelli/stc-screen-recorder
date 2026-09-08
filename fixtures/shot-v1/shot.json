@@ -1,0 +1,37 @@
+{
+  "version": 1,
+  "kind": "window",
+  "capturedAtNs": "1725792000000000000",
+  "timebase": { "numer": 125, "denom": 3 },
+  "display": {
+    "id": 1,
+    "pointWidth": 1920,
+    "pointHeight": 1080,
+    "pixelWidth": 3840,
+    "pixelHeight": 2160,
+    "backingScale": 2,
+    "originX": 0,
+    "originY": 0,
+    "colorSpace": "kCGColorSpaceDisplayP3"
+  },
+  "window": {
+    "id": 4711,
+    "app": "Finder",
+    "title": "Downloads",
+    "bounds": { "x": 200, "y": 120, "width": 800, "height": 600 }
+  },
+  "frame": { "file": "frame.png", "width": 1600, "height": 1200, "alpha": true },
+  "cursor": { "x": 640, "y": 400, "shape": "pointingHand" },
+  "decoration": {
+    "mode": "window-shadow-background",
+    "paddingPct": 0.09,
+    "background": { "kind": "linear", "colors": ["#e9edf2", "#cfd6e0"], "angleDeg": 135 },
+    "shadow": { "offsetX": 0, "offsetY": 18, "blur": 48, "spread": 0, "opacity": 0.32 },
+    "canvas": "16:9",
+    "cursor": true,
+    "redactions": [
+      { "x": 0.1, "y": 0.2, "width": 0.3, "height": 0.05 },
+      { "x": 0.55, "y": 0.62, "width": 0.2, "height": 0.08 }
+    ]
+  }
+}

@@ -201,6 +201,29 @@ class ThumbnailSession {
   private hasPainted = false;
   /** Where in the stack this panel currently sits; 0 is the newest. */
   private stackIndex = 0;
+  /**
+   * Whether the page has loaded far enough to be listening.
+   *
+   * `webContents.send` to a renderer whose scripts have not run yet is DROPPED
+   * — silently, with no error and no queue — so a settle sent into that window
+   * is simply lost, and `SETTLE_BACKSTOP_MS` then destroys it having exported
+   * nothing.
+   *
+   * **Nothing has been observed failing here, and that is stated rather than
+   * implied.** It was STC-301 gate 4's first hypothesis, it was implemented,
+   * and the measurement did not move — the real cause was in the renderer
+   * (`runExport`'s `if (!composite) return false`, fixed by #102). The path
+   * that motivated it is gone as well: a capture used to REPLACE and settle a
+   * panel that might still be loading, and captures stack now (#104). What is
+   * left is the overflow eviction above `MAX_STACKED`, which settles the
+   * OLDEST panel and so will almost always have painted.
+   *
+   * Kept anyway because it is orthogonal to stacking and cheap, and because
+   * the renderer's own bounded wait can only run if the message ARRIVES. Read
+   * it as a guard, not as a fix for a measured fault.
+   */
+  private loaded = false;
+  private pendingSettle = false;
   private readonly corner: Corner;
   private resolveClosed!: () => void;
   private readonly closed: Promise<void>;
@@ -240,6 +263,15 @@ class ThumbnailSession {
     });
     this.win.webContents.on("ipc-message", (_e, channel, ev: ThumbEvent) => {
       if (channel === "thumbnail:event") this.onEvent(ev);
+    });
+    // The renderer registers its listeners at module scope, so this is the
+    // first moment a `send` can be heard. A settle that arrived before it is
+    // delivered here rather than lost.
+    this.win.webContents.once("did-finish-load", () => {
+      this.loaded = true;
+      if (this.pendingSettle && !this.done && !this.win.isDestroyed()) {
+        this.win.webContents.send("thumbnail:settle");
+      }
     });
     this.win.on("closed", () => {
       this.done = true; this.clearTimers();
@@ -337,7 +369,11 @@ class ThumbnailSession {
     this.clearTimers();
     this.hide();
     if (this.win.isDestroyed()) { this.destroy(); return; }
-    this.win.webContents.send("thumbnail:settle");
+    // Held until the page is listening, rather than sent into a void — see
+    // `loaded`. The backstop is armed either way, so a page that never loads
+    // still gets torn down instead of leaking a hidden window.
+    if (this.loaded) this.win.webContents.send("thumbnail:settle");
+    else this.pendingSettle = true;
     this.backstop = setTimeout(() => this.destroy(), SETTLE_BACKSTOP_MS);
   }
 

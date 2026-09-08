@@ -1,0 +1,49 @@
+{
+  "canvas": {
+    "width": 2773,
+    "height": 1560
+  },
+  "content": {
+    "x": 587,
+    "y": 180,
+    "width": 1600,
+    "height": 1200
+  },
+  "alpha": false,
+  "redactions": [
+    {
+      "x": 747,
+      "y": 420,
+      "width": 480,
+      "height": 60
+    },
+    {
+      "x": 1467,
+      "y": 924,
+      "width": 320,
+      "height": 96
+    }
+  ],
+  "annotations": [],
+  "shadow": {
+    "offsetX": 0,
+    "offsetY": 36,
+    "blur": 96,
+    "spread": 0,
+    "opacity": 0.32
+  },
+  "background": {
+    "kind": "linear",
+    "colors": [
+      "#e9edf2",
+      "#cfd6e0"
+    ],
+    "angleDeg": 135
+  },
+  "cursor": {
+    "x": 1467,
+    "y": 740,
+    "shape": "pointingHand",
+    "pxPerPoint": 2
+  }
+}
