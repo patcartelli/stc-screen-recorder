@@ -1,4 +1,4 @@
-import type { StillLayout } from "./still-decorate.js";
+import type { AnnotationLayout, StillLayout } from "./still-decorate.js";
 
 /**
  * Every decision a still makes on its way OUT of the app (STC-293), as pure
@@ -121,6 +121,27 @@ export function scaleFactor(scale: OutputScale, pxPerPoint: number): number {
  * `pxPerPoint` moves with the factor so the cursor artwork, which is drawn in
  * points, stays the same physical size relative to the content.
  */
+function scaleAnnotation(a: AnnotationLayout, factor: number): AnnotationLayout {
+  const pt = (p: { x: number; y: number }) => ({ x: p.x * factor, y: p.y * factor });
+  if (a.kind === "arrow") {
+    return {
+      kind: "arrow", strokePx: a.strokePx * factor,
+      geometry: {
+        shaft: { from: pt(a.geometry.shaft.from), to: pt(a.geometry.shaft.to) },
+        head: [pt(a.geometry.head[0]), pt(a.geometry.head[1]), pt(a.geometry.head[2])],
+      },
+    };
+  }
+  if (a.kind === "box") {
+    return {
+      kind: "box", shape: a.shape, strokePx: a.strokePx * factor,
+      rect: { x: a.rect.x * factor, y: a.rect.y * factor,
+              width: a.rect.width * factor, height: a.rect.height * factor },
+    };
+  }
+  return { kind: "text", x: a.x * factor, y: a.y * factor, text: a.text, sizePx: a.sizePx * factor };
+}
+
 export function scaleStillLayout(layout: StillLayout, factor: number): StillLayout {
   if (!(factor > 0) || !Number.isFinite(factor) || factor === 1) return layout;
   const px = (n: number) => Math.round(n * factor);
@@ -134,6 +155,13 @@ export function scaleStillLayout(layout: StillLayout, factor: number): StillLayo
     redactions: layout.redactions.map((r) => ({
       x: r.x * factor, y: r.y * factor, width: r.width * factor, height: r.height * factor,
     })),
+    // Every annotation quantity is a length in output pixels, so scaling the
+    // RESOLVED layout is exactly equivalent to resolving it again at the new
+    // scale — including the arrow head, whose "never longer than half the
+    // arrow" clamp compares two quantities that both scale by the same factor,
+    // so the branch it takes cannot change. `transform/test/still-annotate.test.ts`
+    // pins that equivalence rather than leaving it as an argument.
+    annotations: layout.annotations.map((a) => scaleAnnotation(a, factor)),
   };
   if (layout.shadow) {
     out.shadow = {

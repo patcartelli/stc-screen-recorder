@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import AjvImport from "ajv";
 import { runSwiftHarness } from "./_swift-harness.js";
-import { parseShot } from "../../transform/src/shot.js";
+import { parseShot, shotForWrite } from "../../transform/src/shot.js";
 import { CURSOR_SHAPES } from "../../transform/src/cursor-art.js";
 
 const Ajv = (AjvImport as any).default ?? AjvImport;
@@ -57,7 +57,15 @@ describe("still decisions (STC-289)", () => {
       const shot = parseShot(doc);
       expect(shot.version).toBe(1);
       // Round trip: what the loader normalises must be what was written.
-      expect(JSON.parse(JSON.stringify(shot))).toEqual(doc);
+      //
+      // Through `shotForWrite`, which is the DOCUMENT form. Since shot-2
+      // (STC-295) the loader always hands back `decoration.annotations` in
+      // memory — so no consumer has to tell "none" from "an older document" —
+      // while a v1 document on disk must not carry the key at all, because
+      // shot-1 declares `additionalProperties: false`. Comparing the parsed
+      // object directly would demand the helper write a field that shot-1
+      // forbids, which is the assertion inverted rather than a real round trip.
+      expect(JSON.parse(JSON.stringify(shotForWrite(shot)))).toEqual(doc);
     }
 
     const byLabel = Object.fromEntries(docs.map((d) => [d.label, d.doc]));

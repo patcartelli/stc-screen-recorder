@@ -1,0 +1,648 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "stc:shot-2",
+  "title": "stc still (screenshot) document, v2",
+  "description": "One captured still and everything that decides how it is rendered (STC-289, STC-291, STC-297, STC-295). Its own small schema, deliberately NOT a one-frame recording: stills share the compositor with video and nothing else. The description is the artefact and the pixels are derived \u2014 no baked output lives here, and the captured frame on disk is never modified. Times are mach-clock nanoseconds as decimal strings, like anchors.t0Ns, because boot-relative ns can exceed 2^53. Lengths are points unless the field says pixels. v2 adds decoration.annotations (STC-295). A document with no annotations is still written as v1 \u2014 the version is the minimum that can express what the document says, so the helper needs no change and a still that was never marked up stays readable by an older build.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "kind",
+    "capturedAtNs",
+    "timebase",
+    "display",
+    "frame",
+    "decoration"
+  ],
+  "properties": {
+    "version": {
+      "enum": [
+        1,
+        2
+      ],
+      "description": "1, or 2 once decoration.annotations is present. Readers accept both."
+    },
+    "kind": {
+      "enum": [
+        "display-crop",
+        "window"
+      ],
+      "description": "display-crop: a region of a display capture (the v1 'full display is the only primitive' rule). window: the window captured through its own filter, alpha preserved \u2014 a crop cannot give a window its real rounded corners with transparency behind them."
+    },
+    "capturedAtNs": {
+      "type": "string",
+      "pattern": "^[0-9]+$"
+    },
+    "timebase": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "numer",
+        "denom"
+      ],
+      "properties": {
+        "numer": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "denom": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "display": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "pointWidth",
+        "pointHeight",
+        "pixelWidth",
+        "pixelHeight",
+        "backingScale",
+        "originX",
+        "originY"
+      ],
+      "properties": {
+        "id": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "pointWidth": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "pointHeight": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "pixelWidth": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "pixelHeight": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "backingScale": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "originX": {
+          "type": "number",
+          "description": "global display-space origin of the source display, in points"
+        },
+        "originY": {
+          "type": "number"
+        },
+        "colorSpace": {
+          "type": "string",
+          "description": "the CGColorSpace name the capture arrived in; backgrounds are sampled in it"
+        }
+      }
+    },
+    "crop": {
+      "description": "display-crop only: the region, in display-local points.",
+      "$ref": "#/definitions/rect"
+    },
+    "window": {
+      "description": "window only: which window, and where it was.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "bounds"
+      ],
+      "properties": {
+        "id": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "CGWindowID at capture time; not stable across launches"
+        },
+        "app": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "bounds": {
+          "$ref": "#/definitions/rect",
+          "description": "display-local points"
+        }
+      }
+    },
+    "frame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "file",
+        "width",
+        "height",
+        "alpha"
+      ],
+      "properties": {
+        "file": {
+          "type": "string",
+          "minLength": 1,
+          "description": "the captured pixels beside this document; never modified"
+        },
+        "width": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "pixels"
+        },
+        "height": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "alpha": {
+          "type": "boolean",
+          "description": "true only for window captures: transparent outside the window's real shape"
+        }
+      }
+    },
+    "cursor": {
+      "description": "The pointer at capture time, sampled from NSEvent.mouseLocation \u2014 never in the pixels. ABSENT (not zeroed) when the pointer was on another display. Drawn at render time only when decoration.cursor is true.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "x",
+        "y",
+        "shape"
+      ],
+      "properties": {
+        "x": {
+          "type": "number",
+          "description": "display-local points"
+        },
+        "y": {
+          "type": "number"
+        },
+        "shape": {
+          "enum": [
+            "arrow",
+            "ibeam",
+            "crosshair",
+            "pointingHand"
+          ],
+          "description": "the events-2 set: exactly what transform/src/cursor-art.ts can draw"
+        }
+      }
+    },
+    "decoration": {
+      "description": "How the still is rendered. One of five modes, each a preset; the parameters inside are real from day one and unexposed until a still editor exists (STC-291).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "canvas",
+        "cursor",
+        "redactions"
+      ],
+      "properties": {
+        "mode": {
+          "enum": [
+            "selected-area",
+            "window-only",
+            "window-shadow",
+            "window-shadow-background",
+            "window-shadow-custom-background"
+          ],
+          "description": "selected-area: raw crop, no corners, shadow or padding. window-*: need kind = window and frame.alpha = true."
+        },
+        "paddingPct": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "padding as a fraction of the shot's SHORT edge, not pixels, so it holds across scale factors"
+        },
+        "background": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "enum": [
+                "solid",
+                "linear",
+                "radial",
+                "image",
+                "wallpaper"
+              ]
+            },
+            "colors": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "string",
+                "pattern": "^#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$"
+              }
+            },
+            "angleDeg": {
+              "type": "number"
+            },
+            "file": {
+              "type": "string",
+              "minLength": 1,
+              "description": "image only: a file beside this document"
+            }
+          }
+        },
+        "shadow": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "offsetX",
+            "offsetY",
+            "blur",
+            "spread",
+            "opacity"
+          ],
+          "properties": {
+            "offsetX": {
+              "type": "number"
+            },
+            "offsetY": {
+              "type": "number"
+            },
+            "blur": {
+              "type": "number",
+              "minimum": 0
+            },
+            "spread": {
+              "type": "number"
+            },
+            "opacity": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            }
+          },
+          "description": "synthesized at render time, composited UNDER the window shape; the system compositor's shadow is never captured"
+        },
+        "canvas": {
+          "enum": [
+            "natural",
+            "16:9",
+            "4:3",
+            "1:1"
+          ],
+          "description": "output canvas; anything but natural centres the capture"
+        },
+        "cursor": {
+          "type": "boolean",
+          "description": "draw the sampled pointer; off by default, a toggle rather than a re-capture"
+        },
+        "redactions": {
+          "type": "array",
+          "description": "Solid-fill rectangles composited over the CAPTURE before any decoration, so a fill never bleeds into a background or shadow. Normalised to the capture (0..1 of frame width/height) so they move with the content, not the canvas. Opaque means opaque; the treatment is solid fill only in v1 (STC-297).",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "x",
+              "y",
+              "width",
+              "height"
+            ],
+            "properties": {
+              "x": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1
+              },
+              "y": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1
+              },
+              "width": {
+                "type": "number",
+                "exclusiveMinimum": 0,
+                "maximum": 1
+              },
+              "height": {
+                "type": "number",
+                "exclusiveMinimum": 0,
+                "maximum": 1
+              }
+            }
+          }
+        },
+        "annotations": {
+          "type": "array",
+          "description": "Markup drawn as a pass OVER the decorated still \u2014 the opposite of redactions, which composite into the picture before decoration. v2 only; absent is the same as empty. One accent colour and a few weights by design (STC-295): the colour is a constant in transform/src/still-annotate.ts and is deliberately not a field, since a value nothing writes and nothing reads is a claim no test can check.",
+          "items": {
+            "oneOf": [
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "kind",
+                  "from",
+                  "to",
+                  "weight"
+                ],
+                "properties": {
+                  "kind": {
+                    "const": "arrow"
+                  },
+                  "from": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "x",
+                      "y"
+                    ],
+                    "properties": {
+                      "x": {
+                        "type": "number",
+                        "minimum": 0,
+                        "maximum": 1
+                      },
+                      "y": {
+                        "type": "number",
+                        "minimum": 0,
+                        "maximum": 1
+                      }
+                    },
+                    "description": "normalised to the CAPTURE (0..1), so it moves with the content rather than the canvas"
+                  },
+                  "to": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "x",
+                      "y"
+                    ],
+                    "properties": {
+                      "x": {
+                        "type": "number",
+                        "minimum": 0,
+                        "maximum": 1
+                      },
+                      "y": {
+                        "type": "number",
+                        "minimum": 0,
+                        "maximum": 1
+                      }
+                    },
+                    "description": "normalised to the CAPTURE (0..1), so it moves with the content rather than the canvas"
+                  },
+                  "weight": {
+                    "enum": [
+                      "thin",
+                      "regular",
+                      "bold"
+                    ],
+                    "description": "stroke width in POINTS at the capture's scale, resolved through pxPerPoint like the shadow"
+                  }
+                },
+                "description": "Points AT something: the head is at `to`."
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "kind",
+                  "shape",
+                  "rect",
+                  "weight"
+                ],
+                "properties": {
+                  "kind": {
+                    "const": "box"
+                  },
+                  "shape": {
+                    "enum": [
+                      "rect",
+                      "ellipse"
+                    ]
+                  },
+                  "rect": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "x",
+                      "y",
+                      "width",
+                      "height"
+                    ],
+                    "properties": {
+                      "x": {
+                        "type": "number",
+                        "minimum": 0,
+                        "maximum": 1
+                      },
+                      "y": {
+                        "type": "number",
+                        "minimum": 0,
+                        "maximum": 1
+                      },
+                      "width": {
+                        "type": "number",
+                        "exclusiveMinimum": 0,
+                        "maximum": 1
+                      },
+                      "height": {
+                        "type": "number",
+                        "exclusiveMinimum": 0,
+                        "maximum": 1
+                      }
+                    },
+                    "description": "normalised to the CAPTURE, like decoration.redactions"
+                  },
+                  "weight": {
+                    "enum": [
+                      "thin",
+                      "regular",
+                      "bold"
+                    ]
+                  }
+                },
+                "description": "An OUTLINE, never a fill \u2014 a filled box is redaction, and it lives in a different pass."
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "kind",
+                  "at",
+                  "text",
+                  "size"
+                ],
+                "properties": {
+                  "kind": {
+                    "const": "text"
+                  },
+                  "at": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "x",
+                      "y"
+                    ],
+                    "properties": {
+                      "x": {
+                        "type": "number",
+                        "minimum": 0,
+                        "maximum": 1
+                      },
+                      "y": {
+                        "type": "number",
+                        "minimum": 0,
+                        "maximum": 1
+                      }
+                    },
+                    "description": "normalised to the CAPTURE (0..1), so it moves with the content rather than the canvas"
+                  },
+                  "text": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 200,
+                    "pattern": "\\S",
+                    "description": "at least one non-whitespace character: the loader trims, so a whitespace-only label is an invisible object that can still be selected and moved. minLength alone would accept \"  \"."
+                  },
+                  "size": {
+                    "enum": [
+                      "small",
+                      "regular",
+                      "large"
+                    ],
+                    "description": "point size at the capture's scale"
+                  }
+                },
+                "description": "A label. `at` is its top-left."
+              }
+            ]
+          }
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "display-crop"
+          }
+        },
+        "required": [
+          "kind"
+        ],
+        "type": "object"
+      },
+      "then": {
+        "required": [
+          "crop"
+        ],
+        "properties": {
+          "crop": {
+            "$ref": "#/definitions/rect"
+          },
+          "window": false
+        },
+        "type": "object"
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "window"
+          }
+        },
+        "required": [
+          "kind"
+        ],
+        "type": "object"
+      },
+      "then": {
+        "required": [
+          "window"
+        ],
+        "properties": {
+          "window": {
+            "type": "object"
+          },
+          "crop": false
+        },
+        "type": "object"
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "decoration": {
+            "properties": {
+              "mode": {
+                "enum": [
+                  "window-only",
+                  "window-shadow",
+                  "window-shadow-background",
+                  "window-shadow-custom-background"
+                ]
+              }
+            },
+            "required": [
+              "mode"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "decoration"
+        ],
+        "type": "object"
+      },
+      "then": {
+        "properties": {
+          "kind": {
+            "const": "window"
+          },
+          "frame": {
+            "properties": {
+              "alpha": {
+                "const": true
+              }
+            },
+            "type": "object"
+          }
+        },
+        "type": "object"
+      }
+    }
+  ],
+  "definitions": {
+    "rect": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "x",
+        "y",
+        "width",
+        "height"
+      ],
+      "properties": {
+        "x": {
+          "type": "number"
+        },
+        "y": {
+          "type": "number"
+        },
+        "width": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "height": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        }
+      }
+    }
+  }
+}

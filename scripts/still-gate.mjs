@@ -56,8 +56,19 @@ await server.listen(5207);
 // assumed, because a pixel gate whose answer depends on the rasteriser should
 // never leave you guessing which one produced the answer.
 const channel = process.env.STC_STILL_GATE_CHANNEL;
-const browser = await chromium.launch({ headless: true, ...(channel ? { channel } : {}) });
-console.log(`browser: ${channel ?? "bundled chromium"} ${browser.version()}`);
+// An explicit binary, for an environment whose installed browsers do not match
+// the Playwright version this project pins — Playwright then looks for a build
+// number that is not there and reports it as "just installed or updated",
+// which reads as a setup problem rather than a version skew. Naming the binary
+// is the documented way out, and it costs nothing here because the gate
+// asserts PROPERTIES rather than golden pixels: any correct rasteriser passes.
+const executablePath = process.env.STC_STILL_GATE_BROWSER;
+const browser = await chromium.launch({
+  headless: true,
+  ...(channel ? { channel } : {}),
+  ...(executablePath ? { executablePath } : {}),
+});
+console.log(`browser: ${executablePath ?? channel ?? "bundled chromium"} ${browser.version()}`);
 const page = await browser.newPage();
 const trail = await instrumentPage(page);
 
@@ -82,6 +93,55 @@ try {
     }
   }
   ok("every mode leaves the captured pixels exactly as they arrived");
+
+  // ── annotations over a transparent mode (STC-295) ────────────────────────
+  //
+  // The ticket's fourth acceptance criterion: "annotations composite correctly
+  // over transparent output modes, with no halo where an arrow crosses the
+  // window edge." A halo is a ring of partly-transparent pixels whose colour is
+  // NEITHER the accent nor what is behind — which is exactly what an outline
+  // stroke under the arrow produces against nothing. There is no outline, so
+  // this asserts the property that absence buys.
+  {
+    const p = by["window-only+annotations"];
+    if (!p) fail("no annotated probe — the harness stopped rendering one");
+    if (!p.alpha) fail("window-only+annotations: the output lost its alpha");
+    const cross = p.arrowCross ?? [];
+    if (cross.length === 0) fail("window-only+annotations: no cross-section through the arrow");
+
+    // The arrow really is drawn out there, over nothing. Without this the rest
+    // is vacuous: a pass that drew no arrow at all has no halo either.
+    const painted = cross.filter((q) => q.a > 8);
+    if (painted.length === 0) {
+      fail("window-only+annotations: the cross-section found no arrow at all — " +
+           "either it was not drawn over the transparent corner, or the sample missed it");
+    }
+    ok(`the arrow is drawn over the window's transparent corner (${painted.length} pixels)`);
+
+    // Every painted pixel is the accent or an antialiased blend of it. A halo
+    // shows up as a mid-alpha pixel whose hue is something else entirely.
+    const accent = { r: 0xe8, g: 0x45, b: 0x2c };
+    const worst = painted
+      .map((q) => ({ q, d: Math.max(Math.abs(q.r - accent.r), Math.abs(q.g - accent.g),
+                                    Math.abs(q.b - accent.b)) }))
+      .sort((x, y) => y.d - x.d)[0];
+    if (worst.d > 24) {
+      fail(`window-only+annotations: a pixel on the arrow is ${worst.q.r},${worst.q.g},${worst.q.b} ` +
+           `at alpha ${worst.q.a}, ${worst.d} from the accent — that is a halo, ` +
+           "which means something is being drawn under the stroke");
+    } else {
+      ok(`no halo: every pixel on the arrow is within ${worst.d} of the accent`);
+    }
+
+    // And the stroke has an edge rather than being a hard-clipped block: some
+    // pixel is partially transparent. A pass that produced only 0 or 255 would
+    // mean the arrow was composited against something opaque first.
+    if (!painted.some((q) => q.a > 8 && q.a < 248)) {
+      fail("window-only+annotations: the arrow has no antialiased edge over transparency — " +
+           "it was composited onto something opaque before it got here");
+    }
+    ok("the arrow keeps a real antialiased edge over transparency");
+  }
 
   // ── modes 2 and 3: genuinely transparent ─────────────────────────────────
   for (const mode of ["window-only", "window-shadow"]) {

@@ -14,8 +14,37 @@ const root = join(__dirname, "..", "..");
 const load = (p: string) => JSON.parse(readFileSync(join(root, p), "utf8"));
 const clone = <T,>(o: T): T => JSON.parse(JSON.stringify(o));
 
-const schema = load("schema/shot-1.schema.json");
-const validate = new Ajv({ allErrors: true, strict: true }).compile(schema);
+/**
+ * A document is validated against the schema for the version IT DECLARES.
+ *
+ * shot-2 (STC-295) adds `decoration.annotations`, and the invariant worth
+ * holding is not "everything validates against shot-1" — it is that whatever
+ * `shotForWrite` emits validates against the schema for the version it wrote.
+ * A single validator would have made adding a version look like a regression
+ * and been "fixed" by pointing it at the newest schema, which would stop it
+ * ever catching a v1 document carrying a v2 field.
+ */
+const ajv = new Ajv({ allErrors: true, strict: true });
+/**
+ * The newest schema, for the structural checks that are about the ENUMS rather
+ * than about any one document. Those lists have to match the loader's, and they
+ * live in the version that has all of them.
+ */
+const schema = load("schema/shot-2.schema.json");
+const VALIDATORS: Record<number, ReturnType<typeof ajv.compile>> = {
+  1: ajv.compile(load("schema/shot-1.schema.json")),
+  2: ajv.compile(load("schema/shot-2.schema.json")),
+};
+let lastErrors: unknown;
+function validate(doc: any): boolean {
+  const v = VALIDATORS[doc?.version as number];
+  if (!v) { lastErrors = [{ message: `no schema for version ${String(doc?.version)}` }]; return false; }
+  const ok = v(doc);
+  lastErrors = v.errors;
+  return ok as boolean;
+}
+validate.errors = undefined as unknown;
+Object.defineProperty(validate, "errors", { get: () => lastErrors });
 const fixture = load("fixtures/shot/shot.json");
 
 /** A window capture with alpha, the shape modes 2-5 need. */
@@ -48,8 +77,15 @@ describe("shot-1 schema and loader agree", () => {
     expect(shot.cursor).toEqual({ x: 420, y: 300, shape: "arrow" });
     expect(shot.decoration.redactions).toHaveLength(1);
     // The same document, written back: identical bytes when re-serialised.
-    expect(JSON.stringify(shotForWrite(shot))).toBe(JSON.stringify(parseShot(fixture)));
-    expect(shotForWrite(shot)).toEqual(shot);
+    // Document-to-document: `shotForWrite` emits the SERIALISABLE form, which
+    // at v1 omits the v2-only `annotations` key that the in-memory `Shot`
+    // always carries.
+    const written = shotForWrite(shot);
+    expect(written.version).toBe(1);
+    expect(written.decoration.annotations).toBeUndefined();
+    expect(validate(JSON.parse(JSON.stringify(written))),
+           JSON.stringify(validate.errors, null, 2)).toBe(true);
+    expect({ ...written, decoration: { ...written.decoration, annotations: [] } }).toEqual(shot);
   });
 
   test("a window capture with the full decoration validates and round-trips", () => {
@@ -59,7 +95,8 @@ describe("shot-1 schema and loader agree", () => {
     expect(shot.frame.alpha).toBe(true);
     expect(shot.decoration.shadow?.blur).toBe(48);
     expect(shot.decoration.background?.colors).toEqual(["#1e3a8a", "#9333ea"]);
-    expect(shotForWrite(shot)).toEqual(shot);
+    expect({ ...shotForWrite(shot), decoration: { ...shotForWrite(shot).decoration, annotations: [] } })
+      .toEqual(shot);
   });
 
   test("the loader returns a copy, never the raw object", () => {
@@ -84,7 +121,13 @@ describe("shot-1 schema and loader agree", () => {
     for (const kind of ["display-crop", "window"] as const) {
       const doc = clone(kind === "window" ? windowShot : fixture);
       doc.decoration = defaultDecoration(kind);
-      expect(validate(doc), JSON.stringify(validate.errors, null, 2)).toBe(true);
+      // Through `shotForWrite`, which is what decides the version and what
+      // strips the v2-only key from a document that has nothing to say with
+      // it. `defaultDecoration` is an IN-MEMORY value and always carries
+      // `annotations`; the document on disk is what the schema describes.
+      const written = JSON.parse(JSON.stringify(shotForWrite(parseShot(doc))));
+      expect(written.version).toBe(1);
+      expect(validate(written), JSON.stringify(validate.errors, null, 2)).toBe(true);
       expect(parseShot(doc).decoration).toEqual(defaultDecoration(kind));
     }
   });
@@ -92,7 +135,7 @@ describe("shot-1 schema and loader agree", () => {
 
 describe("documents that must be refused — by both the schema and the loader", () => {
   const refused: [string, (d: any) => void][] = [
-    ["a future version", (d) => { d.version = 2; }],
+    ["a future version", (d) => { d.version = 3; }],
     ["no version", (d) => { delete d.version; }],
     ["a crop on a window shot", (d) => { Object.assign(d, clone(windowShot)); d.crop = { x: 0, y: 0, width: 1, height: 1 }; }],
     ["a window block on a display-crop shot", (d) => { d.window = clone(windowShot).window; }],
@@ -145,6 +188,11 @@ describe("what the loader tolerates that the schema also tolerates", () => {
     doc.decoration = { mode: "selected-area", canvas: "natural", cursor: false, redactions: [] };
     expect(validate(doc)).toBe(true);
     const shot: Shot = parseShot(doc);
-    expect(shot.decoration).toEqual(doc.decoration);
+    // `annotations` is the one field the loader ADDS: absent in a v1 document
+    // means empty, and every consumer gets an array rather than having to tell
+    // "none" from "an older document".
+    expect(shot.decoration).toEqual({ ...doc.decoration, annotations: [] });
+    // ...and the write path puts the document back exactly as it was.
+    expect(JSON.parse(JSON.stringify(shotForWrite(shot))).decoration).toEqual(doc.decoration);
   });
 });
