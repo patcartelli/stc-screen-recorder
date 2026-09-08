@@ -973,6 +973,18 @@ async function drawStill(settings: StillSettingsView): Promise<void> {
  * the user decides BEFORE anything is encoded, which is why this returns a
  * choice rather than logging a warning.
  */
+/**
+ * The pending fork's own cancel, so closing the panel can answer it.
+ *
+ * A promise that only its own three buttons can settle is a promise the rest
+ * of the UI can strand: pressing Done while the question is up left
+ * `exportStillNow` awaiting forever with `stillBusy` still true, which made
+ * Copy and Save dead for the rest of the session — and left the stale question
+ * showing over the next capture. Anything that can dismiss the question has to
+ * be able to answer it.
+ */
+let cancelFlatten: (() => void) | undefined;
+
 function askFlatten(message: string): Promise<"cancel" | "png" | string> {
   const box = $("stillflatten");
   $("stillflattenmessage").textContent = message;
@@ -985,6 +997,7 @@ function askFlatten(message: string): Promise<"cancel" | "png" | string> {
       $("stillflattengo").removeEventListener("click", onGo);
       $("stillflattenpng").removeEventListener("click", onPng);
       $("stillflattencancel").removeEventListener("click", onCancel);
+      cancelFlatten = undefined;
       resolve(answer);
     };
     const onGo = () => finish(color.value);
@@ -993,6 +1006,7 @@ function askFlatten(message: string): Promise<"cancel" | "png" | string> {
     $("stillflattengo").addEventListener("click", onGo);
     $("stillflattenpng").addEventListener("click", onPng);
     $("stillflattencancel").addEventListener("click", onCancel);
+    cancelFlatten = () => finish("cancel");
   });
 }
 
@@ -1108,6 +1122,11 @@ async function openStillPanel(dir: string, shotDoc: unknown): Promise<void> {
   const shot = parseShot(shotDoc);
   const bytes = await recorder.readStillFrame(dir, shot.frame.file);
   const frame = await createImageBitmap(new Blob([bytes], { type: "image/png" }));
+  // The previous shot's bitmap is closed BEFORE this one replaces it: an
+  // ImageBitmap holds its pixels outside the JS heap, so a 4K capture is ~33 MB
+  // that a dropped reference frees only whenever GC gets round to it. Two
+  // hotkey captures in a row is not an unusual thing to do.
+  openShot?.frame.close();
   openShot = { shot, dir, frame };
 
   const modes = shot.frame.alpha ? DECORATION_MODES : (["selected-area"] as const);
@@ -1132,6 +1151,11 @@ async function openStillPanel(dir: string, shotDoc: unknown): Promise<void> {
 }
 
 function closeStillPanel(): void {
+  // Answer any open fork FIRST: `exportStillNow` is awaiting it, and it clears
+  // `stillBusy` in its own `finally` once it resolves. Dropping the promise
+  // here instead is what wedged Copy and Save.
+  cancelFlatten?.();
+  $("stillflatten").setAttribute("hidden", "");
   openShot?.frame.close();
   openShot = undefined;
   stillComposite = undefined;
