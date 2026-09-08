@@ -1,5 +1,6 @@
 import { layoutStill, decorationForMode, pxPerPointOf } from "@transform/still-decorate";
-import { colorSpaceFor, planRender, DEFAULT_EXPORT_OPTIONS,
+import { colorSpaceFor, planRender, stillIsBlocked,
+         DEFAULT_EXPORT_OPTIONS, DEFAULT_FLATTEN_COLOR,
          type OutputScale, type StillFormat } from "@transform/still-export";
 import { renderStill } from "@transform/still-render";
 import { parseShot, type DecorationMode, type Shot } from "@transform/shot";
@@ -211,6 +212,8 @@ declare global {
     __decorate(shot: unknown, frameSrc: string, mode?: string): Promise<string>;
     __composite(shot: unknown, frameSrc: string, format: string, scale: string): Promise<{
       bytes: string; width: number; height: number; alpha: boolean; colorSpace: string;
+      /** True when a transparent shot had to be flattened to fit the format. */
+      flattened: boolean;
     }>;
     __stillGate(): Promise<{
       probes: StillProbe[];
@@ -240,9 +243,26 @@ window.__composite = async (shotDoc, frameSrc, format, scale) => {
   img.src = frameSrc;
   await img.decode();
 
-  const plan = planRender(
-    { ...DEFAULT_EXPORT_OPTIONS, format: format as StillFormat, scale: scale as OutputScale },
-    { layout: layoutStill(shot), pxPerPoint: pxPerPointOf(shot) });
+  const opts = { ...DEFAULT_EXPORT_OPTIONS,
+                 format: format as StillFormat, scale: scale as OutputScale };
+  let plan = planRender(opts, { layout: layoutStill(shot), pxPerPoint: pxPerPointOf(shot) });
+
+  // A JPEG over a transparent mode is a fork the app WAITS on. A script has
+  // nobody to ask, so it answers the way the app's own default does — flatten
+  // onto white — and says so in the result.
+  //
+  // Ignoring the fork here was a real bug: the pixels keep their alpha, the
+  // request says `alpha: false`, and the encoder reads transparent pixels as
+  // (0,0,0,0) — producing exactly the silent BLACK FILL the ticket forbids, in
+  // the artifact a person is told to judge the feature by. CLAUDE.md already
+  // records this shape once ("an artifact made for human verification is only
+  // worth looking at if it came from the take's OWN document"): the
+  // verification path needs verifying too.
+  const flattened = stillIsBlocked(plan);
+  if (flattened) {
+    plan = planRender({ ...opts, flattenColor: DEFAULT_FLATTEN_COLOR },
+                      { layout: layoutStill(shot), pxPerPoint: pxPerPointOf(shot) });
+  }
 
   const colorSpace = colorSpaceFor(shot.display.colorSpace);
   const cv = document.createElement("canvas");
@@ -250,6 +270,17 @@ window.__composite = async (shotDoc, frameSrc, format, scale) => {
   cv.height = plan.layout.canvas.height;
   const ctx = cv.getContext("2d", { alpha: true, colorSpace }) as CanvasRenderingContext2D;
   renderStill(ctx as never, { frame: img }, plan.layout);
+
+  if (flattened) {
+    // `destination-over`: fills exactly the pixels whose alpha is short of 1,
+    // at their own coverage, leaving every opaque pixel untouched. The same
+    // operation `flattenOnto` uses in the app, for the same reason.
+    ctx.save();
+    ctx.globalCompositeOperation = "destination-over";
+    ctx.fillStyle = DEFAULT_FLATTEN_COLOR;
+    ctx.fillRect(0, 0, cv.width, cv.height);
+    ctx.restore();
+  }
 
   const data = ctx.getImageData(0, 0, cv.width, cv.height).data;
   let binary = "";
@@ -259,7 +290,7 @@ window.__composite = async (shotDoc, frameSrc, format, scale) => {
     binary += String.fromCharCode(...data.subarray(i, i + 0x8000));
   }
   return { bytes: btoa(binary), width: cv.width, height: cv.height,
-           alpha: plan.alpha, colorSpace };
+           alpha: plan.alpha, colorSpace, flattened };
 };
 
 window.__stillGate = async () => {

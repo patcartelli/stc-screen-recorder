@@ -80,3 +80,47 @@ describe("the stop chain (STC-259 step 3)", () => {
     expect(shutdownMarginMs()).toBeGreaterThan(0);
   });
 });
+
+/**
+ * The still export chain (STC-293), on the same rule.
+ *
+ * `export-still` is a request like any other, so its backstop has to fit inside
+ * the client's timeout with room for the answer to travel. It shipped set
+ * EXACTLY equal to it — 30 s against 30 s — which is not a near miss: the
+ * client's generic "request timed out" wins that race every time, so the
+ * helper's own message, the one that names the operation and the bound, could
+ * never reach anybody. The bound was not wrong; it was unreachable, which is
+ * the same class of defect as a diagnostic that lies.
+ */
+describe("the still export chain (STC-293)", () => {
+  const exportMs = () => swiftConstant("helper/src/StillEncode.swift", "timeoutSeconds");
+  const stillMs = () => swiftConstant("helper/src/Still.swift", "timeoutSeconds");
+
+  /** An encode answer is one small JSON line; this is the round trip, not the work. */
+  const ANSWER_IPC_MS = 2_000;
+
+  test("the export backstop fires before the client gives up, with room to answer", () => {
+    expect(exportMs() + ANSWER_IPC_MS).toBeLessThanOrEqual(DEFAULT_REQUEST_TIMEOUT_MS);
+  });
+
+  test("equal bounds are refused, not merely discouraged", () => {
+    // The exact shipped defect. Stated as its own assertion because the one
+    // above would still pass at 29 s with a 1 s allowance, and "under by
+    // something" is not the property that matters — "under by enough to
+    // deliver the message" is.
+    expect(exportMs()).toBeLessThan(DEFAULT_REQUEST_TIMEOUT_MS);
+  });
+
+  test("capture-still clears the same client timeout", () => {
+    // Not new, but unasserted until now: the one-frame path has its own 10 s
+    // backstop and it lives under the same 30 s ceiling.
+    expect(stillMs() + ANSWER_IPC_MS).toBeLessThanOrEqual(DEFAULT_REQUEST_TIMEOUT_MS);
+  });
+
+  test("an export may take longer than a capture, and the bounds say so", () => {
+    // A still capture is one screenshot; an export reads up to 130 MB off disk
+    // and encodes it. If these ever invert, one of them has been set by habit
+    // rather than by what it covers.
+    expect(exportMs()).toBeGreaterThan(stillMs());
+  });
+});

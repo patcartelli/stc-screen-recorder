@@ -17,7 +17,7 @@ import { fileURLToPath } from "node:url";
 import { existsSync, readdirSync } from "node:fs";
 import { readFile, writeFile, stat, open } from "node:fs/promises";
 import { HelperSupervisor } from "./supervisor.js";
-import { newTakeDir, takesRoot, listTakes, setTakeLabel } from "./takes.js";
+import { newTakeDir, takesRoot, listTakes, setTakeLabel, insideTakesRoot } from "./takes.js";
 import { openOverlay, closeOverlay, overlayIsOpen } from "./overlay-session.js";
 import type { WindowInfo } from "./selection.js";
 
@@ -195,8 +195,31 @@ app.on("before-quit", (e) => {
 ipcMain.handle("recorder:getSettings", async (): Promise<Settings> =>
   readSettings(app.getPath("userData")));
 
-ipcMain.handle("recorder:setSettings", async (_e, patch: Partial<Settings>): Promise<Settings> =>
-  writeSettings(app.getPath("userData"), patch ?? {}));
+/**
+ * The renderer's own preferences, minus the ones it may not name.
+ *
+ * `still.destination` is main's alone: it decides WHERE THIS PROCESS WRITES,
+ * and `resolveExportOptions` documents in as many words that a renderer cannot
+ * choose it. That guarantee was true of the export request and false here —
+ * this generic handler passed the whole patch through, so the destination was
+ * settable after all through a different door. A comment that promises more
+ * than the code delivers is worse than no comment.
+ *
+ * The dedicated channel stays: `still:chooseDestination` sets it from a native
+ * folder picker, which is a person choosing, not the renderer.
+ */
+ipcMain.handle("recorder:setSettings", async (_e, patch: Partial<Settings>): Promise<Settings> => {
+  const clean: Partial<Settings> = { ...(patch ?? {}) };
+  if (clean.still) {
+    // Destructured rather than deleted, so `destination` is named here and a
+    // reader can see exactly which key does not survive.
+    const { destination: _mainsAlone, ...rest } = clean.still;
+    // `writeSettings` merges `still` one level deep, so an absent destination
+    // keeps the stored one rather than clearing it.
+    clean.still = rest as Partial<Settings>["still"];
+  }
+  return writeSettings(app.getPath("userData"), clean);
+});
 
 ipcMain.handle("recorder:devices", async () => {
   if (!sup) throw new Error("supervisor not running");
@@ -458,8 +481,7 @@ ipcMain.handle("take:label", async (_e, dir: string, label: string) => {
 });
 
 ipcMain.handle("take:delete", async (_e, dir: string) => {
-  const root = takesRoot(process.env);
-  if (!dir.startsWith(root) || dir === root) {
+  if (!insideTakesRoot(process.env, dir)) {
     throw new Error("refusing to delete a path outside the recordings folder");
   }
   if (!win) throw new Error("no window");
@@ -483,8 +505,9 @@ ipcMain.handle("take:delete", async (_e, dir: string) => {
 });
 
 ipcMain.handle("preview:open", async (_e, dir: string) => {
-  const root = takesRoot(process.env);
-  if (!dir.startsWith(root)) throw new Error("refusing to open a path outside the recordings folder");
+  if (!insideTakesRoot(process.env, dir)) {
+    throw new Error("refusing to open a path outside the recordings folder");
+  }
   openTake = dir;
   return true;
 });
@@ -563,8 +586,10 @@ ipcMain.handle("still:export", async (_e, req: {
   // A take directory is the only fallback destination that may be named, and
   // it must be inside the recordings root — the renderer is sandboxed and
   // never gets to point the writer at an arbitrary path.
-  const root = takesRoot(process.env);
-  const fallbackDir = req.dir && req.dir.startsWith(root) && req.dir !== root ? req.dir : undefined;
+  // `insideTakesRoot`, not `startsWith`: this path is handed to the helper,
+  // which CREATES directories and writes an image at it. A `..` segment or a
+  // sibling folder with the same prefix both pass a prefix test.
+  const fallbackDir = req.dir && insideTakesRoot(process.env, req.dir) ? req.dir : undefined;
 
   const still: CompositedStill = {
     bytes: req.bytes,
@@ -637,8 +662,7 @@ ipcMain.handle("still:clearDestination", async () => {
  * place `still:capture` ever writes.
  */
 ipcMain.handle("still:frame", async (_e, dir: string, name: string) => {
-  const root = takesRoot(process.env);
-  if (!dir.startsWith(root) || dir === root) {
+  if (!insideTakesRoot(process.env, dir)) {
     throw new Error("refusing to read a path outside the recordings folder");
   }
   if (!/^[A-Za-z0-9._-]+\.png$/.test(name) || name.includes("..")) {
@@ -688,7 +712,8 @@ ipcMain.handle("preview:chunk", async (_e, name: string, offset: number, length:
 ipcMain.handle("recorder:reveal", async (_e, dir: string) => {
   // Only ever reveal something inside the recordings folder: `dir` arrives from
   // the renderer, and the renderer should not be able to open arbitrary paths.
-  const root = takesRoot(process.env);
-  if (!dir.startsWith(root)) throw new Error("refusing to reveal a path outside the recordings folder");
+  if (!insideTakesRoot(process.env, dir)) {
+    throw new Error("refusing to reveal a path outside the recordings folder");
+  }
   shell.showItemInFolder(dir);
 });

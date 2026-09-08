@@ -124,7 +124,10 @@ try {
       }
       console.log(`  ${format.padEnd(5)}${suffix.padEnd(4)} ${String(Date.now() - started).padStart(5)} ms  `
         + `${composed.width}x${composed.height}  ${(r.bytes / 1024).toFixed(0)} KB  `
-        + `alpha=${r.alpha}  ${r.colorSpace}  -> ${dest}`);
+        + `alpha=${r.alpha}  ${r.colorSpace}`
+        // Said out loud, because a flattened file looks like a bug otherwise:
+        // the app ASKS before doing this, and a script has nobody to ask.
+        + `${composed.flattened ? "  FLATTENED onto white" : ""}  -> ${dest}`);
     }
   }
   console.log("");

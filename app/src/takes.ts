@@ -1,5 +1,28 @@
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve, sep } from "node:path";
+
+/**
+ * Is `dir` a real directory INSIDE the recordings root?
+ *
+ * `dir.startsWith(root)` is not that test, and was used for it in five places.
+ * It has two holes, both reachable from a renderer-supplied string:
+ *
+ * - `<root>/../../../../tmp/evil` starts with the root and `join` resolves it
+ *   to `/tmp/evil`. On the read paths that leaks a file; on `still:export`,
+ *   which CREATES directories and writes an image, it plants one.
+ * - `<root>-other` starts with the root too, and is a different folder
+ *   entirely.
+ *
+ * Resolving first closes the traversal, and comparing against a
+ * separator-terminated prefix closes the sibling. The root ITSELF is refused:
+ * every caller wants a take inside it, never the folder holding them all.
+ */
+export function insideTakesRoot(env: NodeJS.ProcessEnv, dir: string): boolean {
+  if (typeof dir !== "string" || dir.length === 0) return false;
+  const root = resolve(takesRoot(env));
+  const target = resolve(dir);
+  return target !== root && (target + sep).startsWith(root + sep);
+}
 
 /**
  * Where recordings live.
