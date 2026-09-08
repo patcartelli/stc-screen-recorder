@@ -62,7 +62,6 @@ export interface LibraryCallbacks {
  * longer contains it.
  */
 let painting: IntersectionObserver | undefined;
-let fallbackTimer: number | undefined;
 
 const el = <K extends keyof HTMLElementTagNameMap>(
   tag: K, className?: string, text?: string,
@@ -128,31 +127,26 @@ function thumb(item: LibraryItem, cb: LibraryCallbacks): HTMLElement {
 const paintQueue = new WeakMap<HTMLElement, () => Promise<void>>();
 
 /**
- * How long to wait for the observer before painting what is plainly on screen
- * anyway.
+ * How many tiles paint without waiting to be seen.
  *
- * `IntersectionObserver` not firing was the CI failure this exists for: the
- * grid drew, the badges were right, and no thumbnail was ever rendered — which
- * left three tests waiting twenty seconds for a `thumb.png` that could not
- * arrive. Whatever the runner's reason (an occluded or never-composited
- * window), a tile that the observer forgets is a PERMANENTLY blank tile, and
- * blank is indistinguishable from "not scrolled to yet".
+ * Laziness must not be load-bearing. `IntersectionObserver` never firing was
+ * the CI failure this exists for — the grid drew, the badges were right, and
+ * no thumbnail was ever rendered, three tests waiting out twenty-second polls
+ * for a `thumb.png` that could not arrive.
  *
- * So laziness is an optimisation rather than a correctness dependency: after
- * this long, any pending tile whose box actually intersects the viewport is
- * painted. Only those — a blanket sweep would paint all 500 and defeat the
- * point.
+ * The first attempt at a fix was a timer that painted any pending tile whose
+ * box intersected the viewport, and it was still a heuristic: it sampled
+ * geometry ONCE, so a tile whose layout had not settled at that instant was
+ * skipped forever. It fixed one of the three failures, which is exactly what a
+ * partial heuristic looks like.
+ *
+ * This does not measure anything. The first screenful of tiles is painted
+ * outright — no timer, no geometry, no observer — and the observer handles the
+ * rest. Deterministic by construction, and the cost at 500 takes is painting
+ * two dozen thumbnails nobody scrolled to, which is the whole point of the
+ * deferral preserved.
  */
-const PAINT_FALLBACK_MS = 400;
-
-/** Is this tile's box within the viewport right now, by geometry alone? */
-function onScreen(box: HTMLElement): boolean {
-  const r = box.getBoundingClientRect();
-  if (r.width === 0 && r.height === 0) return false;
-  const h = window.innerHeight || document.documentElement.clientHeight;
-  const w = window.innerWidth || document.documentElement.clientWidth;
-  return r.bottom > 0 && r.top < h && r.right > 0 && r.left < w;
-}
+const EAGER_TILES = 24;
 
 /** Paint one pending tile, exactly once. */
 function paintNow(box: HTMLElement): void {
@@ -240,7 +234,6 @@ function tile(item: LibraryItem, cb: LibraryCallbacks): HTMLElement {
 export function renderLibrary(host: HTMLElement, list: LibraryList,
                               cb: LibraryCallbacks): void {
   painting?.disconnect();
-  clearTimeout(fallbackTimer);
   // `rootMargin` paints a screenful ahead, so a tile is ready by the time it
   // arrives rather than popping in after it. IntersectionObserver is absent
   // under some test runners; falling back to painting immediately keeps the
@@ -272,21 +265,12 @@ export function renderLibrary(host: HTMLElement, list: LibraryList,
   grid.id = "libgrid";
   for (const item of list.items) grid.append(tile(item, cb));
   host.append(grid);
-  // No observer at all in this environment: paint the lot, rather than
-  // leaving every tile blank forever.
-  if (!painting) {
-    for (const box of grid.querySelectorAll<HTMLElement>(".libthumb")) paintNow(box);
-    return;
-  }
-  // And a backstop for an observer that exists but never calls back — see
-  // PAINT_FALLBACK_MS. Only the tiles genuinely on screen, so a long library
-  // still paints as it is scrolled.
-  clearTimeout(fallbackTimer);
-  fallbackTimer = setTimeout(() => {
-    for (const box of grid.querySelectorAll<HTMLElement>(".libthumb")) {
-      if (box.dataset.paint === "pending" && onScreen(box)) paintNow(box);
-    }
-  }, PAINT_FALLBACK_MS) as unknown as number;
+
+  // The first screenful, unconditionally — see EAGER_TILES. With no observer at
+  // all in this environment, everything, rather than leaving tiles blank
+  // forever.
+  const boxes = [...grid.querySelectorAll<HTMLElement>(".libthumb")];
+  for (const box of painting ? boxes.slice(0, EAGER_TILES) : boxes) paintNow(box);
 
   for (const b of list.invalid) {
     host.append(el("div", "broken", `${b.name} — ${b.reason}`));

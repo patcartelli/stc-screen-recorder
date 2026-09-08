@@ -110,10 +110,13 @@ done
 STC_RECORDINGS_DIR=/tmp/stc-500 npm run app:start
 ```
 
-1. **First open is the slow one** — nothing is cached, and each visible tile
-   renders its decoration. Tiles paint as they scroll into view, a screenful
-   ahead (`IntersectionObserver`, `rootMargin: 200px`), so what to judge is
-   whether SCROLLING stays smooth, not whether everything appears at once.
+1. **First open is the slow one** — nothing is cached, and the first 24 tiles
+   (`EAGER_TILES`) render their decoration immediately; the rest paint as they
+   scroll into view (`IntersectionObserver`, `rootMargin: 200px`). So what to
+   judge is whether SCROLLING stays smooth, not whether everything appears at
+   once. The first screenful is deliberately NOT deferred: an observer that
+   never fires would otherwise leave permanently blank tiles, which is a
+   correctness problem rather than a performance one.
 2. **Scroll to the bottom and back.** Second pass reads `thumb.png` and should
    be visibly faster.
 3. **Quit and reopen.** Everything is cached now. This is the run the criterion
