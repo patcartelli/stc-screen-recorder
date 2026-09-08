@@ -1,5 +1,14 @@
-import { app, BrowserWindow, ipcMain, dialog, shell, clipboard, nativeImage } from "electron";
+import {
+  app, BrowserWindow, ipcMain, dialog, shell, clipboard, nativeImage,
+  globalShortcut, screen,
+} from "electron";
 import { readSettings, writeSettings, type Settings } from "./settings.js";
+import {
+  CAPTURE_ACTIONS, DEFAULT_SHORTCUTS, planShortcuts,
+  type CaptureAction, type ShortcutReport, type Shortcuts,
+} from "./hotkeys.js";
+import { installTray, type TrayHandle } from "./tray.js";
+import { playShutter } from "./shutter.js";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { existsSync, readdirSync } from "node:fs";
@@ -30,6 +39,15 @@ let win: BrowserWindow | undefined;
 let sup: HelperSupervisor | undefined;
 /** The take the renderer may currently read, set only by preview:open. */
 let openTake: string | undefined;
+let tray: TrayHandle | undefined;
+let shortcuts: Shortcuts = { ...DEFAULT_SHORTCUTS };
+let shortcutReport: ShortcutReport[] = [];
+/**
+ * A capture is in flight. Not derived from `overlayIsOpen()`: a full-display
+ * shot opens no overlay, and the window between the request and the helper's
+ * reply is exactly when a second hotkey press would arrive.
+ */
+let capturing = false;
 
 // The renderer is sandboxed and cannot read files. It gets bytes over IPC and
 // never names a path: it may ask for one of a few fixed filenames, and only
@@ -46,11 +64,46 @@ function send(channel: string, payload: unknown): void {
 }
 
 function createWindow(): void {
+  setDockVisible(true);
   win = new BrowserWindow({
     width: 520, height: 680, title: "stc recorder",
     webPreferences: { preload: join(here, "preload.cjs"), contextIsolation: true, nodeIntegration: false },
   });
   win.loadFile(join(here, "..", "renderer", "index.html"));
+}
+
+/**
+ * Menu-bar first (STC-292): no Dock icon while no window is open.
+ *
+ * The whole point of the hotkey and the menu-bar item is that a capture never
+ * needs the app brought forward, and an app that keeps a bouncing Dock icon
+ * for a window nobody has open contradicts that every time the user looks at
+ * the Dock. The icon comes back the moment there IS a window, because a window
+ * with no Dock icon cannot be found again after it is hidden behind something.
+ *
+ * The cost is stated rather than hidden: with the icon gone, `app.on("activate")`
+ * can no longer fire, so the menu bar is the only way back in. That is why
+ * `installTray` runs before the first window and why its Quit item is not
+ * optional.
+ */
+function setDockVisible(visible: boolean): void {
+  if (process.platform !== "darwin") return;
+  try {
+    if (visible) void app.dock?.show();
+    else app.dock?.hide();
+  } catch {
+    /* an activation-policy change is never worth a crash */
+  }
+}
+
+/** The way back to a window from the menu bar. */
+function openLibrary(): void {
+  setDockVisible(true);
+  if (!win || win.isDestroyed()) createWindow();
+  else { win.show(); win.focus(); }
+  // Without this an accessory app raises the window behind whatever is
+  // frontmost, which reads as the click having done nothing.
+  app.focus({ steal: true });
 }
 
 function startSupervisor(): void {
@@ -75,6 +128,17 @@ function startSupervisor(): void {
 
 app.whenReady().then(() => {
   startSupervisor();
+  shortcuts = readSettings(app.getPath("userData")).shortcuts;
+  // The menu bar first, and deliberately: from here on the app is allowed to
+  // have no window, and installing the item afterwards would leave a gap in
+  // which a user who closed the window had no way back.
+  tray = installTray({ shortcuts, busy: capturing }, (id) => {
+    if (id === "library") return openLibrary();
+    if (id === "quit") return app.quit();
+    const action = CAPTURE_ACTIONS.find((a) => id === `capture:${a}`);
+    if (action) void captureStill(action, "menu-bar");
+  });
+  applyShortcuts(shortcuts);
   createWindow();
   app.on("activate", () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
 });
@@ -87,7 +151,10 @@ app.on("window-all-closed", async () => {
   // helper down here left a reopened window (Dock click) with a supervisor
   // that was "stopped" for good — every Record failed with "helper already
   // exited" until the app was relaunched. Elsewhere, quitting shuts it down.
-  if (process.platform !== "darwin") app.quit();
+  if (process.platform !== "darwin") { app.quit(); return; }
+  // Nothing on screen: the app is now only its menu-bar item and its hotkeys,
+  // which is the state the ticket's acceptance criterion describes.
+  setDockVisible(false);
 });
 
 // Devices are released on a deliberate quit, not left to process teardown —
@@ -101,6 +168,9 @@ app.on("before-quit", (e) => {
   quitting = true;
   // An overlay still up at quit would outlive its window list and sit on the
   // screen with nothing left to answer it.
+  globalShortcut.unregisterAll();
+  tray?.destroy();
+  tray = undefined;
   closeOverlay()
     .catch(() => {})
     .then(() => (sup ? sup.shutdown() : Promise.resolve()))
@@ -149,7 +219,13 @@ ipcMain.handle("recorder:start", async () => {
 });
 
 /**
- * Select, then capture one frame (STC-290 handing off to STC-289).
+ * Select, then capture one frame (STC-290 handing off to STC-289), or capture a
+ * whole display with no selection at all (STC-292).
+ *
+ * A FUNCTION, not just an IPC handler: the hotkey and the menu-bar item are the
+ * primary entry points now, and neither has a renderer to route through. The
+ * button in the window calls exactly this, so there is one capture path with
+ * three doors rather than three implementations that can drift.
  *
  * The window list is read from the helper for THIS selection rather than
  * cached: it is stale the moment anything is closed or moved, and the overlay
@@ -161,14 +237,78 @@ ipcMain.handle("recorder:start", async () => {
  * "Escape leaves no shot.json on disk" a property of the code rather than a
  * hope — the helper only ever sees a request that a real selection produced.
  */
-ipcMain.handle("still:capture", async () => {
-  if (!sup) throw new Error("supervisor not running");
-  // A second press while the overlay is up is a no-op, not a second overlay.
-  if (overlayIsOpen()) return { ok: false, code: "overlay-open" };
+export interface StillResult {
+  ok: boolean;
+  cancelled?: boolean;
+  dir?: string;
+  kind?: string;
+  file?: string;
+  shot?: unknown;
+  warning?: string;
+  code?: string;
+  detail?: string;
+  /** Which door this came through, so the UI can tell a capture it asked for
+   * from one that arrived while the user was somewhere else entirely. */
+  source?: CaptureSource;
+}
 
+type CaptureSource = "window" | "hotkey" | "menu-bar";
+
+async function captureStill(action: CaptureAction, source: CaptureSource): Promise<StillResult> {
+  // Never throws, whatever the door. A hotkey has no caller to reject to: an
+  // exception here would be an unhandled rejection in the main process and a
+  // capture that silently did nothing.
+  if (!sup) return { ok: false, code: "helper-not-running", source };
+  // A second press while one is in flight is a no-op, not a second overlay and
+  // not a second directory.
+  if (capturing || overlayIsOpen()) return { ok: false, code: "overlay-open", source };
+
+  capturing = true;
+  tray?.update({ shortcuts, busy: true });
+  try {
+    const outcome = action === "display"
+      ? await wholeDisplay()
+      : await selectRegionOrWindow(action);
+    if (outcome === undefined) return { ok: false, cancelled: true, source };
+
+    const root = takesRoot(process.env);
+    const existing = existsSync(root) ? readdirSync(root) : [];
+    const dir = newTakeDir(process.env, new Date(), existing);
+    const r = await sup.captureStill({ dir, ...outcome.params });
+    // The sound is the ONLY feedback a full-display hotkey capture gives — no
+    // overlay was ever on screen — so it is played on every successful shot,
+    // for the same reason macOS plays one. Not awaited: the shot is already on
+    // disk, and a wedged speaker must not delay the answer.
+    //
+    // The preference is read HERE rather than cached at launch, for the same
+    // reason the system's own sound setting is: someone who has just unticked
+    // it means the next capture, not the next launch.
+    void playShutter({ enabled: readSettings(app.getPath("userData")).shutterSound })
+      .catch(() => {});
+    // The helper's reply is a JSON line, so its fields arrive as `unknown`;
+    // named here rather than spread, so a renamed field is a type error and not
+    // a silently absent one.
+    return { ok: true, dir, kind: outcome.kind, shot: r.shot,
+             file: r.file as string | undefined,
+             warning: r.alphaWarning as string | undefined, source };
+  } catch (e: any) {
+    return { ok: false, code: e?.code ?? "still-failed",
+             detail: e?.detail ?? String(e?.message ?? e), source };
+  } finally {
+    capturing = false;
+    tray?.update({ shortcuts, busy: false });
+  }
+}
+
+interface CaptureParams { kind: string; [k: string]: unknown }
+
+/** The overlay path. `undefined` is a cancellation, which writes nothing. */
+async function selectRegionOrWindow(
+  action: Extract<CaptureAction, "region" | "window">,
+): Promise<{ kind: string; params: CaptureParams } | undefined> {
   let windows: WindowInfo[] = [];
   try {
-    const r = await sup.listWindows();
+    const r = await sup!.listWindows();
     windows = ((r.windows as any[]) ?? []).map((w) => ({
       id: w.id, app: w.app, title: w.title,
       bounds: { x: w.x, y: w.y, width: w.width, height: w.height },
@@ -181,30 +321,113 @@ ipcMain.handle("still:capture", async () => {
   }
 
   const { outcome, excludeWindowIds } = await openOverlay({
-    windows, dist: here, renderer: join(here, "..", "renderer"),
+    windows, mode: action, dist: here, renderer: join(here, "..", "renderer"),
   });
-  if (outcome.kind === "cancelled") return { ok: false, cancelled: true };
-
-  const root = takesRoot(process.env);
-  const existing = existsSync(root) ? readdirSync(root) : [];
-  const dir = newTakeDir(process.env, new Date(), existing);
-  const params = outcome.kind === "region"
+  if (outcome.kind === "cancelled") return undefined;
+  return outcome.kind === "region"
     // `displayId` is Electron's, which on macOS is the CGDirectDisplayID the
     // helper matches against. If that ever stops being true the helper answers
     // `no-such-display` and the capture fails loudly — it cannot silently
     // photograph the wrong screen, which is the failure worth designing out.
-    ? { dir, kind: "display-crop", displayId: outcome.displayId,
-        crop: outcome.crop, excludeWindowIds }
-    : { dir, kind: "window", windowId: outcome.windowId };
+    ? { kind: "region",
+        params: { kind: "display-crop", displayId: outcome.displayId,
+                  crop: outcome.crop, excludeWindowIds } }
+    : { kind: "window", params: { kind: "window", windowId: outcome.windowId } };
+}
 
-  try {
-    const r = await sup.captureStill(params);
-    return { ok: true, dir, kind: outcome.kind, shot: r.shot, file: r.file,
-             warning: r.alphaWarning };
-  } catch (e: any) {
-    return { ok: false, code: e?.code ?? "still-failed",
-             detail: e?.detail ?? String(e?.message ?? e) };
+/**
+ * The whole display the pointer is on, with no overlay and no selection.
+ *
+ * The pointer rather than the recording preference or the main display: a
+ * hotkey is pressed while looking at something, and the thing being looked at
+ * is the one under the cursor. It is also the only rule that needs nothing on
+ * screen to disambiguate, which is the point of this action existing.
+ *
+ * No crop is sent — the helper reads an absent crop as the whole display — and
+ * no exclusions, because no overlay was ever composited.
+ */
+async function wholeDisplay(): Promise<{ kind: string; params: CaptureParams }> {
+  const display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
+  return { kind: "display", params: { kind: "display-crop", displayId: display.id } };
+}
+
+/**
+ * A hotkey or menu-bar capture has no renderer waiting on a reply, so its
+ * outcome is announced instead. A window that happens to be open updates its
+ * take list and says what happened; one that is not open misses nothing,
+ * because the shot is already on disk.
+ */
+async function captureAndAnnounce(action: CaptureAction, source: CaptureSource): Promise<void> {
+  const r = await captureStill(action, source);
+  send("still:captured", r);
+}
+
+ipcMain.handle("still:capture", async (_e, action?: CaptureAction) =>
+  captureStill(action && CAPTURE_ACTIONS.includes(action) ? action : "region", "window"));
+
+/**
+ * Register what preferences asked for, and report what actually took.
+ *
+ * `planShortcuts` refuses what is knowably wrong before anything is attempted;
+ * `globalShortcut.register` is the authority on the rest and returns false when
+ * something else on the machine already holds the binding. Both answers reach
+ * the same report, kept apart by their `problem`, because "macOS owns this" and
+ * "some other app owns this" have different fixes.
+ *
+ * Everything is unregistered first: re-registering an accelerator that is still
+ * held returns false, which would report a working binding as unavailable the
+ * second time a user opened preferences.
+ */
+function applyShortcuts(next: Shortcuts): ShortcutReport[] {
+  shortcuts = next;
+  globalShortcut.unregisterAll();
+  shortcutReport = planShortcuts(next).map((plan): ShortcutReport => {
+    if (plan.problem !== undefined || plan.accelerator == null) {
+      return { ...plan, registered: false };
+    }
+    let ok = false;
+    try {
+      ok = globalShortcut.register(plan.accelerator,
+                                   () => { void captureAndAnnounce(plan.action, "hotkey"); });
+    } catch {
+      // A binding Electron cannot even parse. Reported as unavailable rather
+      // than crashing the app on a preferences file someone edited by hand.
+      ok = false;
+    }
+    return ok ? { ...plan, registered: true } : { ...plan, problem: "unavailable", registered: false };
+  });
+  tray?.update({ shortcuts, busy: capturing });
+  return shortcutReport;
+}
+
+ipcMain.handle("shortcuts:get", async () => ({ shortcuts, report: shortcutReport }));
+
+ipcMain.handle("shortcuts:set", async (_e, action: CaptureAction, accelerator: string | null) => {
+  if (!CAPTURE_ACTIONS.includes(action)) throw new Error(`unknown capture action: ${action}`);
+  const plan = planShortcuts({ ...shortcuts, [action]: accelerator })
+    .find((p) => p.action === action)!;
+  if (plan.problem !== undefined) {
+    // Refused BEFORE anything is stored — the acceptance criterion is that a
+    // binding macOS has already claimed is rejected, and a rejection that
+    // quietly wrote the default instead would leave the user believing they
+    // had bound ⌘⇧4. The previous binding stays live and stays registered;
+    // only the report changes, so preferences can say why.
+    return {
+      shortcuts,
+      report: shortcutReport.map((r) => r.action === action ? { ...plan, registered: false } : r),
+    };
   }
+  // Stored first, then applied: what is on disk is what the next launch will
+  // try. A binding that parses but that some other app holds is still the
+  // user's choice — it is reported as unavailable, not reverted behind them.
+  const saved = writeSettings(app.getPath("userData"),
+                              { shortcuts: { ...shortcuts, [action]: plan.accelerator } });
+  return { shortcuts: saved.shortcuts, report: applyShortcuts(saved.shortcuts) };
+});
+
+ipcMain.handle("shortcuts:reset", async () => {
+  const saved = writeSettings(app.getPath("userData"), { shortcuts: { ...DEFAULT_SHORTCUTS } });
+  return { shortcuts: saved.shortcuts, report: applyShortcuts(saved.shortcuts) };
 });
 
 ipcMain.handle("recorder:stop", async () => {

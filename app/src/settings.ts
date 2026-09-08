@@ -1,5 +1,8 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import {
+  CAPTURE_ACTIONS, DEFAULT_SHORTCUTS, parseAccelerator, type Shortcuts,
+} from "./hotkeys.js";
 
 /**
  * User preferences, owned by the main process.
@@ -27,13 +30,57 @@ export interface Settings {
    * recording another one; the UI shows the stale choice as such.
    */
   displayId: number | null;
+  /**
+   * The global capture shortcuts (STC-292), as Electron accelerators. `null`
+   * for an action the user deliberately unbound — which is a preference like
+   * any other, and must survive a restart rather than springing back to the
+   * default the next time the file is read.
+   */
+  shortcuts: Shortcuts;
+  /**
+   * Whether a completed still capture makes the system shutter noise
+   * (STC-292). On by default, because macOS's own screenshot does.
+   *
+   * It only ever SILENCES: with this ticked the sound still follows the Mac's
+   * "Play user interface sound effects" setting and its alert volume. There is
+   * no combination that makes a noise the system was told not to make.
+   */
+  shutterSound: boolean;
 }
 
-export const DEFAULT_SETTINGS: Settings = { camera: false, displayId: null };
+export const DEFAULT_SETTINGS: Settings = {
+  camera: false, displayId: null, shortcuts: { ...DEFAULT_SHORTCUTS },
+  shutterSound: true,
+};
 
 /** A display id is a positive integer; anything else is "automatic". */
 function cleanDisplayId(v: unknown): number | null {
   return typeof v === "number" && Number.isInteger(v) && v > 0 ? v : null;
+}
+
+/**
+ * A stored binding is trusted only as far as it still parses.
+ *
+ * Absent means "never set" and takes the default; explicit `null` means
+ * unbound and is kept. Anything else that no longer parses — a hand-edited
+ * file, or a binding written by a version with a different grammar — falls
+ * back to the default rather than to nothing, on the same rule as every other
+ * field here: a corrupt preferences file must not silently cost the user the
+ * feature.
+ */
+function cleanShortcuts(v: unknown): Shortcuts {
+  const raw = (v && typeof v === "object" && !Array.isArray(v))
+    ? v as Record<string, unknown> : {};
+  const out = {} as Shortcuts;
+  for (const action of CAPTURE_ACTIONS) {
+    const stored = raw[action];
+    if (stored === null) { out[action] = null; continue; }
+    const parsed = typeof stored === "string" ? parseAccelerator(stored) : undefined;
+    // Stored NORMALISED, so what preferences shows and what the menu bar draws
+    // is the same string the registration used.
+    out[action] = parsed?.ok ? parsed.accelerator : DEFAULT_SHORTCUTS[action];
+  }
+  return out;
 }
 
 const FILE = "settings.json";
@@ -58,6 +105,9 @@ export function readSettings(dir: string): Settings {
   return {
     camera: typeof doc.camera === "boolean" ? doc.camera : DEFAULT_SETTINGS.camera,
     displayId: cleanDisplayId(doc.displayId),
+    shortcuts: cleanShortcuts(doc.shortcuts),
+    shutterSound: typeof doc.shutterSound === "boolean"
+      ? doc.shutterSound : DEFAULT_SETTINGS.shutterSound,
   };
 }
 
@@ -71,7 +121,16 @@ export function readSettings(dir: string): Settings {
  */
 export function writeSettings(dir: string, patch: Partial<Settings>): Settings {
   const merged: Settings = { ...readSettings(dir), ...patch };
-  const clean: Settings = { camera: merged.camera === true, displayId: cleanDisplayId(merged.displayId) };
+  const clean: Settings = {
+    camera: merged.camera === true,
+    displayId: cleanDisplayId(merged.displayId),
+    shortcuts: cleanShortcuts(merged.shortcuts),
+    // Not `=== true`: the default is ON, so an absent or malformed value must
+    // fall back to on rather than to silence. The camera's `=== true` is the
+    // opposite case for the opposite reason — it defaults off because it turns
+    // on a physical LED.
+    shutterSound: merged.shutterSound !== false,
+  };
   try {
     writeFileSync(join(dir, FILE), JSON.stringify(clean, null, 2));
   } catch {
