@@ -74,7 +74,12 @@ const doneRedactBtn = $("donedact") as HTMLButtonElement;
 
 const params = new URLSearchParams(location.search);
 const dir = params.get("dir") ?? "";
-const settleAction = params.get("settleAction") === "copy" ? "copy" : "save";
+// "none" is the re-opened case (STC-294): close without exporting, because
+// the shot is already on disk and a second copy is not what a glance meant.
+const settleParam = params.get("settleAction");
+const settleAction = settleParam === "copy" ? "copy"
+                   : settleParam === "none" ? "none"
+                   : "save";
 const shot: Shot = parseShot(JSON.parse(params.get("shot") ?? "null"));
 /**
  * The "skip the panel" preference (STC-296): this window is never shown at
@@ -396,15 +401,25 @@ async function settle(): Promise<void> {
   if (settling) return;
   settling = true;
   try {
-    // Bounded, and the bound has a reason: a panel whose frame never decodes
-    // must not hold the window open until main's backstop kills it with no
-    // explanation. Timing out here still falls through to `runExport`, which
-    // refuses honestly rather than pretending.
-    await withTimeout(ready, SETTLE_READY_MS, "the panel did not composite in time to settle");
-  } catch {
-    setStatus("Could not prepare the shot in time.");
+    // `"none"` is a shot RE-OPENED from the library (STC-294): it is already on
+    // disk and nothing is going to be exported, so there is nothing to wait
+    // for. Waiting for a composite in order not to use it would be delay
+    // bought with nothing — and, on a slow decode, a panel that appears to
+    // hang before closing.
+    if (settleAction !== "none") {
+      // Bounded, and the bound has a reason: a panel whose frame never decodes
+      // must not hold the window open until main's backstop kills it with no
+      // explanation. Timing out still falls through to `runExport`, which
+      // refuses honestly rather than pretending.
+      try {
+        await withTimeout(ready, SETTLE_READY_MS,
+                          "the panel did not composite in time to settle");
+      } catch {
+        setStatus("Could not prepare the shot in time.");
+      }
+      await runExport(settleAction);
+    }
   }
-  try { await runExport(settleAction); }
   finally { window.thumb.event({ kind: "done" }); }
 }
 

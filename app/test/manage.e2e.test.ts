@@ -64,7 +64,9 @@ describe("take management", () => {
     await app!.evaluate(({ dialog }) => {
       dialog.showMessageBox = async () => ({ response: 0, checkboxChecked: false });
     });
-    await win.click("#takes .take:first-child >> text=Delete");
+    // `#libgrid .libtile` since STC-294 — the library is a grid of tiles, and
+    // `#takes`'s first child is now the filter bar rather than a take.
+    await win.click("#libgrid .libtile:first-child >> text=Delete");
 
     await expect.poll(() => win.textContent("#takes"), { timeout: 30_000 })
       .not.toContain("2026-08-24_11-00-00");

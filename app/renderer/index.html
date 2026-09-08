@@ -25,6 +25,51 @@
     .take .meta { opacity: .6; font-variant-numeric: tabular-nums; font-size: 12px; }
     .take button { padding: 3px 10px; font-size: 12px; }
     .broken { color: #c2553c; font-size: 12px; padding: 6px 0; }
+
+    /* ── the library grid (STC-294) ─────────────────────────────────────── */
+    .libfilters { display: flex; gap: 6px; padding: 2px 0 10px; }
+    .libfilters .chip { padding: 3px 12px; font-size: 12px; border-radius: 999px; opacity: .75; }
+    .libfilters .chip.on { opacity: 1; font-weight: 600;
+                           border-color: rgba(128,128,128,.75);
+                           background: rgba(128,128,128,.14); }
+    /* auto-fill, so a narrow window reflows rather than scrolling sideways. */
+    .libgrid { display: grid; gap: 14px;
+               grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); }
+    .libtile { display: flex; flex-direction: column; gap: 7px;
+               border: 1px solid rgba(128,128,128,.22); border-radius: 9px;
+               padding: 9px; min-width: 0; }
+    /* A fixed aspect box, so the grid does not reflow as pictures land — 500
+       tiles each nudging their neighbours is the jank the 60 fps criterion is
+       about, and reserving the space costs nothing. */
+    .libthumb { aspect-ratio: 16 / 10; border-radius: 6px; overflow: hidden;
+                background: rgba(128,128,128,.13); display: flex;
+                align-items: center; justify-content: center; }
+    .libthumb img { max-width: 100%; max-height: 100%; display: block; }
+    /* The checkerboard reads as "transparent" rather than "white", which for a
+       window capture with real alpha is the difference between seeing the
+       shape and thinking the shot has a white background. */
+    .libthumb.empty { background-image:
+        linear-gradient(45deg, rgba(128,128,128,.10) 25%, transparent 25%),
+        linear-gradient(-45deg, rgba(128,128,128,.10) 25%, transparent 25%),
+        linear-gradient(45deg, transparent 75%, rgba(128,128,128,.10) 75%),
+        linear-gradient(-45deg, transparent 75%, rgba(128,128,128,.10) 75%);
+      background-size: 14px 14px;
+      background-position: 0 0, 0 7px, 7px -7px, -7px 0; }
+    .libbody { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+    .libbadge { align-self: flex-start; font-size: 10px; letter-spacing: .04em;
+                text-transform: uppercase; padding: 1px 7px; border-radius: 999px;
+                background: rgba(128,128,128,.18); opacity: .8; }
+    /* Coloured from the badge's own TEXT, so this stylesheet is the only place
+       that knows there are two kinds — and the view module still does not. */
+    .libbadge[data-badge="Still"] { background: rgba(90,140,220,.22); }
+    .libtitle { font-size: 12px; font-weight: 600; overflow: hidden;
+                text-overflow: ellipsis; white-space: nowrap; }
+    .libtile .meta { opacity: .6; font-size: 11px; font-variant-numeric: tabular-nums;
+                     overflow: hidden; text-overflow: ellipsis; }
+    .libactions { display: flex; flex-wrap: wrap; gap: 5px; margin-top: auto; }
+    .libactions button { padding: 2px 9px; font-size: 11px; }
+    .libactions button.delete { border-color: rgba(200,80,60,.45); }
+    .libempty { opacity: .5; padding: 6px 0; }
     #empty { opacity: .5; padding: 6px 0; }
     .stamp { opacity: .45; font-size: 11px; margin-left: 6px; }
     .labelinput { font: inherit; padding: 2px 6px; border-radius: 5px;

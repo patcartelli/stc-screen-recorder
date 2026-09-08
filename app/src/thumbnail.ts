@@ -82,6 +82,24 @@ export function parseSettleAction(v: unknown): SettleAction {
 }
 
 /**
+ * What the PANEL may be told to do on settle — a superset of the preference.
+ *
+ * `"none"` closes without exporting anything, and exists for exactly one
+ * caller: a shot RE-OPENED from the library (STC-294). A fresh capture exists
+ * nowhere but the panel, which is why ignoring it still saves — "there is no
+ * path where a capture is silently lost" is STC-296's own acceptance
+ * criterion. A re-opened shot is already on disk, so applying that rule to it
+ * would mean glancing at yesterday's screenshot and silently writing a second
+ * copy of it into the destination folder, which is the app inventing work
+ * nobody asked for.
+ *
+ * It is deliberately NOT reachable from `parseSettleAction`, so no stored
+ * preference and no settings round trip can ever select it: a user who chose
+ * "none" for their captures would be choosing to lose them.
+ */
+export type PanelSettle = SettleAction | "none";
+
+/**
  * The panel's own state machine. `showing` while the timeout can still fire;
  * `expanded` once the user has clicked it, which is a ONE-WAY door in this
  * slice — there is no second timeout after expand, the same way macOS's own

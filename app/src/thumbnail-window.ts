@@ -1,7 +1,7 @@
 import { BrowserWindow, screen } from "electron";
 import { join } from "node:path";
 import {
-  clampTimeoutMs, positionFor, type Corner, type Size, type SettleAction,
+  clampTimeoutMs, positionFor, type Corner, type Size, type PanelSettle,
 } from "./thumbnail.js";
 import { HIDE_SETTLE_MS, windowIdOf } from "./overlay-session.js";
 
@@ -63,7 +63,7 @@ export interface PresentOptions {
   shot: unknown;
   corner: Corner;
   timeoutMs: number;
-  settleAction: SettleAction;
+  settleAction: PanelSettle;
   /** Where `thumbnail.html` and its preload live. */
   dist: string;
   rendererDir: string;

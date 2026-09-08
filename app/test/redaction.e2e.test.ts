@@ -1,10 +1,11 @@
 import { describe, test, expect, afterEach } from "vitest";
 import { _electron as electron, type ElectronApplication, type Page } from "playwright";
-import { mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { makeTakeFolder } from "./_take-fixture.js";
 import { parseShot } from "../../transform/src/shot.js";
+import { THUMBNAIL_FILE } from "../src/library-items.js";
 
 /**
  * Redaction, end to end (STC-297).
@@ -165,6 +166,23 @@ describe("redaction", () => {
     // The one that survived is the FIRST — undo is last-in-first-out, not
     // "clear everything and hope".
     expect(storedRegions(dir)[0]).toEqual(first);
+  }, 60_000);
+
+  test("editing the regions drops the library's cached thumbnail (STC-294)", async () => {
+    const { win } = await launch();
+    const { panel, dir } = await redactingPanel(win);
+    // A cached picture, as the library grid would have left behind. It was
+    // rendered from the decoration that is about to change, so leaving it would
+    // show the grid a shot that no longer exists.
+    writeFileSync(join(dir, THUMBNAIL_FILE), Buffer.alloc(64));
+    expect(existsSync(join(dir, THUMBNAIL_FILE))).toBe(true);
+
+    await dragBox(panel, [0.3, 0.35], [0.7, 0.6]);
+    await expect.poll(() => storedRegions(dir).length, { timeout: 15_000 }).toBe(1);
+    // Dropped by the same handler that wrote the regions, so the two cannot
+    // disagree about what this shot looks like.
+    await expect.poll(() => existsSync(join(dir, THUMBNAIL_FILE)),
+                      { timeout: 15_000 }).toBe(false);
   }, 60_000);
 
   test("a click is not a region", async () => {
