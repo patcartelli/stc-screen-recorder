@@ -251,6 +251,27 @@ export function cursorLayout(shot: Shot, content: Rect,
 }
 
 /**
+ * The scale that turns the document's points into output pixels.
+ *
+ * The capture is drawn 1:1, so this is the display's backing scale — read from
+ * the FRAME against the region it came from, rather than trusted from the
+ * display block, which describes the display and not necessarily this crop.
+ *
+ * Exported because the export path needs the same number to work out what a
+ * 1x output means (STC-293, `scaleFactor`), and a second derivation of it
+ * would be one more "one value, two copies" defect in a file that already
+ * documents four of them.
+ */
+export function pxPerPointOf(shot: Shot): number {
+  const sourcePoints = shot.kind === "window"
+    ? shot.window?.bounds.width
+    : shot.crop?.width;
+  return sourcePoints && sourcePoints > 0
+    ? shot.frame.width / sourcePoints
+    : shot.display.backingScale;
+}
+
+/**
  * Everything `still-render.ts` needs, from the document alone.
  *
  * Pure and total: any document `parseShot` accepted produces a layout, and the
@@ -265,16 +286,7 @@ export function layoutStill(shot: Shot): StillLayout {
   const wantsBackground = dec.mode === "window-shadow-background"
                        || dec.mode === "window-shadow-custom-background";
 
-  // The scale that turns the document's points into this output's pixels. The
-  // capture is drawn 1:1, so it is the display's backing scale — read from the
-  // frame against the region it came from rather than trusted from the display
-  // block, which describes the display and not necessarily this crop.
-  const sourcePoints = shot.kind === "window"
-    ? shot.window?.bounds.width
-    : shot.crop?.width;
-  const pxPerPoint = sourcePoints && sourcePoints > 0
-    ? frame.width / sourcePoints
-    : shot.display.backingScale;
+  const pxPerPoint = pxPerPointOf(shot);
 
   const shadow: ShadowLayout | undefined = wantsShadow && dec.shadow
     ? {

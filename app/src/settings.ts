@@ -1,5 +1,9 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import {
+  DEFAULT_EXPORT_OPTIONS, DEFAULT_FILENAME_TEMPLATE, clampQuality, parseFormat, parseScale,
+  type ExportOptions,
+} from "@transform/still-export.js";
 
 /**
  * User preferences, owned by the main process.
@@ -27,9 +31,65 @@ export interface Settings {
    * recording another one; the UI shows the stale choice as such.
    */
   displayId: number | null;
+  /**
+   * How a still leaves the app (STC-293), and the one place those answers
+   * live. The ticket's Note: "One encoder, one filename template, one
+   * destination setting; no second implementation hiding in the thumbnail."
+   * The post-capture thumbnail (STC-296) reads THIS, and so does the preview's
+   * frame grab — neither carries its own default.
+   */
+  still: StillSettings;
 }
 
-export const DEFAULT_SETTINGS: Settings = { camera: false, displayId: null };
+export interface StillSettings extends ExportOptions {
+  /**
+   * Where saves go, or null for "beside the shot, in its own take directory".
+   *
+   * Null rather than a hardcoded ~/Desktop: a still that has not been given a
+   * home belongs with the `shot.json` it was rendered from, which is the one
+   * place it can never be orphaned from its source. A user who picks a folder
+   * gets that folder; nobody gets a surprise.
+   */
+  destination: string | null;
+}
+
+export const DEFAULT_STILL_SETTINGS: StillSettings = {
+  ...DEFAULT_EXPORT_OPTIONS,
+  destination: null,
+};
+
+export const DEFAULT_SETTINGS: Settings = {
+  camera: false,
+  displayId: null,
+  still: { ...DEFAULT_STILL_SETTINGS },
+};
+
+/**
+ * Never throws, and never half-trusts.
+ *
+ * Each field is validated on its own terms — an unknown format becomes the
+ * default rather than reaching ImageIO as a string it will refuse, and a
+ * destination that is not an absolute path is treated as unset rather than
+ * resolved against whatever the process's working directory happens to be.
+ * `flattenColor` is deliberately NOT persisted with a default: it is the
+ * answer to a question the user was asked (STC-293's "having said so first"),
+ * and a stored default would silently answer it for them next time.
+ */
+function cleanStill(v: unknown): StillSettings {
+  const d = (v && typeof v === "object" && !Array.isArray(v) ? v : {}) as Record<string, unknown>;
+  const template = typeof d.template === "string" && d.template.trim()
+    ? d.template : DEFAULT_FILENAME_TEMPLATE;
+  const destination = typeof d.destination === "string" && d.destination.startsWith("/")
+    ? d.destination : null;
+  return {
+    format: parseFormat(d.format),
+    quality: clampQuality(d.quality),
+    scale: parseScale(d.scale),
+    stripMetadata: d.stripMetadata === true,
+    template,
+    destination,
+  };
+}
 
 /** A display id is a positive integer; anything else is "automatic". */
 function cleanDisplayId(v: unknown): number | null {
@@ -58,6 +118,7 @@ export function readSettings(dir: string): Settings {
   return {
     camera: typeof doc.camera === "boolean" ? doc.camera : DEFAULT_SETTINGS.camera,
     displayId: cleanDisplayId(doc.displayId),
+    still: cleanStill(doc.still),
   };
 }
 
@@ -70,8 +131,20 @@ export function readSettings(dir: string): Settings {
  * reads and turn the file into a place wrong things accumulate.
  */
 export function writeSettings(dir: string, patch: Partial<Settings>): Settings {
-  const merged: Settings = { ...readSettings(dir), ...patch };
-  const clean: Settings = { camera: merged.camera === true, displayId: cleanDisplayId(merged.displayId) };
+  const current = readSettings(dir);
+  // `still` is merged one level deeper than the rest: a caller changing only
+  // the format must not drop the destination folder the user chose months ago.
+  // A shallow spread would, and the shape of that bug is a preference that
+  // resets whenever an unrelated one is touched.
+  const merged: Settings = {
+    ...current, ...patch,
+    still: { ...current.still, ...(patch.still ?? {}) },
+  };
+  const clean: Settings = {
+    camera: merged.camera === true,
+    displayId: cleanDisplayId(merged.displayId),
+    still: cleanStill(merged.still),
+  };
   try {
     writeFileSync(join(dir, FILE), JSON.stringify(clean, null, 2));
   } catch {

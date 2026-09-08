@@ -184,17 +184,35 @@ export class PreviewPlayer {
    * composite() the export uses, on the export's own grid — which is the
    * whole of the identity claim.
    */
-  async captureFrame(): Promise<{ frame: number; tNs: number; png: ArrayBuffer }> {
+  /**
+   * The frame under the playhead, as raw RGBA.
+   *
+   * Pixels rather than an encoded PNG (STC-298, changed by STC-293): the
+   * canvas used to `toBlob("image/png")` here, which made this the second
+   * encoder in the app. Every still now leaves through one ImageIO path that
+   * also has to be able to write HEIC and JPEG and to embed a colour profile,
+   * and handing it a PNG would mean this method had already chosen the format.
+   *
+   * The buffer is `width * height * 4` bytes, unpremultiplied, top row first —
+   * what `getImageData` is specified to give and what the helper's encoder
+   * expects.
+   */
+  async captureFrame(): Promise<{
+    frame: number; tNs: number; rgba: ArrayBuffer; width: number; height: number;
+  }> {
     if (this.closed) throw new Error("preview is closed");
     const wasPlaying = this.playing;
     if (wasPlaying) this.pause();
     const { frame, tNs } = exportFrameOf(this.tNs);
     await this.seek(tNs);
-    const blob = await new Promise<Blob | null>((res) => this.canvas.toBlob(res, "image/png"));
-    if (!blob) throw new Error("the stage could not be encoded as PNG");
-    const png = await blob.arrayBuffer();
+    const { width, height } = this.canvas;
+    const data = this.ctx.getImageData(0, 0, width, height).data;
+    // Sliced to the exact bytes: a Uint8ClampedArray view may sit inside a
+    // larger buffer, and sending the whole one would ship the slack to the
+    // main process and fail the encoder's size check on arrival.
+    const rgba = data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength);
     if (wasPlaying) this.play();
-    return { frame, tNs, png };
+    return { frame, tNs, rgba: rgba as ArrayBuffer, width, height };
   }
 
   close(): void {

@@ -41,6 +41,11 @@ events → deterministic transform → CFR MP4 with cursor overlay.
 | `transform/src/still-render.ts` | the drawing pass for a decorated still. Draws the layout and decides nothing |
 | `scripts/still-gate.mjs`, `harness/still.ts` | the still gate: renders in a real browser and asserts PROPERTIES of the pixels (alpha outside the shape, no dark fringe, a shadow that reaches zero). No golden images — see the trap |
 | `scripts/decorate-one.mjs` | renders one real shot in every mode, to files a person can look at. The presets can only be judged by looking |
+| `transform/src/still-export.ts` | every decision a still makes on its way OUT (STC-293) — format, the JPEG flatten fork, the 1x scale factor, the filename template. Node-free; the ONE place any of it is decided |
+| `helper/src/StillEncode.swift` | `export-still`: ImageIO to PNG/HEIC/JPEG and NSPasteboard. Decides nothing — `StillEncodeDecisions.swift` is the pure half, tested by `helper/test/still-encode/` |
+| `app/src/still-io.ts` | the single funnel every still takes out of the app. Electron-free; the only thing in main that writes an image or touches the pasteboard |
+| `helper/test/still-encode.test.ts` | the encoder for real, on CI — encoding needs no grant, so PNG colour type, the P3 `iCCP` chunk and the HEIC brand are checked on every push |
+| `docs/STC-293-RUNBOOK.md` | what to run on the Mac for the export path: the pasteboard, the paste targets, and the P3 round trip an eye has to judge |
 | `docs/STC-291-RUNBOOK.md` | what to look at on the Mac for the decorated still, and which dial to turn when a preset is wrong |
 | `fixtures/` | hand-authored 5 s fixture session + deterministic display.mp4 generator |
 | `harness/` | vite-served browser harness hosting both sinks |
@@ -99,6 +104,7 @@ belonging to a different commit).
 | STC-306 | **helper half DONE 2026-09-04.** A display stream that dies under a live take (`didStopWithError` after `started`) now ends the take the way a display change does: `CaptureSession.onStreamDied` → `App.stop(reason: "stream-stopped")`, warning first, unsolicited `stopped` after, sidecars written and `display.mp4` finalised. `anchors-2` `stop.reason` gained `stream-stopped` / `stream-stopped-timeout`. The helper's FIRST production fault injector: `STC_CAPTURE_FAULT=stream-died` makes the session call its own delegate 0.5 s after a successful start, which is how `helper/test/stream-died.grant.test.ts` watches the path fire instead of reasoning about it. Written on Linux with no swiftc — CI's macOS runner is the first compile | `npm run test:capture` on the Mac: both new tests need the grant. The enum still lacks `quit` / `signal-N` / `stdin-closed`, which `shutdown` writes and nothing validates at load — that is STC-311 |
 | STC-289 | **helper still capture — written 2026-09-04 on Linux; COMPILED and unit-tested on CI (SDK 15), NOT yet built against the Mac's 13.3 SDK or run with a grant.** `capture-still` returns one frame via `SCScreenshotManager` with no stream and no recording lifecycle; `windows` lists what a window shot can name. Display filter + `sourceRect` for region/full shots, `desktopIndependentWindow` filter for window shots with alpha end to end; `frame.png` + `shot.json` (shot-1, cherry-picked from the review branch) in the request's dir; cursor sampled from `NSEvent.mouseLocation`, absent when on another display; 10 s answer-once backstop. The pure half is tested without a grant and every document it writes is validated against the schema AND `parseShot` on every `npm test` | a Mac: `docs/STC-289-RUNBOOK.md`. The ObjC-runtime call is the one line no test on Linux can vouch for; `still.grant.test.ts` is the proof |
 | STC-290 | **selection overlay — written 2026-09-05 on Linux, so the LOOK is unseen.** One transparent Electron window per display at screen-saver level; the state machine lives in the main process, which is what lets a drag cross a bezel. Region mode hands `capture-still` a display id and a display-local crop, window mode a window id. 44 pure assertions with no screen, plus an E2E that drives the real windows against the stand-in helper. `capture-still` gained `excludeWindowIds` so the overlay cannot land in its own photograph | a Mac: `docs/STC-290-RUNBOOK.md`. The overlay's appearance, and whether Electron's `Display.id` really is the `CGDirectDisplayID` on a second display |
+| STC-293 | **still export — written 2026-09-08 on Linux, so the PASTEBOARD IS UNOBSERVED.** One verb out of the app (`export-still`): composited RGBA in, PNG/HEIC/JPEG on disk and/or PNG + TIFF + fileURL on the pasteboard. ImageIO rather than a canvas, because a canvas cannot write HEIC, cannot control the embedded profile and cannot withhold a timestamp. A JPEG over a transparent mode is a FORK the export waits on, never a silent fill. Destination folder, filename template, 1x/2x scale and a metadata strip all live in `still-export.ts`, and STC-298's frame grab was migrated onto it in the same change so there is no second encoder. A still panel in the app is the surface until STC-296's thumbnail replaces it | a Mac: `docs/STC-293-RUNBOOK.md`. The paste targets (Slack/Mail/Figma/Keynote/Preview), the P3 round trip, and whether `premultiplied` comes back false |
 | STC-291 | **decorated still — written 2026-09-05 on Linux, so the PRESETS ARE UNSEEN on real captures.** Background, padding, shadow and canvas presets for the five modes, split pure-layout (`still-decorate.ts`) / draw (`still-render.ts`). The window's corners are NOT synthesised — they arrive as alpha from `desktopIndependentWindow` and the shadow is cast from that same alpha; nothing is ever scaled. `npm run gate:still` renders in a real browser and asserts properties rather than goldens. Every mode rendered from a real 720x480 window mock and looked at | a Mac: `docs/STC-291-RUNBOOK.md`. Whether the presets look like a product shot, and whether a REAL window capture's alpha is as clean as the synthesised one |
 | STC-247 | **DONE 2026-09-08, VERIFIED on two displays (HP Z27 main id 4 @ 0,0; built-in id 1 @ 1920,0).** The helper refuses a `displayId` it cannot find (`display-not-found`) instead of quietly recording SCK's first; `devices` reports each display's `name` and global `originX/Y`; the app has a display picker beside Camera (sticky, "(not connected)" for a stored display that is gone). On hardware: `multi-display.grant.test.ts` recorded the NON-main built-in by id and its anchors named it (id 1, 1920,0, 1800×1169); a 21 s take from the app with the built-in picked had `anchors.display` = that display, capture 3326×2160, and the EXPORT was watched — the built-in's content, cursor where the pointer was, no whole-screen offset; Automatic recorded the HP (id 4, main, listed first — observed, not promised); both unplug arms ended the take with `stop.reason: display-reconfigured`, including the one where the captured display survived (review P7, deliberate). #85 | nothing. An origin timeline in anchors, so an unrelated display change need not end a take, is its own ticket |
 | STC-251/252 | preview memory ceiling (~15 min at 4K); Node 20 actions deprecation | — |
@@ -1044,6 +1050,60 @@ reachable via KVC (`setValue(3, forKey: "captureResolution")`, verified in phase
   background with no holes) plus determinism between two renders inside ONE browser, which is the
   same scope every other gate here compares in. The capture it renders is SYNTHESISED in the page
   rather than committed, because the assertions have to name where the corner curve is.
+
+- **A colour profile is NOT metadata, and one switch must not govern both (STC-293).** The ticket
+  asks for an optional metadata strip "since a shot of a screen can carry the display's colour
+  profile and a capture timestamp", which reads as one feature and is two. The TIMESTAMP is
+  metadata: it says when the user was at their desk and wanting it gone before sending a screenshot
+  to a stranger is reasonable. The PROFILE is what makes the numbers mean colours — strip it from a
+  Display P3 capture and every viewer falls back to sRGB, which is a visible shift and is exactly
+  what the same ticket's "round trip through PNG preserves the wide-gamut colours ... without a
+  visible shift" forbids. So `stripMetadata` governs the timestamp and the profile is embedded on
+  every path, stripped or not. Two tests pin it, one either side of the process line.
+  There is also nothing to REMOVE: the pixels reach the encoder as raw RGBA with no container, so
+  the strip is "do not add" rather than a filtering pass that might miss a field — the one version
+  of this feature that cannot be incomplete.
+
+- **A canvas cannot be the encoder here, and `toBlob` being one line is the trap (STC-293).**
+  `canvas.toBlob("image/png")` is the obvious way to get a composited still onto disk and it fails
+  three of the ticket's requirements at once: it cannot write HEIC at all, it gives no control over
+  the embedded ICC profile (so the P3 acceptance criterion is unreachable), and it has no way to
+  attach or withhold a capture timestamp. ImageIO does all three. The cost is that 33 MB of RGBA
+  for a 4K still has to cross into the helper, which it does as a temp FILE rather than inline in
+  a JSON line — fd3 is deliberately for small reliable messages, and a still exported during a
+  recording must not be able to delay that take's `stop`.
+  `PreviewPlayer.captureFrame` used to return an encoded PNG for exactly this reason and now
+  returns pixels; STC-298's copy/save were the second encoder the ticket's Note forbids.
+
+- **`getImageData` is UNPREMULTIPLIED and `CGImage` may or may not take that layout (STC-293).**
+  The canvas spec says straight alpha; `CGImage` documents `kCGImageAlphaLast` as valid (it is
+  `CGBitmapContext` that refuses it). Both are true and neither could be checked from the Linux
+  machine this was written on, which is precisely where a confident single path becomes a nil
+  return on someone else's Mac. `StillEncode.makeImage` asks for `.last` first and falls back to
+  premultiplying the buffer and retrying with `.premultipliedLast`, and the REPLY says which it
+  took (`premultiplied`) rather than the runbook assuming. The premultiply rounds
+  (`(c * a + 127) / 255`) — truncating darkens every partially transparent pixel by up to one
+  level, which along a window's antialiased corner is the dark fringe the whole still path exists
+  to avoid.
+
+- **"Say what will happen" means a fork the export WAITS on, not a warning after the fact
+  (STC-293).** A JPEG cannot carry alpha, and every encoder's default answer is to fill black —
+  which on a window shot with a shadow looks like a rendering fault rather than a format limit,
+  with no way for the user to tell which. So `flattenPlan` returns a `conflict` that the export
+  path may not act on: the UI has to put "flatten onto a colour" and "use PNG instead" to the user
+  and come back with one. `stillIsBlocked` is the one-liner so no caller has to remember which plan
+  kinds are actionable, and the default offered colour is WHITE — a default of black would satisfy
+  the letter of the requirement and none of its point.
+
+- **A file URL, not a file promise, and the process model is why (STC-293).** The ticket asks for
+  "a file URL promise so a drag into Finder or a Slack upload gets a real file".
+  `NSFilePromiseProvider` needs a live provider object to answer the receiver's callback at paste
+  time, and the helper has answered its request and gone idle by then — a promise nobody answers
+  hands the receiver a ZERO-BYTE file, which is worse than offering nothing. So a copy writes a
+  real file first and puts its URL on the pasteboard. The user-visible behaviour is the one asked
+  for; the mechanism is the one that survives.
+  That file goes to a CACHE directory, never the user's shots folder: someone who pressed Copy did
+  not ask for a file, and one appearing on every paste is the app inventing tidying-up for them.
 
 - **Nothing in the still path resamples the capture, and that is load-bearing rather than tidy
   (STC-291).** Canvas presets grow the canvas around the frame; padding grows the canvas around the

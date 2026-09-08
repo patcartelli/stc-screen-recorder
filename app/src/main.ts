@@ -1,5 +1,7 @@
-import { app, BrowserWindow, ipcMain, dialog, shell, clipboard, nativeImage } from "electron";
+import { app, BrowserWindow, ipcMain, dialog, shell } from "electron";
 import { readSettings, writeSettings, type Settings } from "./settings.js";
+import { exportStill, type CompositedStill, type ExportTarget } from "./still-io.js";
+import { colorSpaceFor, type ExportOptions } from "@transform/still-export.js";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { existsSync, readdirSync } from "node:fs";
@@ -30,6 +32,17 @@ let win: BrowserWindow | undefined;
 let sup: HelperSupervisor | undefined;
 /** The take the renderer may currently read, set only by preview:open. */
 let openTake: string | undefined;
+/**
+ * The last still THIS process wrote, for `still:reveal`.
+ *
+ * Remembered here rather than passed back through the renderer because a
+ * destination folder is by definition outside the recordings root, so
+ * `recorder:reveal`'s "inside the recordings folder" guard correctly refuses
+ * it — and widening that guard to accept a renderer-supplied path would hand
+ * the sandboxed renderer the ability to open anything. A path the main process
+ * produced itself needs no guard at all.
+ */
+let lastStillFile: string | undefined;
 
 // The renderer is sandboxed and cannot read files. It gets bytes over IPC and
 // never names a path: it may ask for one of a few fixed filenames, and only
@@ -290,14 +303,125 @@ ipcMain.handle("export:write", async (_e, name: string, bytes: ArrayBuffer) => {
 });
 
 /**
- * A still onto the pasteboard (STC-298). Main owns the clipboard as it owns
- * every other OS surface; the renderer hands over PNG bytes and nothing else.
+ * The one way a still leaves the app (STC-293).
+ *
+ * Every caller reaches disk and pasteboard through here: the still panel, the
+ * preview's frame grab (STC-298, migrated onto this in the same change), and
+ * the floating thumbnail when it lands (STC-296). The ticket's Note forbids a
+ * second implementation, and the way that rule stays true is that there is
+ * exactly one handler and it takes composited pixels rather than an encoded
+ * image — an encoded image would mean the caller had already chosen a format,
+ * which is half the decision this path exists to own.
+ *
+ * The renderer sends RGBA because it has a canvas and no encoder; the helper
+ * encodes because ImageIO is the only thing here that can write HEIC, embed a
+ * Display P3 profile, and withhold a capture timestamp.
  */
-ipcMain.handle("frame:copy", async (_e, bytes: ArrayBuffer) => {
-  const image = nativeImage.createFromBuffer(Buffer.from(bytes));
-  if (image.isEmpty()) throw new Error("the frame could not be decoded as an image");
-  clipboard.writeImage(image);
-  return image.getSize();
+ipcMain.handle("still:export", async (_e, req: {
+  bytes: ArrayBuffer; width: number; height: number; alpha: boolean;
+  colorSpace?: string;
+  target: ExportTarget;
+  options: ExportOptions;
+  info: { app?: string; title?: string; mode: string };
+  /** A take directory, for the "beside the shot" default destination. */
+  dir?: string;
+}) => {
+  if (!sup) throw new Error("supervisor not running");
+  const settings = readSettings(app.getPath("userData")).still;
+  // The renderer proposes format, quality and scale for THIS export — the
+  // panel's controls are live — but the destination folder and the strip
+  // switch are the stored preference's alone. A renderer that could name its
+  // own destination would be a second destination setting.
+  const options: ExportOptions = {
+    ...settings,
+    ...req.options,
+    template: settings.template,
+    stripMetadata: settings.stripMetadata,
+  };
+
+  // A take directory is the only fallback destination that may be named, and
+  // it must be inside the recordings root — the renderer is sandboxed and
+  // never gets to point the writer at an arbitrary path.
+  const root = takesRoot(process.env);
+  const fallbackDir = req.dir && req.dir.startsWith(root) && req.dir !== root ? req.dir : undefined;
+
+  const still: CompositedStill = {
+    bytes: req.bytes,
+    width: req.width,
+    height: req.height,
+    alpha: req.alpha === true,
+    colorSpace: colorSpaceFor(req.colorSpace),
+  };
+  try {
+    const r = await exportStill((params) => sup!.exportStill(params),
+                                { still, target: req.target, options, info: req.info,
+                                  ...(fallbackDir ? { fallbackDir } : {}) },
+                                { ...settings, ...options }, app.getPath("temp"));
+    // Only a save is worth revealing. A copy's file lives in the cache and
+    // exists so the pasteboard's URL points somewhere, not for the user.
+    if (req.target.file && r.file) lastStillFile = r.file;
+    return { ok: true, ...r };
+  } catch (e: any) {
+    return { ok: false, code: e?.code ?? "export-failed",
+             detail: e?.detail ?? String(e?.message ?? e) };
+  }
+});
+
+/**
+ * The destination folder, chosen by the user.
+ *
+ * A folder picker rather than a save panel, deliberately: the ticket's default
+ * path out of the app is "no interaction at all", so the place is chosen once
+ * and every subsequent export is silent. A save panel per shot would be the
+ * interaction the design is trying to remove.
+ */
+ipcMain.handle("still:chooseDestination", async () => {
+  if (!win) throw new Error("no window");
+  const current = readSettings(app.getPath("userData")).still.destination;
+  const { canceled, filePaths } = await dialog.showOpenDialog(win, {
+    title: "Where should stills be saved?",
+    properties: ["openDirectory", "createDirectory"],
+    ...(current ? { defaultPath: current } : {}),
+    buttonLabel: "Choose",
+  });
+  if (canceled || !filePaths[0]) return { destination: current };
+  const destination = filePaths[0];
+  writeSettings(app.getPath("userData"), { still: { ...readSettings(app.getPath("userData")).still, destination } });
+  return { destination };
+});
+
+/** Show the last SAVED still in the Finder. Takes no path — see `lastStillFile`. */
+ipcMain.handle("still:reveal", async () => {
+  if (!lastStillFile) return false;
+  shell.showItemInFolder(lastStillFile);
+  return true;
+});
+
+/** Back to "beside the shot", without needing a folder picker to express it. */
+ipcMain.handle("still:clearDestination", async () => {
+  const still = readSettings(app.getPath("userData")).still;
+  writeSettings(app.getPath("userData"), { still: { ...still, destination: null } });
+  return { destination: null };
+});
+
+/**
+ * The captured frame's bytes, for the still panel to decorate.
+ *
+ * Guarded exactly like `preview:read`: a leaf name inside a directory the main
+ * process is willing to name, never a path the renderer chose. The stills the
+ * renderer may open are the ones under the recordings root, which is the only
+ * place `still:capture` ever writes.
+ */
+ipcMain.handle("still:frame", async (_e, dir: string, name: string) => {
+  const root = takesRoot(process.env);
+  if (!dir.startsWith(root) || dir === root) {
+    throw new Error("refusing to read a path outside the recordings folder");
+  }
+  if (!/^[A-Za-z0-9._-]+\.png$/.test(name) || name.includes("..")) {
+    throw new Error(`refusing to read "${name}"`);
+  }
+  const buf = await readFile(join(dir, name));
+  return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
 });
 
 ipcMain.handle("preview:read", async (_e, name: string) => {

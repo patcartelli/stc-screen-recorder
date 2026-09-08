@@ -60,6 +60,31 @@
     .framebar button { padding: 3px 10px; font-size: 12px; }
     #framestatus { opacity: .75; font-variant-numeric: tabular-nums; }
     #framestatus[hidden] { display: none; }
+    /* the still panel (STC-293) */
+    #stillpanel { border: 1px solid rgba(128,128,128,.35); border-radius: 6px;
+                  padding: 10px; margin: 10px 0; }
+    #stillpanel[hidden] { display: none; }
+    #stillcanvas { max-width: 100%; max-height: 260px; display: block; margin: 0 auto 10px;
+                   /* the checkerboard, so a transparent mode LOOKS transparent
+                      rather than looking like it has a white background */
+                   background-image:
+                     linear-gradient(45deg, rgba(128,128,128,.22) 25%, transparent 25%),
+                     linear-gradient(-45deg, rgba(128,128,128,.22) 25%, transparent 25%),
+                     linear-gradient(45deg, transparent 75%, rgba(128,128,128,.22) 75%),
+                     linear-gradient(-45deg, transparent 75%, rgba(128,128,128,.22) 75%);
+                   background-size: 16px 16px;
+                   background-position: 0 0, 0 8px, 8px -8px, -8px 0px; }
+    .stillrow { display: flex; align-items: center; gap: 8px; margin-top: 6px;
+                font-size: 12px; flex-wrap: wrap; }
+    .stillrow label { display: flex; align-items: center; gap: 4px; }
+    .stillrow button { padding: 3px 10px; font-size: 12px; }
+    #stilldest { opacity: .75; overflow: hidden; text-overflow: ellipsis;
+                 white-space: nowrap; max-width: 260px; direction: rtl; }
+    #stillexportstatus { opacity: .75; }
+    #stillexportstatus[hidden] { display: none; }
+    #stillflatten { border: 1px solid rgba(200,140,0,.6); border-radius: 4px;
+                    padding: 8px; margin-top: 8px; font-size: 12px; }
+    #stillflatten[hidden] { display: none; }
     #exportprogress { flex: 1; }
     #exportstatus { font-size: 12px; opacity: .75; min-width: 150px; font-variant-numeric: tabular-nums; }
   </style>
@@ -74,6 +99,60 @@
     <span id="state">starting…</span>
   </div>
   <div id="stillstatus" hidden></div>
+  <!--
+    The still panel (STC-293). STC-296's floating thumbnail replaces this with
+    something that appears over the screen after a capture; until it exists
+    this is the only surface from which a decorated still can be got out of the
+    app, and it is what the acceptance list's "paste into Slack, Mail, Figma
+    and Preview" is performed against.
+  -->
+  <div id="stillpanel" hidden>
+    <canvas id="stillcanvas"></canvas>
+    <div class="stillrow">
+      <label>Style <select id="stillmode"></select></label>
+      <label>Format <select id="stillformat">
+        <option value="png">PNG</option>
+        <option value="heic">HEIC</option>
+        <option value="jpeg">JPEG</option>
+      </select></label>
+      <label id="stillqualitylabel" hidden>Quality
+        <input id="stillquality" type="range" min="0.1" max="1" step="0.05" value="0.9">
+        <span id="stillqualityvalue">90%</span>
+      </label>
+      <label>Size <select id="stillscale">
+        <option value="native">2× (native)</option>
+        <option value="1x">1×</option>
+      </select></label>
+    </div>
+    <div class="stillrow">
+      <button id="stillcopy" title="Copy to the clipboard, with transparency where the destination supports it">Copy</button>
+      <button id="stillsave">Save</button>
+      <button id="stillreveal" title="Show the last saved file in the Finder" hidden>Reveal</button>
+      <button id="stillclose">Done</button>
+      <span id="stillexportstatus" hidden></span>
+    </div>
+    <div class="stillrow">
+      <span>Saving to</span>
+      <span id="stilldest">beside the shot</span>
+      <button id="stillchoosedest">Change…</button>
+      <button id="stillcleardest">Beside the shot</button>
+    </div>
+    <!--
+      The flatten fork. STC-293: choosing JPEG in a transparent mode "must say
+      what will happen — flatten onto a chosen colour, or switch format — never
+      silently fill black". So this is a fork the export WAITS on, not a toast
+      printed after the file was written.
+    -->
+    <div id="stillflatten" hidden>
+      <div id="stillflattenmessage"></div>
+      <div class="stillrow">
+        <label>Flatten onto <input id="stillflattencolor" type="color" value="#ffffff"></label>
+        <button id="stillflattengo">Flatten and continue</button>
+        <button id="stillflattenpng">Use PNG instead</button>
+        <button id="stillflattencancel">Cancel</button>
+      </div>
+    </div>
+  </div>
   <div id="alert"></div>
   <table>
     <tbody>
