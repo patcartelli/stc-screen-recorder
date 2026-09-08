@@ -36,14 +36,33 @@ export const CORNER_RADIUS = 24;
 const FRAME_W = 480;
 const FRAME_H = 320;
 
+/**
+ * The two appearances gate 1 asks for (STC-301).
+ *
+ * A premultiplied-alpha mistake darkens a partially transparent edge toward
+ * black, and that is glaring against a LIGHT capture and nearly invisible
+ * against a dark one — where the same class of bug shows up instead as an edge
+ * sliding toward white. Testing one appearance therefore only covers half the
+ * failure, which is why the ticket names both.
+ *
+ * Deliberately near-white and near-black rather than pure: a pure-white fill
+ * cannot slide toward white and a pure-black one cannot slide toward black, so
+ * the extremes are the two values that would make each half of the assertion
+ * unfalsifiable.
+ */
+export const APPEARANCES: Readonly<Record<string, { r: number; g: number; b: number }>> = {
+  light: { r: 0xf2, g: 0xf3, b: 0xf5 },
+  dark: { r: 0x14, g: 0x16, b: 0x1a },
+};
+
 /** A window capture: opaque rounded rectangle, transparent outside it. */
-function makeCapture(): HTMLCanvasElement {
+function makeCapture(fill: { r: number; g: number; b: number } = FILL): HTMLCanvasElement {
   const c = document.createElement("canvas");
   c.width = FRAME_W;
   c.height = FRAME_H;
   const ctx = c.getContext("2d", { alpha: true })!;
   ctx.clearRect(0, 0, FRAME_W, FRAME_H);
-  ctx.fillStyle = `rgb(${FILL.r}, ${FILL.g}, ${FILL.b})`;
+  ctx.fillStyle = `rgb(${fill.r}, ${fill.g}, ${fill.b})`;
   ctx.beginPath();
   // roundRect is the shape a real window has; drawn once, so both the capture
   // and every assertion about it agree on where the curve is.
@@ -121,6 +140,8 @@ export interface StillProbe {
   shadowRay: number[];
   /** Every pixel opaque? The test for "a background covers everything". */
   fullyOpaque: boolean;
+  /** The capture's own colour, so an assertion can compare against the right one. */
+  fill: { r: number; g: number; b: number };
   /**
    * A cross-section THROUGH an arrow's shaft where it passes over the window's
    * transparent rounded corner (STC-295).
@@ -137,7 +158,9 @@ export interface StillProbe {
 }
 
 function render(mode: DecorationMode, canvasPreset: string,
-                annotations: unknown[] = []): { probe: StillProbe; data: ImageData } {
+                annotations: unknown[] = [],
+                fill: { r: number; g: number; b: number } = FILL):
+                { probe: StillProbe; data: ImageData } {
   const shot = shotFor(mode, canvasPreset, annotations);
   const layout = layoutStill(shot);
   const cv = document.createElement("canvas");
@@ -147,7 +170,7 @@ function render(mode: DecorationMode, canvasPreset: string,
   // opaque black, which is the exact failure the gate exists to catch, and it
   // would catch it as "everything is opaque" rather than as a context mistake.
   const ctx = cv.getContext("2d", { alpha: true, willReadFrequently: true })!;
-  renderStill(ctx as never, { frame: makeCapture() }, layout);
+  renderStill(ctx as never, { frame: makeCapture(fill) }, layout);
 
   const data = ctx.getImageData(0, 0, cv.width, cv.height);
   const { content } = layout;
@@ -183,7 +206,7 @@ function render(mode: DecorationMode, canvasPreset: string,
       interior: pixelAt(data, content.x + content.width / 2, content.y + content.height / 2),
       outsideCorner,
       canvasCorner: pixelAt(data, 0, 0),
-      fringe, shadowRay, fullyOpaque,
+      fringe, shadowRay, fullyOpaque, fill,
       ...(annotations.length > 0 ? { arrowCross: arrowCrossSection(data, content) } : {}),
     },
   };
@@ -376,6 +399,15 @@ window.__stillGate = async () => {
   ]).probe;
   marked.mode = "window-only+annotations";
   probes.push(marked);
+
+  // Gate 1's appearance axis (STC-301). `window-only` is the mode with real
+  // alpha at the corner and nothing else drawn, so the fringe is the capture's
+  // edge and nothing else's.
+  for (const [name, fill] of Object.entries(APPEARANCES)) {
+    const p = render("window-only", "natural", [], fill).probe;
+    p.mode = `window-only@${name}`;
+    probes.push(p);
+  }
   mark("still gate: rendered");
 
   const a = render("window-shadow-background", "natural").probe.hash;
