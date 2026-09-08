@@ -35,7 +35,15 @@ enum StillExport {
     /// Generous, because it covers reading up to 130 MB of RGBA off disk and a
     /// lossless encode of it. A wedge here costs the user one export and says
     /// so; it cannot cost them a take.
-    static let timeoutSeconds: Double = 30
+    ///
+    /// It must stay UNDER the client's `DEFAULT_REQUEST_TIMEOUT_MS` (30 s), and
+    /// that is the whole reason it is not 30 itself. Set equal, the client's
+    /// generic "request timed out" always wins the race and this message —
+    /// which names the operation and the bound — can never be delivered: the
+    /// "inner bound set equal to the outer one" trap CLAUDE.md already records
+    /// from the writer-gate work. `stop-bounds.test.ts` asserts the clearance,
+    /// so the two numbers cannot drift back together.
+    static let timeoutSeconds: Double = 20
 
     static func run(_ cmd: [String: Any],
                     completion: @escaping (Result<[String: Any], StillExportError>) -> Void) {
