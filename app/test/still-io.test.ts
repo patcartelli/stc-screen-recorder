@@ -261,6 +261,52 @@ describe("the export funnel (STC-293)", () => {
  * reach it; it lives in `still-io.ts` now, and these are the assertions that
  * would have named it.
  */
+describe("two exports at once (STC-296 stacking)", () => {
+  test("concurrent saves in the same second do not collide on one filename", async () => {
+    // Reachable for the first time with stacking: until panels could coexist,
+    // only one could ever be settling. Both list the destination BEFORE either
+    // writes, so both compute the same stem from `{app} {date} at {time}` and
+    // one silently overwrites the other — a capture lost with nothing to show
+    // for it, which is the acceptance criterion this whole panel exists for.
+    const h = fakeHelper();
+    const at = new Date(2026, 8, 8, 14, 23, 5);
+    const one = () => exportStill(h.send, {
+      still: still(),
+      target: { file: true, clipboard: false },
+      options: { ...DEFAULT_STILL_SETTINGS },
+      info: { app: "Safari", mode: "window-only" },
+      fallbackDir: dir,
+      at,
+    }, settings(), cache);
+
+    const [a, b] = await Promise.all([one(), one()]);
+    expect(a.file).not.toBe(b.file);
+    expect(readdirSync(dir).filter((n) => n.endsWith(".png")).length).toBe(2);
+  });
+
+  test("a FAILED export releases its name — the next shot is not pushed to a suffix", async () => {
+    // The other half of the claim. A name reserved by an export that never
+    // wrote anything would send every later shot to `-1`, `-2`, … around a
+    // file that does not exist — tidy-looking, permanent, and caused by a
+    // missing `finally`.
+    const at = new Date(2026, 8, 8, 14, 23, 5);
+    const req = () => ({
+      still: still(),
+      target: { file: true, clipboard: false } as const,
+      options: { ...DEFAULT_STILL_SETTINGS },
+      info: { app: "Safari", mode: "window-only" },
+      fallbackDir: dir,
+      at,
+    });
+    const failing = async () => { throw new Error("encode-failed"); };
+    await expect(exportStill(failing, req(), settings(), cache)).rejects.toThrow(/encode-failed/);
+
+    const r = await exportStill(fakeHelper().send, req(), settings(), cache);
+    // The PLAIN name, with no suffix: the failed attempt reserved nothing.
+    expect(r.file).toBe(join(dir, "Safari 2026-09-08 at 14-23-05.png"));
+  });
+});
+
 describe("Save As — an exact path main chose (STC-296 follow-up)", () => {
   test("an explicit file wins over the destination folder AND the template", async () => {
     const h = fakeHelper();

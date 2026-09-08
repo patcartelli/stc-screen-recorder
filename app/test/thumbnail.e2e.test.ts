@@ -163,31 +163,50 @@ describe("the post-capture floating thumbnail", () => {
     await noThumbnailWindow();
   }, 60_000);
 
-  test("a second capture replaces the panel, and the replaced shot is still saved", async () => {
-    const { win, destDir } = await launch();
-    // A long timeout, so only the REPLACEMENT (not either panel's own clock)
-    // can be what settles anything within this test — otherwise a slow CI run
-    // could let the new panel's timeout also fire and the file count would
-    // depend on exactly how long assembling two windows took.
+  test("a second capture STACKS rather than replacing — both panels stay", async () => {
+    const { win } = await launch();
+    // A long timeout, so no panel's own clock can settle anything inside this
+    // test: what is under test is what a second capture does to the first
+    // panel, and a settle firing meanwhile would make the count depend on how
+    // long assembling two windows happened to take.
     await win.evaluate(async () => {
       await (window as any).recorder.setSettings({ thumbnail: { timeoutMs: 60_000 } });
     });
     await captureDisplay(win);
-    const first = await thumbnailWindow();
-    const firstUrl = first.url();
+    const firstUrl = (await thumbnailWindow()).url();
 
     const r2 = await captureDisplay(win);
     expect(r2.ok).toBe(true);
-    // Eventually exactly one panel — the new one — not two stacked.
-    await expect.poll(async () => {
+    // TWO panels, and the first is still one of them. This assertion is the
+    // inverse of the one it replaces: until stacking landed, a second capture
+    // REPLACED the first and this test required exactly one window. The
+    // change is the feature, so the test states the new contract rather than
+    // being relaxed to tolerate it.
+    await expect.poll(() => {
       const urls = app!.windows().map((p) => p.url()).filter((u) => u.includes("thumbnail.html"));
-      return urls.length === 1 && urls[0] !== firstUrl;
+      return urls.length === 2 && urls.includes(firstUrl);
     }, { timeout: 15_000 }).toBe(true);
-    // The REPLACED capture was settled, not merely discarded — five captures
-    // in five seconds must each be recoverable (the ticket's acceptance list),
-    // and losing the outgoing one to a fast second capture would violate it
-    // even though stacking itself is deferred.
-    await expect.poll(() => readdirSync(destDir).length, { timeout: 15_000 }).toBe(1);
+  }, 60_000);
+
+  test("every stacked capture still settles — nothing is lost by doing nothing", async () => {
+    const { win, destDir } = await launch();
+    // The floor (3 s), so both panels settle on their OWN timers inside this
+    // test. That is the point: with stacking, nothing settles the first panel
+    // on the second's behalf any more, so "the outgoing shot is not lost"
+    // stopped being a property of replacement and became a property of each
+    // panel keeping its own clock. If per-session timers were ever replaced by
+    // one central drain, this is the test that would notice.
+    await win.evaluate(async () => {
+      await (window as any).recorder.setSettings({ thumbnail: { timeoutMs: 3_000 } });
+    });
+    await captureDisplay(win);
+    const r2 = await captureDisplay(win);
+    expect(r2.ok).toBe(true);
+
+    // TWO files, one per capture — the ticket's "five captures in five seconds
+    // produce five recoverable shots", at the smallest size that can fail.
+    await expect.poll(() => readdirSync(destDir).length, { timeout: 20_000 }).toBe(2);
+    await noThumbnailWindow();
   }, 60_000);
 
   test("a showing panel is excluded from the next capture's request, when an id resolves", async () => {

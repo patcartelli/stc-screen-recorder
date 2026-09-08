@@ -150,6 +150,37 @@ export function destinationDir(settings: Pick<StillSettings, "destination">,
 }
 
 /**
+ * Names handed out but not yet on disk, as absolute paths.
+ *
+ * `namesIn` lists the destination BEFORE the encode, and the file appears
+ * AFTER it — so between those two moments the name exists only here. Two
+ * exports overlapping in that window both see a directory without the other's
+ * file, both render the same stem from `{app} {date} at {time}`, and one
+ * silently overwrites the other: a capture lost with nothing to show for it,
+ * which is the one outcome STC-296 exists to prevent.
+ *
+ * It was unreachable until captures could STACK. One panel at a time meant one
+ * settle at a time; two panels settling on their own timers is the first thing
+ * in this app that can export twice at once. The comment below already named
+ * the hazard — "correct only until two exports race" — and the race simply had
+ * no way to happen yet.
+ *
+ * In-process only, and that is the honest scope: it makes THIS app's exports
+ * not collide with each other. Nothing else writes to the destination folder,
+ * and a cross-process guarantee would need the writer to create the file
+ * exclusively, which happens inside the helper.
+ */
+const claimedPaths = new Set<string>();
+
+/** The claimed names that would collide inside `dir`. */
+function claimedIn(dir: string): string[] {
+  const prefix = dir.endsWith("/") ? dir : `${dir}/`;
+  return [...claimedPaths]
+    .filter((p) => p.startsWith(prefix) && !p.slice(prefix.length).includes("/"))
+    .map((p) => p.slice(prefix.length));
+}
+
+/**
  * What is already in `dir`, for the collision check.
  *
  * A directory that does not exist yet is empty, not an error: a destination
@@ -258,7 +289,10 @@ export async function exportStill(send: SendExport, req: ExportRequest,
   // reads could disagree, and a filename whose counter came from a different
   // listing than its uniqueness check is exactly the kind of nearly-right that
   // survives every test and collides in the wild.
-  const taken = await namesIn(dir);
+  // On disk, PLUS what another export in flight has already claimed. Without
+  // the second half two concurrent settles pick the same name — see
+  // `claimedPaths`.
+  const taken = new Set([...await namesIn(dir), ...claimedIn(dir)]);
   const name = planFileName(req.options, {
     tokens: tokensFor({
       ...req.info,
@@ -276,6 +310,13 @@ export async function exportStill(send: SendExport, req: ExportRequest,
   // something real. A save-only export never touches the clipboard.
   const wantsFile = req.target.file || req.target.clipboard;
   const meta = metadataPlan(req.still.colorSpace, at, settings.stripMetadata === true);
+
+  // Claimed for as long as this export is in flight, so a concurrent one sees
+  // the name as taken even though nothing is on disk yet. Released in the same
+  // `finally` as the scratch file: an export that fails must not leave a name
+  // reserved forever.
+  const claimed = wantsFile ? (req.explicitFile ?? join(dir, name)) : undefined;
+  if (claimed !== undefined) claimedPaths.add(claimed);
 
   const scratch = await mkdtemp(join(tmpdir(), "stc-still-"));
   const rgba = join(scratch, "composite.rgba");
@@ -311,6 +352,9 @@ export async function exportStill(send: SendExport, req: ExportRequest,
     // The scratch copy is 33 MB and has no reason to outlive the encode, on
     // the failure path least of all.
     await rm(scratch, { recursive: true, force: true }).catch(() => {});
+    // Released whatever happened. A failed export that kept its name reserved
+    // would push every later shot to a suffix for a file that never existed.
+    if (claimed !== undefined) claimedPaths.delete(claimed);
   }
 }
 
