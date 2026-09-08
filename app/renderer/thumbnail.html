@@ -50,6 +50,13 @@
     button:disabled:hover { background: rgba(255, 255, 255, 0.12); }
     #close { margin-left: auto; padding: 4px 9px; }
     #status { opacity: 0.75; margin-top: 4px; min-height: 1.2em; }
+    /* redact mode (STC-297): the panel grows so a box can be placed over a
+       line of text rather than over a fifth of the screenshot. */
+    #redactrow { display: none; }
+    #card.redacting #redactrow { display: flex; }
+    #card.redacting #redact { background: rgba(255, 255, 255, 0.28); }
+    #card.redacting #thumbcanvas { cursor: crosshair; }
+    #redacthint { opacity: 0.7; }
   </style>
 </head>
 <body>
@@ -60,10 +67,15 @@
         <label>Style <select id="mode"></select></label>
       </div>
       <div class="row">
-        <button id="redact" disabled title="Redaction is coming — STC-297">Redact</button>
+        <button id="redact" title="Cover anything private with a solid fill">Redact</button>
         <button id="copy">Copy</button>
         <button id="save">Save</button>
         <button id="close" title="Close">✕</button>
+      </div>
+      <div class="row" id="redactrow">
+        <span id="redacthint">Drag over anything private.</span>
+        <button id="undo" title="Remove the last box">Undo</button>
+        <button id="donedact">Done</button>
       </div>
       <div id="status"></div>
     </div>

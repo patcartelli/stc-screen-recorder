@@ -37,6 +37,15 @@ import { HIDE_SETTLE_MS, windowIdOf } from "./overlay-session.js";
 
 const COLLAPSED_SIZE: Size = { width: 220, height: 150 };
 const EXPANDED_SIZE: Size = { width: 300, height: 260 };
+/**
+ * Redact mode's size (STC-297). Bigger than the panel needs to be for its own
+ * controls, and deliberately: at the expanded size one preview pixel of a 4K
+ * capture is ~14 real ones, so placing a box over an email address would be
+ * guesswork. This is the size at which a line of text is a target. It is still
+ * the same panel in the same corner — the still EDITOR is STC-300, and this
+ * stops well short of one.
+ */
+const REDACT_SIZE: Size = { width: 520, height: 420 };
 const CORNER_MARGIN = 20;
 
 /**
@@ -67,7 +76,12 @@ export interface PresentOptions {
   silent?: boolean;
 }
 
-type ThumbEvent = { kind: "painted" } | { kind: "expanded" } | { kind: "done" };
+type ThumbEvent =
+  | { kind: "painted" }
+  | { kind: "expanded" }
+  /** Redact mode opening or closing (STC-297), which the panel is resized for. */
+  | { kind: "redact"; on: boolean }
+  | { kind: "done" };
 
 let active: ThumbnailSession | undefined;
 
@@ -185,11 +199,28 @@ class ThumbnailSession {
     } else if (ev.kind === "expanded") {
       this.expanded = true;
       this.clearTimers();
-      const { x, y } = positionFor(this.corner, this.workArea(), EXPANDED_SIZE, CORNER_MARGIN);
-      this.win.setBounds({ x, y, width: EXPANDED_SIZE.width, height: EXPANDED_SIZE.height });
+      this.resizeTo(EXPANDED_SIZE);
+    } else if (ev.kind === "redact") {
+      // Redact mode is only ever entered from the expanded panel, so the timer
+      // is already cancelled; clearing again costs nothing and means this does
+      // not depend on that staying true.
+      this.expanded = true;
+      this.clearTimers();
+      this.resizeTo(ev.on ? REDACT_SIZE : EXPANDED_SIZE);
     } else if (ev.kind === "done") {
       this.destroy();
     }
+  }
+
+  /**
+   * Grow or shrink in place, staying in ITS corner. Recomputed rather than
+   * kept as an offset: a panel in the bottom-right that grew by moving its
+   * origin would walk off the bottom of the display.
+   */
+  private resizeTo(size: Size): void {
+    if (this.done || this.win.isDestroyed()) return;
+    const { x, y } = positionFor(this.corner, this.workArea(), size, CORNER_MARGIN);
+    this.win.setBounds({ x, y, width: size.width, height: size.height });
   }
 
   private armTimer(): void {

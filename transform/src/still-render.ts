@@ -1,6 +1,7 @@
 import type { Background } from "./shot.js";
 import type { StillLayout } from "./still-decorate.js";
 import { drawCursor } from "./cursor-art.js";
+import { REDACTION_FILL_ON_LIGHT, fillForLuminance, meanLuminance } from "./still-redact.js";
 
 /**
  * The decorated still, drawn (STC-291). Everything it draws was decided by
@@ -145,6 +146,20 @@ export interface StillSources {
   frame: unknown;
   /** A background image for `image`/`wallpaper` modes, when one was supplied. */
   background?: unknown;
+  /**
+   * One CSS colour per `layout.redactions`, in the same order (STC-297).
+   *
+   * A colour is a decision, and deciding it needs the PIXELS under the box —
+   * which this file has no way to read and `layoutStill` no way to know. So
+   * whoever holds the frame samples it (`sampleRedactionFills`) and hands the
+   * answers down, and this stays what its header says it is: a file that draws
+   * what it is told and works nothing out.
+   *
+   * Absent, or short, is not an error — a caller with no pixels to sample
+   * still gets an opaque fill, just the near-black one every time. Silently
+   * SKIPPING a fill would be the one failure mode this feature cannot have.
+   */
+  redactionFills?: readonly string[];
 }
 
 /**
@@ -193,16 +208,72 @@ export function renderStill(ctx: StillRenderContext, sources: StillSources,
 
   // Over the capture and under nothing: a fill that a shadow or a background
   // could soften would not be irreversible, and irreversible is the whole
-  // point of solid fill (STC-297 owns the UI; this honours the field).
+  // point of solid fill (STC-297).
+  //
+  // `globalAlpha` is put back to 1 for the pass rather than assumed: every
+  // path above restores it, but a fill drawn at even 0.98 through some future
+  // edit would leave the covered pixels RECOVERABLE while looking identical
+  // in review. This is the one place in the app where "looks right" and "is
+  // right" can differ by something invisible, so it is stated in the code.
   if (layout.redactions.length > 0) {
     ctx.save();
-    ctx.fillStyle = "#000000";
-    for (const r of layout.redactions) ctx.fillRect(r.x, r.y, r.width, r.height);
+    ctx.globalAlpha = 1;
+    layout.redactions.forEach((r, i) => {
+      ctx.fillStyle = sources.redactionFills?.[i] ?? REDACTION_FILL_ON_LIGHT;
+      ctx.fillRect(r.x, r.y, r.width, r.height);
+    });
     ctx.restore();
   }
 
   if (layout.cursor) {
     const c = layout.cursor;
     drawCursor(ctx as never, c.shape, c.x, c.y, c.pxPerPoint);
+  }
+}
+
+/**
+ * How many pixels a side each region is sampled down to before its mean is
+ * taken. The browser's own downscale IS the averaging, done in C++ over the
+ * real pixels, so a 24x24 read answers "light or dark" as well as a full-res
+ * one would for a fraction of the cost — and a 4K region is 8 MB to read back.
+ */
+const REDACTION_SAMPLE_PX = 24;
+
+/**
+ * The fill colour for each region, read from the pixels it covers (STC-297).
+ *
+ * Separate from `renderStill` because it needs a canvas of its own to read
+ * from, and separate from `still-redact.ts` because that module is the
+ * arithmetic and this is the only part that needs a browser. The decision
+ * itself is still `fillForLuminance`'s; this only fetches its argument.
+ *
+ * NEVER throws and never returns short: a sampling failure (a tainted canvas,
+ * a context the browser declined to give) falls back to the near-black fill
+ * for every region rather than to no fill, because a redaction that silently
+ * did not happen is the one outcome this feature must not have.
+ */
+export function sampleRedactionFills(frame: unknown,
+                                     frameSize: { width: number; height: number },
+                                     redactions: readonly { x: number; y: number; width: number; height: number }[]
+                                    ): string[] {
+  const fallback = redactions.map(() => REDACTION_FILL_ON_LIGHT);
+  if (redactions.length === 0 || !frame) return fallback;
+  try {
+    const scratch = new OffscreenCanvas(REDACTION_SAMPLE_PX, REDACTION_SAMPLE_PX);
+    const ctx = scratch.getContext("2d", { alpha: true, willReadFrequently: true });
+    if (!ctx) return fallback;
+    return redactions.map((r, i) => {
+      const sx = r.x * frameSize.width;
+      const sy = r.y * frameSize.height;
+      const sw = Math.max(1, r.width * frameSize.width);
+      const sh = Math.max(1, r.height * frameSize.height);
+      ctx.clearRect(0, 0, REDACTION_SAMPLE_PX, REDACTION_SAMPLE_PX);
+      ctx.drawImage(frame as CanvasImageSource,
+                    sx, sy, sw, sh, 0, 0, REDACTION_SAMPLE_PX, REDACTION_SAMPLE_PX);
+      const { data } = ctx.getImageData(0, 0, REDACTION_SAMPLE_PX, REDACTION_SAMPLE_PX);
+      return fillForLuminance(meanLuminance(data));
+    });
+  } catch {
+    return fallback;
   }
 }

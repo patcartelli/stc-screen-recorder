@@ -110,16 +110,15 @@ describe("the post-capture floating thumbnail", () => {
     expect(await panel.evaluate(() => document.getElementById("card")!.className)).not.toContain("expanded");
   }, 60_000);
 
-  test("clicking it expands into the mode picker, redact stub, copy and save", async () => {
+  test("clicking it expands into the mode picker, redact, copy and save", async () => {
     const { win } = await launch();
     await captureDisplay(win);
     const panel = await thumbnailWindow();
     await panel.click("#card");
     await expect.poll(() => panel.evaluate(() => document.getElementById("card")!.className))
       .toContain("expanded");
-    // Redact is a stub in this slice (STC-297 is a separate, unstarted ticket) —
-    // present in the layout, and refuses to do anything.
-    expect(await panel.isDisabled("#redact")).toBe(true);
+    // Redact was a disabled stub through STC-296 and is live as of STC-297.
+    expect(await panel.isDisabled("#redact")).toBe(false);
     expect(await panel.isVisible("#mode")).toBe(true);
   }, 60_000);
 

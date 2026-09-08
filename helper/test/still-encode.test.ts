@@ -3,7 +3,9 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { mkdtempSync, readFileSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { inflateSync } from "node:zlib";
 import type { Readable } from "node:stream";
+import { REDACTION_FILL_ON_LIGHT } from "../../transform/src/still-redact.js";
 
 /**
  * STC-293: `export-still` encoding for real, through ImageIO.
@@ -321,5 +323,163 @@ describe("export-still refuses what it cannot honour (STC-293)", () => {
     });
     expect(r.ev, JSON.stringify(r)).toBe("exported-still");
     expect(existsSync(out)).toBe(true);
+  });
+});
+
+/**
+ * STC-297's headline acceptance criterion, taken literally.
+ *
+ * "An exported PNG with a fill region contains no trace of the covered pixels,
+ * VERIFIED BY INSPECTING THE ENCODED FILE rather than by looking at it." So
+ * this decodes the PNG the helper wrote — inflate, unfilter, read pixels — and
+ * asks two questions of the result: is every pixel under the box exactly the
+ * fill, and does the colour that was underneath appear anywhere at all.
+ *
+ * Looking at the picture cannot answer either. A fill drawn at 0.98 alpha, or
+ * one composited under a shadow, or an encoder that kept a smaller original
+ * alongside, all LOOK identical to a correct one; the pixels are the only
+ * witness. The `#0b0b0c` here is not a shade of black chosen by this test —
+ * it is `still-redact.ts`'s constant, imported, so a change to the fill cannot
+ * quietly leave this asserting against the old one.
+ */
+
+/** A minimal PNG reader: IHDR, the IDAT stream, and the five scanline filters. */
+function decodePng(buf: Buffer): { width: number; height: number; channels: number; data: Buffer } {
+  expect(buf.subarray(0, 8).toString("latin1")).toBe("\x89PNG\r\n\x1a\n");
+  const width = buf.readUInt32BE(16);
+  const height = buf.readUInt32BE(20);
+  const bitDepth = buf[24]!;
+  const colorType = buf[25]!;
+  const interlace = buf[28]!;
+  // Anything else and the unfilter below would be reading the wrong shape —
+  // fail saying so rather than producing plausible nonsense.
+  expect(bitDepth, "8-bit channels").toBe(8);
+  expect(interlace, "non-interlaced").toBe(0);
+  expect([2, 6], `colour type ${colorType}`).toContain(colorType);
+  const channels = colorType === 6 ? 4 : 3;
+
+  const idat: Buffer[] = [];
+  for (let p = 8; p + 8 <= buf.length;) {
+    const len = buf.readUInt32BE(p);
+    const type = buf.subarray(p + 4, p + 8).toString("latin1");
+    if (type === "IDAT") idat.push(buf.subarray(p + 8, p + 8 + len));
+    if (type === "IEND") break;
+    p += 12 + len;               // length + type + data + CRC
+  }
+  const raw = inflateSync(Buffer.concat(idat));
+
+  const stride = width * channels;
+  const out = Buffer.alloc(height * stride);
+  const paeth = (a: number, b: number, c: number) => {
+    const p = a + b - c;
+    const pa = Math.abs(p - a), pb = Math.abs(p - b), pc = Math.abs(p - c);
+    return pa <= pb && pa <= pc ? a : pb <= pc ? b : c;
+  };
+  for (let y = 0; y < height; y++) {
+    const filter = raw[y * (stride + 1)]!;
+    const line = raw.subarray(y * (stride + 1) + 1, (y + 1) * (stride + 1));
+    for (let i = 0; i < stride; i++) {
+      const a = i >= channels ? out[y * stride + i - channels]! : 0;
+      const b = y > 0 ? out[(y - 1) * stride + i]! : 0;
+      const c = y > 0 && i >= channels ? out[(y - 1) * stride + i - channels]! : 0;
+      const x = line[i]!;
+      out[y * stride + i] =
+        filter === 0 ? x
+        : filter === 1 ? (x + a) & 255
+        : filter === 2 ? (x + b) & 255
+        : filter === 3 ? (x + ((a + b) >> 1)) & 255
+        : (x + paeth(a, b, c)) & 255;
+    }
+  }
+  return { width, height, channels, data: out };
+}
+
+describe("redaction is irreversible in the encoded file (STC-297)", () => {
+  const W = 16, H = 8;
+  /** The thing being hidden. Distinctive so its absence is checkable. */
+  const SECRET = [200, 30, 90] as const;
+  const PAGE = [240, 240, 240] as const;
+  const BOX = { x: 4, y: 2, width: 8, height: 4 };
+  const fill = [
+    parseInt(REDACTION_FILL_ON_LIGHT.slice(1, 3), 16),
+    parseInt(REDACTION_FILL_ON_LIGHT.slice(3, 5), 16),
+    parseInt(REDACTION_FILL_ON_LIGHT.slice(5, 7), 16),
+  ] as const;
+
+  const inBox = (x: number, y: number) =>
+    x >= BOX.x && x < BOX.x + BOX.width && y >= BOX.y && y < BOX.y + BOX.height;
+
+  /** The composite the renderer would hand over: secret laid down, then covered. */
+  function composited(): Buffer {
+    const b = Buffer.alloc(W * H * 4);
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) {
+        const i = (y * W + x) * 4;
+        const c = inBox(x, y) ? fill : (x > 3 && x < 12 && y > 1 && y < 6) ? SECRET : PAGE;
+        b[i] = c[0]!; b[i + 1] = c[1]!; b[i + 2] = c[2]!; b[i + 3] = 255;
+      }
+    }
+    return b;
+  }
+
+  test("the covered pixels are the fill, and the secret is nowhere in the file", async () => {
+    const h = spawnHelper();
+    const dir = mkdtempSync(join(tmpdir(), "stc-redact-"));
+    const src = join(dir, "in.rgba");
+    writeFileSync(src, composited());
+    const out = join(dir, "redacted.png");
+
+    const r = await h.request({
+      cmd: "export-still", rgba: src, width: W, height: H,
+      alpha: false, format: "png", file: out,
+    });
+    expect(r.ev, JSON.stringify(r)).toBe("exported-still");
+
+    const png = decodePng(readFileSync(out));
+    expect(png.width).toBe(W);
+    expect(png.height).toBe(H);
+
+    let covered = 0;
+    for (let y = 0; y < png.height; y++) {
+      for (let x = 0; x < png.width; x++) {
+        const i = (y * png.width + x) * png.channels;
+        const rgb = [png.data[i], png.data[i + 1], png.data[i + 2]];
+        // Nowhere in the image — not just inside the box. An encoder that
+        // tucked a smaller original into the file would fail here.
+        expect(rgb, `secret at ${x},${y}`).not.toEqual([...SECRET]);
+        if (inBox(x, y)) {
+          // Exactly, not approximately: "no trace" and "close enough" are
+          // different claims, and only one of them is the ticket's.
+          expect(rgb, `covered pixel ${x},${y}`).toEqual([...fill]);
+          covered++;
+        }
+      }
+    }
+    expect(covered, "the box was actually inspected").toBe(BOX.width * BOX.height);
+  });
+
+  test("the fill is uniform — no gradient, no edge left half-covered", async () => {
+    // A partially-transparent fill composited over the secret would leave the
+    // box a blend of fill and secret: still "dark", still plausible to an eye,
+    // and recoverable. Uniformity is what rules that out.
+    const h = spawnHelper();
+    const dir = mkdtempSync(join(tmpdir(), "stc-redact-"));
+    const src = join(dir, "in.rgba");
+    writeFileSync(src, composited());
+    const out = join(dir, "uniform.png");
+    await h.request({
+      cmd: "export-still", rgba: src, width: W, height: H,
+      alpha: false, format: "png", file: out,
+    });
+
+    const png = decodePng(readFileSync(out));
+    const seen = new Set<string>();
+    for (let y = BOX.y; y < BOX.y + BOX.height; y++) {
+      for (let x = BOX.x; x < BOX.x + BOX.width; x++) {
+        const i = (y * png.width + x) * png.channels;
+        seen.add(`${png.data[i]},${png.data[i + 1]},${png.data[i + 2]}`);
+      }
+    }
+    expect([...seen]).toEqual([`${fill[0]},${fill[1]},${fill[2]}`]);
   });
 });
