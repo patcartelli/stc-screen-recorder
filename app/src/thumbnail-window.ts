@@ -188,6 +188,9 @@ class ThumbnailSession {
         dir: opts.dir,
         shot: JSON.stringify(opts.shot),
         settleAction: opts.settleAction,
+        // The view needs it too, and only for the swipe: which way is
+        // off-screen is a property of where the panel was put.
+        corner: opts.corner,
         ...(opts.silent ? { silent: "1" } : {}),
       },
     });

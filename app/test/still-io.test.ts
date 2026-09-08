@@ -4,7 +4,8 @@ import { readdirSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  CLIPBOARD_SUBDIR, destinationDir, exportStill, namesIn, resolveExportOptions,
+  CLIPBOARD_SUBDIR, destinationDir, exportStill, namesIn, plannedFileName,
+  resolveExportOptions,
 } from "../src/still-io.js";
 import { DEFAULT_STILL_SETTINGS, type StillSettings } from "../src/settings.js";
 
@@ -260,6 +261,100 @@ describe("the export funnel (STC-293)", () => {
  * reach it; it lives in `still-io.ts` now, and these are the assertions that
  * would have named it.
  */
+describe("Save As — an exact path main chose (STC-296 follow-up)", () => {
+  test("an explicit file wins over the destination folder AND the template", async () => {
+    const h = fakeHelper();
+    const chosen = join(dir, "somewhere-else.png");
+    const r = await exportStill(h.send, {
+      still: still(),
+      target: { file: true, clipboard: false, saveAs: true },
+      options: { ...DEFAULT_STILL_SETTINGS, template: "{app} {date}" },
+      info: { app: "Safari", mode: "window-only" },
+      explicitFile: chosen,
+      // A destination folder is SET, and must lose: the user has just answered
+      // this question in a dialog, and the stored preference is the answer
+      // they were overriding.
+      fallbackDir: dir,
+    }, settings({ destination: join(dir, "elsewhere") }), cache);
+
+    expect(r.file).toBe(chosen);
+    expect(new Uint8Array(await readFile(chosen))).toEqual(pixels());
+  });
+
+  test("an existing name is OVERWRITTEN, not suffixed", async () => {
+    // The dialog has already asked about overwriting. Writing `x-1.png`
+    // because `x.png` exists would overrule an answer the app just took.
+    const chosen = join(dir, "taken.png");
+    await writeFile(chosen, "previous");
+    const h = fakeHelper();
+    const r = await exportStill(h.send, {
+      still: still(),
+      target: { file: true, clipboard: false, saveAs: true },
+      options: { ...DEFAULT_STILL_SETTINGS },
+      info: { mode: "window-only" },
+      explicitFile: chosen,
+    }, settings(), cache);
+
+    expect(r.file).toBe(chosen);
+    expect(new Uint8Array(await readFile(chosen))).toEqual(pixels());
+  });
+
+  test("a chosen path with nowhere-to-file asked for is refused", async () => {
+    const h = fakeHelper();
+    await expect(exportStill(h.send, {
+      still: still(),
+      target: { file: false, clipboard: true, saveAs: true },
+      options: { ...DEFAULT_STILL_SETTINGS },
+      info: { mode: "window-only" },
+      explicitFile: join(dir, "nope.png"),
+    }, settings(), cache)).rejects.toThrow(/explicitFile needs target\.file/);
+  });
+
+  test("saveAs alone changes nothing — the flag is main's cue, not a behaviour", async () => {
+    // The renderer sets `saveAs`; main answers it with `explicitFile`. If main
+    // does not, the export must be an ordinary save rather than something
+    // half-done.
+    const h = fakeHelper();
+    const r = await exportStill(h.send, {
+      still: still(),
+      target: { file: true, clipboard: false, saveAs: true },
+      options: { ...DEFAULT_STILL_SETTINGS, template: "{app} {date}" },
+      info: { app: "Safari", mode: "window-only" },
+      fallbackDir: dir,
+      at: new Date(2026, 8, 8, 14, 23, 5),
+    }, settings(), cache);
+
+    expect(r.file).toBe(join(dir, "Safari 2026-09-08.png"));
+  });
+});
+
+describe("the name a save dialog opens on (STC-296 follow-up)", () => {
+  test("comes from the same template every silent export uses", () => {
+    expect(plannedFileName(
+      { ...DEFAULT_STILL_SETTINGS, template: "{app} {date}" },
+      { app: "Safari", mode: "window-only" },
+      { width: 100, height: 50 },
+      new Date(2026, 8, 8, 14, 23, 5),
+    )).toBe("Safari 2026-09-08.png");
+  });
+
+  test("carries the format's extension", () => {
+    expect(plannedFileName(
+      { ...DEFAULT_STILL_SETTINGS, format: "jpeg", template: "shot" },
+      { mode: "window-only" }, { width: 10, height: 10 }, new Date(),
+    )).toMatch(/\.jpe?g$/);
+  });
+
+  test("does not suffix around existing files — a dialog asks, it does not dodge", () => {
+    const a = plannedFileName({ ...DEFAULT_STILL_SETTINGS, template: "shot" },
+                              { mode: "window-only" }, { width: 10, height: 10 }, new Date());
+    const b = plannedFileName({ ...DEFAULT_STILL_SETTINGS, template: "shot" },
+                              { mode: "window-only" }, { width: 10, height: 10 }, new Date());
+    expect(a).toBe(b);
+    expect(a).not.toMatch(/-1\./);
+  });
+});
+
 describe("what a caller may decide about an export (STC-293)", () => {
   const stored: StillSettings = {
     ...DEFAULT_STILL_SETTINGS,

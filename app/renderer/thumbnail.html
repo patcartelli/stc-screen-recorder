@@ -30,6 +30,14 @@
       cursor: pointer;
     }
     #card.in { opacity: 1; transform: scale(1); }
+    /*
+      While a swipe is in progress the card is following the pointer directly,
+      so the 160 ms transition above has to be off: with it on, the panel lags
+      the finger by a sixth of a second and the gesture feels broken. It goes
+      back on for the release, which is what makes both outcomes — springing
+      back to the corner, and flying off the edge — animate rather than jump.
+    */
+    #card.dragging { transition: none; }
     #card.expanded { cursor: default; }
     #thumbwrap {
       flex: 1; display: flex; align-items: center; justify-content: center;

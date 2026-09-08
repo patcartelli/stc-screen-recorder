@@ -4,6 +4,9 @@ import {
 import { decorationForMode, layoutStill, pxPerPointOf } from "@transform/still-decorate";
 import { renderStill, sampleRedactionFills } from "@transform/still-render";
 import { normaliseRegion, undoLast } from "@transform/still-redact";
+import {
+  classifyDrag, discardDirection, isDiscardSwipe, parseCorner, swipeOffset,
+} from "./thumbnail.js";
 import { colorSpaceFor, planRender, stillIsBlocked, type ExportOptions } from "@transform/still-export";
 
 /**
@@ -22,9 +25,9 @@ import { colorSpaceFor, planRender, stillIsBlocked, type ExportOptions } from "@
  *
  * ## What is deliberately not here
  *
- * True OS drag-out (`NSFilePromiseProvider`), a right-click menu, and
- * multiple captures stacking rather than replacing are follow-up work — see
- * CLAUDE.md. Format, quality and scale are NOT controls here either: they are
+ * Multiple captures stacking rather than replacing is the one follow-up left
+ * — see CLAUDE.md. The right-click menu (`thumbnail-menu.ts`),
+ * swipe-to-discard and drag-out have landed. Format, quality and scale are NOT controls here either: they are
  * `still` settings, read once from the stored preference, the same as every
  * other exit out of the app. Only the decoration MODE is a per-shot choice,
  * because the ticket names it as one ("the five output modes as a preset
@@ -39,7 +42,14 @@ declare global {
       exportStill(req: Record<string, unknown>): Promise<{
         ok: boolean; file?: string; bytes?: number; clipboard?: string[];
         code?: string; detail?: string;
+        /** The user closed the Save As panel without choosing. */
+        cancelled?: boolean;
       }>;
+      menu(ctx: { redacting: boolean; busy: boolean }): Promise<string | null>;
+      revealShot(dir: string): Promise<boolean>;
+      deleteShot(dir: string): Promise<{ ok: boolean; detail?: string }>;
+      dragFile(req: Record<string, unknown>): Promise<{ ok: boolean; file?: string; detail?: string }>;
+      startDrag(file: string): void;
       reveal(): Promise<boolean>;
       writeShot(dir: string, redactions: unknown): Promise<{ ok: boolean; redactions: number }>;
       event(ev: { kind: "painted" | "expanded" | "done" } | { kind: "redact"; on: boolean }): void;
@@ -76,6 +86,8 @@ const shot: Shot = parseShot(JSON.parse(params.get("shot") ?? "null"));
  * animate or expand into, so nothing to wait for.
  */
 const silent = params.get("silent") === "1";
+/** Which way this panel leaves the screen — see `discardDirection`. */
+const corner = parseCorner(params.get("corner"));
 
 /** How big the collapsed, expanded and redacting canvases are allowed to be, in CSS px. */
 const COLLAPSED_BOX = { width: 200, height: 118 };
@@ -213,7 +225,15 @@ function paintView(marquee?: { x: number; y: number; width: number; height: numb
  * rather than flattening onto a guessed colour — this panel has no colour
  * picker, and "keep everything, in a format that can" needs no guess at all.
  */
-async function runExport(action: "copy" | "save"): Promise<boolean> {
+/**
+ * `save-as` is a save that asks first. It is a third ACTION rather than an
+ * option on `save`, because the two differ in what the user has already told
+ * the app: a plain save has a destination and needs no interaction, and the
+ * whole design of this panel is that the silent path stays silent.
+ */
+type ExportAction = "copy" | "save" | "save-as";
+
+async function runExport(action: ExportAction): Promise<boolean> {
   if (!composite) return false;
   const settings = (await window.thumb.getSettings()).still;
   let options: ExportOptions = { ...settings };
@@ -235,15 +255,25 @@ async function runExport(action: "copy" | "save"): Promise<boolean> {
   const r = await window.thumb.exportStill({
     bytes, width: composite.width, height: composite.height, alpha: plan.alpha,
     colorSpace: shot.display.colorSpace ?? "",
-    target: { file: action === "save", clipboard: action === "copy" },
+    target: {
+      file: action !== "copy",
+      clipboard: action === "copy",
+      // main puts the panel up and keeps the path it gets back; this side only
+      // ever says that a choice was wanted (STC-296's right-click menu).
+      ...(action === "save-as" ? { saveAs: true } : {}),
+    },
     options,
     info: { ...(decorated.window?.app ? { app: decorated.window.app } : {}),
             ...(decorated.window?.title ? { title: decorated.window.title } : {}),
             mode: currentMode },
     dir,
   });
+  // Cancelling the save panel is a decision, not a fault. Saying "Could not
+  // save as: undefined" to someone who pressed Cancel would be the app
+  // reporting their own answer back to them as an error.
+  if (r.cancelled) { setStatus(""); return false; }
   if (!r.ok) {
-    setStatus(`Could not ${action}: ${r.detail ?? r.code ?? "unknown error"}`);
+    setStatus(`Could not ${action === "copy" ? "copy" : "save"}: ${r.detail ?? r.code ?? "unknown error"}`);
     return false;
   }
   setStatus((action === "copy" ? "Copied" : `Saved ${r.file?.split("/").pop() ?? ""}`)
@@ -273,6 +303,9 @@ function expand(): void {
  * the file being exported now.
  */
 async function persistRegions(): Promise<void> {
+  // The drag file is now wrong in the way that matters most: it still has
+  // whatever the box was drawn over legible in it.
+  void refreshDragFile();
   try {
     await window.thumb.writeShot(dir, regions);
   } catch (e: any) {
@@ -369,6 +402,11 @@ async function settle(): Promise<void> {
 // ---- wiring ----------------------------------------------------------------
 
 card.addEventListener("click", (e) => {
+  // A swipe ends with a click event too, and expanding a panel the user has
+  // just thrown at the edge of the screen would be the opposite of what they
+  // did. `swiped` is cleared on the next pointerdown, not here, because the
+  // click arrives after pointerup.
+  if (swiped) return;
   // Once expanded, the card is a panel with its own controls; only the
   // collapsed thumbnail itself is a single big click target.
   if (!expanded && e.target !== copyBtn && e.target !== saveBtn) expand();
@@ -382,7 +420,12 @@ for (const m of availableModes()) {
 }
 modeSel.value = currentMode;
 modeSel.addEventListener("click", (e) => e.stopPropagation());
-modeSel.addEventListener("change", () => { currentMode = modeSel.value as DecorationMode; void draw(); });
+modeSel.addEventListener("change", () => {
+  currentMode = modeSel.value as DecorationMode;
+  // `draw` first: the file is rendered FROM the composite, so refreshing it
+  // before the redraw would write the previous preset.
+  void draw().then(refreshDragFile);
+});
 
 copyBtn.addEventListener("click", async (e) => {
   e.stopPropagation();
@@ -423,6 +466,213 @@ undoBtn.addEventListener("click", (e) => {
 doneRedactBtn.addEventListener("click", (e) => { e.stopPropagation(); setRedacting(false); });
 
 closeBtn.addEventListener("click", (e) => { e.stopPropagation(); void settle(); });
+
+// ---- swipe to discard (STC-296 follow-up) ----------------------------------
+
+/** The gesture in progress, in client pixels. */
+let swipeFrom: { x: number; y: number } | undefined;
+/**
+ * The decorated file a drag would hand over, written AHEAD of the gesture.
+ *
+ * It has to exist before `startDrag` is called, and the export is not fast
+ * enough to happen inside one: measured, the 33 MB RGBA scratch write alone —
+ * before any IPC or any encode — is around a quarter of a second, and a drag
+ * that began by freezing for that long is not a drag. So it is written in the
+ * background while the panel sits there, which is time the app is doing
+ * nothing anyway.
+ *
+ * `undefined` means not ready. A drag that starts before it is REFUSES rather
+ * than handing over something else: the acceptance criterion is that a drop
+ * produces the decorated file, and an undecorated one would satisfy the
+ * gesture while failing the requirement — the worst of the two failures,
+ * because it looks like it worked.
+ */
+let dragFile: string | undefined;
+/** Bumped by every change that invalidates the file above. */
+let dragGeneration = 0;
+
+/**
+ * Write (or rewrite) the file a drag would carry.
+ *
+ * Every preset change and every redaction makes the previous one wrong, so
+ * this runs again on each — and the generation counter is what stops a slow
+ * earlier render landing after a fast later one and handing over the shot as
+ * it used to look. Redaction makes that concrete: a stale file is one with
+ * somebody's address still legible in it.
+ */
+async function refreshDragFile(): Promise<void> {
+  if (!composite) return;
+  const mine = ++dragGeneration;
+  dragFile = undefined;
+  const decorated = currentShot();
+  const layout = layoutStill(decorated);
+  const plan = planRender({ ...(await window.thumb.getSettings()).still },
+                          { layout, pxPerPoint: pxPerPointOf(decorated) });
+  const ctx = composite.getContext("2d", { alpha: true });
+  const data = ctx!.getImageData(0, 0, composite.width, composite.height).data;
+  const r = await window.thumb.dragFile({
+    bytes: data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength),
+    width: composite.width, height: composite.height, alpha: plan.alpha,
+    colorSpace: shot.display.colorSpace ?? "",
+    options: {},
+    info: { ...(decorated.window?.app ? { app: decorated.window.app } : {}),
+            ...(decorated.window?.title ? { title: decorated.window.title } : {}),
+            mode: currentMode },
+  });
+  if (mine !== dragGeneration) return;
+  if (r.ok && r.file) dragFile = r.file;
+}
+/**
+ * The last gesture threw the shot away.
+ *
+ * Read by the `click` handler, which fires AFTER `pointerup` — so it is
+ * cleared on the next `pointerdown` rather than at the end of the swipe, or
+ * the click that concludes a swipe would expand the panel the user has just
+ * discarded.
+ */
+let swiped = false;
+
+card.addEventListener("pointerdown", (e) => {
+  swiped = false;
+  // Only the collapsed thumbnail swipes. Expanded, the card is a panel of
+  // controls and — in redact mode — a drag surface with a completely
+  // different meaning, and one drag cannot mean both.
+  if (expanded || settling) return;
+  swipeFrom = { x: e.clientX, y: e.clientY };
+  // Transition off while the card tracks the pointer; back on for the release
+  // so both outcomes animate. See `#card.dragging` in thumbnail.html.
+  card.classList.add("dragging");
+  card.setPointerCapture(e.pointerId);
+});
+
+card.addEventListener("pointermove", (e) => {
+  if (!swipeFrom) return;
+  const dx = e.clientX - swipeFrom.x;
+  const dy = e.clientY - swipeFrom.y;
+  if (classifyDrag(dx, dy, corner) === "drag-out") {
+    // The OS takes the pointer from here, so this gesture is over as far as
+    // the panel is concerned — released or dropped, no pointerup will mean
+    // anything to us.
+    const file = dragFile;
+    swipeFrom = undefined;
+    card.classList.remove("dragging");
+    card.style.transform = "";
+    card.style.opacity = "";
+    // Not ready yet: say so rather than dragging the wrong picture. See
+    // `dragFile`'s note — an undecorated file would look like success.
+    if (!file) { setStatus("Still preparing — try again in a moment."); return; }
+    swiped = true;
+    window.thumb.startDrag(file);
+    return;
+  }
+  const off = swipeOffset(dx, dy, corner);
+  // Follows the pointer only outward; a drag the wrong way leaves it put, so
+  // "you cannot discard in that direction" needs no explaining.
+  card.style.transform = off === 0 ? "" : `translateX(${off * discardDirection(corner)}px)`;
+  // Fading as it goes is what makes the threshold legible without a number on
+  // screen: by the time it is faint, releasing will throw it away.
+  card.style.opacity = off === 0 ? "" : String(Math.max(0.25, 1 - off / 260));
+});
+
+card.addEventListener("pointerup", (e) => {
+  const from = swipeFrom;
+  if (!from) return;
+  swipeFrom = undefined;
+  card.classList.remove("dragging");
+  const dx = e.clientX - from.x;
+  const dy = e.clientY - from.y;
+  if (!isDiscardSwipe(dx, dy, corner)) {
+    // Short of the threshold: back to its corner, and the click that follows
+    // is a real click, so it still expands.
+    card.style.transform = "";
+    card.style.opacity = "";
+    return;
+  }
+  swiped = true;
+  void discard();
+});
+
+// A cancelled pointer (another window taking it, the panel being hidden for a
+// capture) is not a release: put the panel back rather than leaving it
+// stranded mid-gesture with no pointerup ever coming.
+card.addEventListener("pointercancel", () => {
+  if (!swipeFrom) return;
+  swipeFrom = undefined;
+  card.classList.remove("dragging");
+  card.style.transform = "";
+  card.style.opacity = "";
+});
+
+/**
+ * Throw the shot away — the swipe's outcome, and the same thing the
+ * right-click Delete does: to the Trash, not `rm`.
+ *
+ * `settling` FIRST, before anything is awaited, for the same reason Delete
+ * does it: the timeout can fire while the trash call is in flight, and a
+ * settle that got through would export the shot being discarded.
+ */
+async function discard(): Promise<void> {
+  settling = true;
+  card.style.transform = `translateX(${420 * discardDirection(corner)}px)`;
+  card.style.opacity = "0";
+  const r = await window.thumb.deleteShot(dir);
+  if (!r.ok) {
+    // Nothing was thrown away, so the panel comes back rather than vanishing
+    // and leaving the user to guess whether the shot survived.
+    settling = false;
+    swiped = false;
+    card.style.transform = "";
+    card.style.opacity = "";
+    setStatus(`Could not discard: ${r.detail ?? "unknown error"}`);
+    return;
+  }
+  window.thumb.event({ kind: "done" });
+}
+
+/**
+ * The right-click menu (STC-296's follow-up).
+ *
+ * The menu is built and popped up by MAIN — `thumbnail-menu.ts` decides its
+ * contents, `main.ts` turns them into a real `Menu`. This side reports the
+ * gesture and performs whichever id comes back, so the five actions are the
+ * same code paths the panel's own buttons use rather than a second set that
+ * could drift from them.
+ *
+ * Available collapsed as well as expanded: the ticket puts the menu on the
+ * thumbnail, and a shot whose panel has not been clicked yet is exactly when
+ * "copy it and get on with what I was doing" is worth most.
+ */
+document.addEventListener("contextmenu", (e) => {
+  e.preventDefault();
+  void (async () => {
+    const id = await window.thumb.menu({ redacting, busy });
+    if (id === null) return;
+    if (id === "copy" || id === "save-as") {
+      if (busy) return;
+      busy = true;
+      setStatus(id === "copy" ? "Copying…" : "Saving…");
+      const ok = await runExport(id);
+      busy = false;
+      // Same rule the Save button follows: a save ends the interaction, a copy
+      // does not. Cancelling the panel returns false, so it correctly does not
+      // close either.
+      if (ok && id === "save-as") { settling = true; window.thumb.event({ kind: "done" }); }
+      return;
+    }
+    if (id === "redact") { expand(); setRedacting(!redacting); return; }
+    if (id === "reveal") {
+      // The shot's own directory, not `still:reveal`'s last SAVED file: a panel
+      // that has not been settled yet has never saved anything, and revealing
+      // some earlier shot instead would be worse than doing nothing.
+      if (!await window.thumb.revealShot(dir)) setStatus("Nothing to show yet.");
+      return;
+    }
+    // The same `discard()` the swipe uses. Two ways to throw a shot away that
+    // disagreed about where it went would be the defect, not the second
+    // gesture, and the cheapest way for them not to disagree is one function.
+    if (id === "delete") await discard();
+  })();
+});
 
 document.addEventListener("keydown", (e) => {
   if (e.key !== "Escape" || !expanded) return;
@@ -468,4 +718,9 @@ const ready: Promise<void> = (async () => {
     card.classList.add("in");
     window.thumb.event({ kind: "painted" });
   });
+  // Only NOW, and deliberately not awaited: the panel is on screen and idle
+  // for its whole timeout, so the export that a drag would otherwise have to
+  // wait for happens in time nobody is using. Nothing downstream waits on it
+  // — a drag that beats it is refused rather than served the wrong file.
+  void refreshDragFile();
 })();

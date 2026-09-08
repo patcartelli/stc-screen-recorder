@@ -52,6 +52,18 @@ export interface CompositedStill {
 export interface ExportTarget {
   file: boolean;
   clipboard: boolean;
+  /**
+   * The user is choosing the destination for THIS export (the thumbnail's
+   * right-click "Save As…", STC-296).
+   *
+   * A flag rather than a path, and that distinction is the whole point: a
+   * renderer that could name a destination could write anywhere, which is the
+   * posture STC-297 already established for `still:writeShot` — the renderer
+   * says WHAT it wants, main decides WHERE. Main answers this by putting a save
+   * dialog up and handing `exportStill` an `explicitFile`; nothing below this
+   * interface ever learns that a dialog was involved.
+   */
+  saveAs?: boolean;
 }
 
 export interface ExportRequest {
@@ -65,6 +77,20 @@ export interface ExportRequest {
    * shot's own directory. Absent for a caller that has no take of its own.
    */
   fallbackDir?: string;
+  /**
+   * An exact path to write, bypassing the destination folder and the filename
+   * template entirely — the answer to `target.saveAs`.
+   *
+   * Set ONLY by the main process, after the user has picked a file in a save
+   * dialog. It is deliberately not reachable from `target`, so no renderer can
+   * supply one: the field a renderer can set is a boolean, and this is the
+   * privileged half main fills in on its behalf.
+   *
+   * No uniquing is applied to it. The dialog has already asked about
+   * overwriting, and silently writing `shot-1.png` because the user chose an
+   * existing `shot.png` would be the app overruling an answer it just took.
+   */
+  explicitFile?: string;
   at?: Date;
 }
 
@@ -212,6 +238,29 @@ export function resolveExportOptions(stored: StillSettings,
 }
 
 /**
+ * The name this export WOULD be given, for a save dialog to open on.
+ *
+ * Exported so main can put a sensible filename in front of the user without
+ * assembling one itself — the same reason `destinationDir` lives here. A
+ * dialog defaulting to "Untitled" while every silent export is named from the
+ * template would be two answers to one question, which is the second
+ * implementation this module exists to prevent.
+ *
+ * No `taken` set: a save dialog is the one place a collision is the USER's to
+ * resolve, and offering `shot-2.png` because `shot.png` exists would pre-empt
+ * an answer the panel is about to ask for.
+ */
+export function plannedFileName(options: ExportOptions,
+                                info: ExportRequest["info"],
+                                still: Pick<CompositedStill, "width" | "height">,
+                                at: Date = new Date()): string {
+  return planFileName(options, {
+    tokens: tokensFor({ ...info, width: still.width, height: still.height, counter: 1 }, at),
+    taken: new Set<string>(),
+  });
+}
+
+/**
  * Encode a composited still and put it where it was asked to go.
  *
  * Answers with what actually happened rather than with what was requested:
@@ -225,6 +274,12 @@ export async function exportStill(send: SendExport, req: ExportRequest,
                                   cacheRoot: string): Promise<ExportResult> {
   if (!req.target.file && !req.target.clipboard) {
     throw new Error("an export needs somewhere to go: a file, the clipboard, or both");
+  }
+  if (req.explicitFile !== undefined && !req.target.file) {
+    // A chosen path with nowhere-to-file asked for is a caller that has got
+    // its own request wrong; writing it anyway would put a file on disk the
+    // target says was never wanted.
+    throw new Error("explicitFile needs target.file");
   }
   const at = req.at ?? new Date();
   const dir = destinationDir(settings, req.target, req.fallbackDir, cacheRoot);
@@ -275,7 +330,7 @@ export async function exportStill(send: SendExport, req: ExportRequest,
       colorSpace: meta.colorSpace,
       format: req.options.format,
       quality: req.options.quality,
-      ...(wantsFile ? { file: join(dir, name) } : {}),
+      ...(wantsFile ? { file: req.explicitFile ?? join(dir, name) } : {}),
       clipboard: req.target.clipboard === true,
       // Absent means stripped. The colour PROFILE is not covered by this and
       // is embedded either way — it is what makes the numbers mean colours,
