@@ -13,6 +13,7 @@ file is for.
 | ⌘W removes the Dock icon; the menu-bar item stays; the app keeps running | ✅ §2 |
 | Open Library brings the icon back and the window to the FRONT | ✅ §2 |
 | ⌃⌥⇧⌘3 with another app frontmost: fires, **no overlay**, one shutter sound, a shot on disk | ✅ §3, §5 |
+| ⌃⌥⇧⌘1 and ⌃⌥⇧⌘2 — the overlay opens and a capture completes | ✅ §3 |
 
 That is the whole full-display hotkey path, end to end, on a real Mac — the
 hotkey reaching a background app, the overlay-less capture, the sound, and the
@@ -20,7 +21,6 @@ file. It is the part no automated test in this repo can reach.
 
 ## Still unverified
 
-* **⌃⌥⇧⌘1 and ⌃⌥⇧⌘2** — the two that open the overlay. §3.
 * **Any hotkey during a live recording.** §4.
 * **The shutter obeying the setting when it is turned OFF**, and at zero alert
   volume. Only the on-and-audible case has been heard. §5.
@@ -148,8 +148,8 @@ Do **not** click the recorder first; the whole point is that it is not frontmost
 
 | press | expect |
 |---|---|
-| ⌃⌥⇧⌘1 | the dimming overlay appears on every display, in **region** mode (crosshair). Drag, Return. |
-| ⌃⌥⇧⌘2 | the overlay appears in **window** mode — windows highlight as the pointer moves; no crosshair. Click one. |
+| ⌃⌥⇧⌘1 | the dimming overlay appears on every display, in **region** mode (crosshair). Drag, Return. **Confirmed 2026-09-08.** |
+| ⌃⌥⇧⌘2 | the overlay appears in **window** mode — windows highlight as the pointer moves; no crosshair. Click one. **Confirmed 2026-09-08.** |
 | ⌃⌥⇧⌘3 | **no overlay at all.** One shutter sound, and a new shot directory. **Confirmed 2026-09-08 with another app frontmost.** |
 
 For each: a new directory under `~/Desktop/stc/` (or `$STC_RECORDINGS_DIR`)
