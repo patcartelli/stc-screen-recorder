@@ -54,6 +54,26 @@ export function clampTimeoutMs(v: unknown): number {
   return Math.max(MIN_THUMBNAIL_TIMEOUT_MS, n);
 }
 
+/**
+ * How long a settle waits for the panel's FIRST composite before giving up.
+ *
+ * A settle can arrive before the panel has drawn — `onSettle` is registered
+ * ahead of the load that reads `frame.png`, decodes it and draws it, and a
+ * second capture settles the outgoing panel whenever it lands. Without a wait
+ * that reached the export with no composite, refused, and destroyed the window
+ * having written nothing: silent, because the take directory still held the
+ * raw capture and only the decorated file was missing.
+ *
+ * MUST stay below `SETTLE_BACKSTOP_MS` in `thumbnail-window.ts` — main
+ * destroys the window that long after asking it to settle, so a wait at or
+ * above the backstop can never complete and would be a slower way of losing
+ * the same shot. `app/test/thumbnail-bounds.test.ts` asserts that clearance
+ * rather than leaving it true by luck: CLAUDE.md has learned three times that
+ * a new bound must be checked against every bound already covering the same
+ * code.
+ */
+export const SETTLE_READY_MS = 10_000;
+
 /** What "ignoring the panel" does with the shot — a preference (ticket's Preferences section). */
 export type SettleAction = "save" | "copy";
 
