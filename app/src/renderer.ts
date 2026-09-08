@@ -40,6 +40,12 @@ declare const recorder: {
   devices(): Promise<{ displays?: DisplayInfo[]; stalled?: boolean; detail?: string }>;
   status(): Promise<{ state: string; pid?: number }>;
   takes(): Promise<{ takes: Take[]; invalid: { name: string; reason: string }[] }>;
+  library(filter?: string): Promise<LibraryList>;
+  writeThumbnail(dir: string, bytes: ArrayBuffer): Promise<boolean>;
+  getFrame(dir: string, name: string): Promise<ArrayBuffer>;
+  getShot(dir: string): Promise<Shot>;
+  reopenStill(dir: string): Promise<{ ok: boolean }>;
+  duplicateStill(dir: string): Promise<{ ok: boolean; dir: string }>;
   labelTake(dir: string, label: string): Promise<boolean>;
   deleteTake(dir: string): Promise<{ deleted: boolean }>;
   openPreview(dir: string): Promise<boolean>;
@@ -91,6 +97,12 @@ import {
   clampTrim, isFullTake, minTrimNs,
 } from "@transform/trim";
 import { TRANSFORM_VERSION } from "@transform/transform-version";
+import { renderLibrary, type LibraryCallbacks } from "./library-view.js";
+import type { LibraryItem, LibraryList } from "./library-items.js";
+import { decorationForMode, layoutStill } from "@transform/still-decorate";
+import { renderStill, sampleRedactionFills } from "@transform/still-render";
+import { colorSpaceFor } from "@transform/still-export";
+import type { Shot } from "@transform/shot";
 
 const $ = (id: string) => document.getElementById(id)!;
 const recordBtn = $("record") as HTMLButtonElement;
@@ -537,7 +549,7 @@ function setTrim(startNs: number, endNs: number, persist: boolean): void {
   if (persist) void persistProject().catch((e: any) => alertUser(String(e?.message ?? e)));
 }
 
-async function openPreview(take: Take): Promise<void> {
+async function openPreview(take: Openable): Promise<void> {
   try {
     await openPreviewOrThrow(take);
   } catch (e: any) {
@@ -572,7 +584,7 @@ async function readVideo(name = "display.mp4"): Promise<ArrayBuffer> {
   return out.buffer;
 }
 
-async function openPreviewOrThrow(take: Take): Promise<void> {
+async function openPreviewOrThrow(take: Openable): Promise<void> {
   await closePreview();
   await recorder.openPreview(take.dir);
 
@@ -907,117 +919,143 @@ thumbSkipBox.addEventListener("change", () => void patchThumbnail({ skip: thumbS
 
 // ---- library -------------------------------------------------------------
 
-async function refreshTakes(): Promise<void> {
-  const { takes, invalid } = await recorder.takes();
-  const host = $("takes");
-  host.textContent = "";
+/** What the preview needs of a take: enough to name it and find it. */
+type Openable = { dir: string; name: string; label?: string };
 
-  if (!takes.length && !invalid.length) {
-    const p = document.createElement("div");
-    p.id = "empty";
-    p.textContent = "No recordings yet.";
-    host.append(p);
-    return;
-  }
+/** Which kind filter is showing. The adapter validates it; this only remembers it. */
+let libraryFilter = "all";
 
-  for (const t of takes) {
-    const row = document.createElement("div");
-    row.className = "take";
-    const left = document.createElement("div");
-    const title = document.createElement("div");
-    // Show the label when there is one, but keep the timestamp visible: it is
-    // how the take is identified on disk and in every path the app hands out.
-    title.textContent = t.label ? `${t.label}` : t.name;
-    title.className = "take-title";
-    title.title = t.dir;
-    if (t.label) {
-      const stamp = document.createElement("span");
-      stamp.className = "stamp";
-      stamp.textContent = ` ${t.name}`;
-      title.append(stamp);
-    }
-    const meta = document.createElement("div");
-    meta.className = "meta";
-    meta.textContent = `${fmtDuration(t.durationMs)} · ${t.width}×${t.height} · ` +
-                       `${t.events} events · ${fmtSize(t.bytes)}`;
-    // STC-287. A camera take whose PiP arrives a beat late looks broken, and a
-    // camera that recorded NOTHING looked identical to no camera at all. Both
-    // are now stated on the take itself, where someone wondering "did the
-    // camera work?" is actually looking.
-    if (t.camera) {
-      const cam = document.createElement("div");
-      cam.className = "meta";
-      if (!t.camera.present) {
-        cam.textContent = "Camera: recorded no frames — this take has no picture-in-picture";
-      } else {
-        const who = t.camera.device ?? "camera";
-        cam.textContent = t.camera.pipStartsAfterMs > 0
-          ? `Camera: ${who} · picture-in-picture starts ${(t.camera.pipStartsAfterMs / 1000).toFixed(1)}s in`
-          : `Camera: ${who}`;
-      }
-      left.append(title, meta, cam);
-    } else {
-      left.append(title, meta);
-    }
-    const openBtn = document.createElement("button");
-    openBtn.textContent = "Preview";
-    openBtn.addEventListener("click", () => void openPreview(t));
-    const renameBtn = document.createElement("button");
-    renameBtn.textContent = "Rename";
-    renameBtn.className = "rename";
-    renameBtn.addEventListener("click", () => {
-      const input = document.createElement("input");
-      input.type = "text";
-      input.className = "labelinput";
-      input.value = t.label ?? "";
-      input.placeholder = "Name this recording";
-      input.maxLength = 120;
-      const commit = async () => {
-        const v = input.value.trim();
-        input.replaceWith(title);
-        if (v && v !== t.label) {
-          try { await recorder.labelTake(t.dir, v); await refreshTakes(); }
-          catch (e: any) { alertUser(String(e?.message ?? e)); }
-        }
-      };
-      input.addEventListener("keydown", (e) => {
-        if (e.key === "Enter") void commit();
-        if (e.key === "Escape") input.replaceWith(title);
-      });
-      input.addEventListener("blur", () => void commit());
-      title.replaceWith(input);
-      input.focus();
-      input.select();
+/**
+ * The longest edge a cached library thumbnail is rendered at.
+ *
+ * A thumbnail is a PREVIEW, and downscaling it is fine — the rule that nothing
+ * in the still path resamples the capture is about the EXPORT, where a
+ * resampled premultiplied edge is the dark fringe the whole still path exists
+ * to avoid. Here the alternative is caching a 4K PNG per tile.
+ */
+const THUMB_MAX_EDGE = 480;
+
+/**
+ * Draw one still's decorated result into `img`, and cache it beside the shot.
+ *
+ * Through the SAME `layoutStill` + `renderStill` the panel and the export use.
+ * A second rendering path is what STC-293's Note forbids and would be the
+ * quiet way for the grid to show something the export does not produce — the
+ * ticket's own wording is that thumbnails render *"the decorated result, not
+ * the raw capture, so the grid shows what the user will get"*, which is only
+ * true if it is literally the same code.
+ */
+async function renderThumbnail(item: LibraryItem, img: HTMLImageElement): Promise<void> {
+  const shot = await recorder.getShot(item.dir);
+  const bytes = await recorder.getFrame(item.dir, shot.frame.file);
+  const frame = await createImageBitmap(new Blob([bytes], { type: "image/png" }));
+  try {
+    // The stored decoration, filled in from the mode's presets exactly as the
+    // panel does — so a shot never opened since capture still shows what it
+    // would export.
+    const decorated = { ...shot, decoration: decorationForMode(shot.decoration.mode, shot.decoration) };
+    const layout = layoutStill(decorated);
+    const fit = Math.min(1, THUMB_MAX_EDGE / Math.max(layout.canvas.width, layout.canvas.height));
+
+    const full = document.createElement("canvas");
+    full.width = layout.canvas.width;
+    full.height = layout.canvas.height;
+    const ctx = full.getContext("2d", {
+      alpha: true, colorSpace: colorSpaceFor(shot.display.colorSpace) as never,
     });
-    const delBtn = document.createElement("button");
-    delBtn.textContent = "Delete";
-    delBtn.className = "delete";
-    delBtn.addEventListener("click", async () => {
-      try {
-        const r = await recorder.deleteTake(t.dir);
-        if (r.deleted) { if (player) await closePreview(); await refreshTakes(); }
-      } catch (e: any) { alertUser(String(e?.message ?? e)); }
-    });
-    const btn = document.createElement("button");
-    btn.textContent = "Show";
-    btn.addEventListener("click", () => recorder.reveal(t.dir));
-    const actions = document.createElement("div");
-    actions.append(openBtn, renameBtn, btn, delBtn);
-    actions.style.display = "flex";
-    actions.style.gap = "6px";
-    row.append(left, actions);
-    host.append(row);
-  }
+    if (!ctx) throw new Error("no 2d context for a thumbnail");
+    // Sampled from the FRAME, not the composite: the regions are normalised
+    // against the frame, and reading the composite would read pixels a
+    // previous fill had already replaced.
+    const fills = sampleRedactionFills(frame, shot.frame, decorated.decoration.redactions);
+    renderStill(ctx as never, { frame, redactionFills: fills }, layout);
 
-  // Broken takes are shown, not hidden: a recording that silently disappears
-  // from the list is indistinguishable from one that was deleted.
-  for (const b of invalid) {
-    const row = document.createElement("div");
-    row.className = "broken";
-    row.textContent = `${b.name} — ${b.reason}`;
-    host.append(row);
+    const small = document.createElement("canvas");
+    small.width = Math.max(1, Math.round(full.width * fit));
+    small.height = Math.max(1, Math.round(full.height * fit));
+    small.getContext("2d")!.drawImage(full, 0, 0, small.width, small.height);
+
+    const blob = await new Promise<Blob | null>((res) => small.toBlob(res, "image/png"));
+    if (!blob) throw new Error("could not encode a thumbnail");
+    img.src = URL.createObjectURL(blob);
+    // Cached AFTER it is on screen: a failed write costs the cache, never the
+    // picture the user is already looking at.
+    try { await recorder.writeThumbnail(item.dir, await blob.arrayBuffer()); }
+    catch { /* an uncached tile simply renders again next time */ }
+  } finally {
+    // ~30 MB at 4K, and 500 of them is the tab-killer this repo already
+    // documents. Closed on every path, including the failing one.
+    frame.close();
   }
 }
+
+/** Show a cached thumbnail, decoding it in the main process's stead. */
+async function showCachedThumbnail(item: LibraryItem, img: HTMLImageElement,
+                                   file: string): Promise<void> {
+  const bytes = await recorder.getFrame(item.dir, file);
+  img.src = URL.createObjectURL(new Blob([bytes], { type: "image/png" }));
+}
+
+const libraryCallbacks: LibraryCallbacks = {
+  async act(id, item) {
+    try {
+      // Dispatch by ACTION, never by kind — the ticket's fourth acceptance
+      // criterion. Which actions an item offers was decided by the adapter, so
+      // an id that cannot apply to this item never reaches here.
+      if (id === "open") await openItem(item);
+      else if (id === "duplicate") { await recorder.duplicateStill(item.dir); await refreshTakes(); }
+      else if (id === "reveal") await recorder.reveal(item.dir);
+      else if (id === "delete") {
+        const r = await recorder.deleteTake(item.dir);
+        if (r.deleted) {
+          if (player && openTakeDir === item.dir) await closePreview();
+          await refreshTakes();
+        }
+      }
+    } catch (e: any) { alertUser(String(e?.message ?? e)); }
+  },
+  async rename(item, label) {
+    try { await recorder.labelTake(item.dir, label); await refreshTakes(); }
+    catch (e: any) { alertUser(String(e?.message ?? e)); }
+  },
+  async setFilter(id) { libraryFilter = id; await refreshTakes(); },
+  async paintThumbnail(item, img) {
+    if (item.thumbnail.source === "file") {
+      await showCachedThumbnail(item, img, item.thumbnail.file);
+    } else if (item.thumbnail.source === "render") {
+      await renderThumbnail(item, img);
+    }
+  },
+};
+
+/**
+ * Open whatever this item is.
+ *
+ * The one place the two kinds' destinations differ, and it is a MAIN-process
+ * decision rather than a view's: a recording goes to the in-window player, a
+ * still goes back into the post-capture panel with its decoration intact. The
+ * view asked for "open" and does not know which happened.
+ *
+ * Told apart by what the adapter said the item HAS — a still is the thing with
+ * a thumbnail to render or cached — rather than by its kind. That reads as a
+ * dodge and is not: the criterion is that the presentation layer must not
+ * encode kind rules, and "the ones with pictures open in the picture window"
+ * is a rule about the interface, which is where it is allowed to live.
+ */
+async function openItem(item: LibraryItem): Promise<void> {
+  if (item.thumbnail.source === "none") {
+    await openPreview({ dir: item.dir, name: item.id, label: item.label });
+    return;
+  }
+  await recorder.reopenStill(item.dir);
+}
+
+async function refreshTakes(): Promise<void> {
+  const list = await recorder.library(libraryFilter);
+  libraryFilter = list.filter;
+  renderLibrary($("takes"), list, libraryCallbacks);
+}
+
 
 recorder.status().then((s) => {
   setState(s.state);

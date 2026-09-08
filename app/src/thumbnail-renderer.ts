@@ -62,7 +62,12 @@ const doneRedactBtn = $("donedact") as HTMLButtonElement;
 
 const params = new URLSearchParams(location.search);
 const dir = params.get("dir") ?? "";
-const settleAction = params.get("settleAction") === "copy" ? "copy" : "save";
+// "none" is the re-opened case (STC-294): close without exporting, because
+// the shot is already on disk and a second copy is not what a glance meant.
+const settleParam = params.get("settleAction");
+const settleAction = settleParam === "copy" ? "copy"
+                   : settleParam === "none" ? "none"
+                   : "save";
 const shot: Shot = parseShot(JSON.parse(params.get("shot") ?? "null"));
 /**
  * The "skip the panel" preference (STC-296): this window is never shown at
@@ -340,7 +345,7 @@ canvas.addEventListener("pointerup", (e) => {
 async function settle(): Promise<void> {
   if (settling) return;
   settling = true;
-  try { await runExport(settleAction); }
+  try { if (settleAction !== "none") await runExport(settleAction); }
   finally { window.thumb.event({ kind: "done" }); }
 }
 

@@ -7,8 +7,11 @@
   // Scope is by directory with the RENDERERS carved out, NOT an explicit file
   // list — a new file under app/src/ lands in this pass automatically and has
   // to opt OUT. The fail-safe direction: forgetting to list a file cannot
-  // silently lose the constraint. Two are carved out: the main window's
-  // renderer and the selection overlay's (STC-290), both of which are pages.
+  // silently lose the constraint. The carve-outs are all PAGES: the main
+  // window's renderer, the selection overlay's (STC-290), the post-capture
+  // panel's (STC-296), and the library's grid (STC-294) — that last one is a
+  // module rather than a page entry point, and it is renderer code all the
+  // same, drawn into the main window's document.
   //
   // skipLibCheck is on ONLY here, and only because electron.d.ts declares the
   // main, renderer and <webview> APIs in one file and cannot parse without
@@ -26,5 +29,6 @@
     "skipLibCheck": true
   },
   "include": ["app/src/**/*.ts", "harness/vite.config.ts", "vitest.*.ts"],
-  "exclude": ["app/src/renderer.ts", "app/src/overlay.ts", "app/src/thumbnail-renderer.ts"]
+  "exclude": ["app/src/renderer.ts", "app/src/overlay.ts", "app/src/thumbnail-renderer.ts",
+              "app/src/library-view.ts"]
 }
