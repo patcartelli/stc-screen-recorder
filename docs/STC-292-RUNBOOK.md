@@ -15,10 +15,35 @@ file is for.
 | ⌃⌥⇧⌘3 with another app frontmost: fires, **no overlay**, one shutter sound, a shot on disk | ✅ §3, §5 |
 | ⌃⌥⇧⌘1 and ⌃⌥⇧⌘2 — the overlay opens and a capture completes | ✅ §3 |
 | **Shutter sound** unticked in the app: silence, and the shot still saves | ✅ §5 |
+| **The permission round trip — the third acceptance criterion** | ✅ **§7** |
 
 That is the whole full-display hotkey path, end to end, on a real Mac — the
 hotkey reaching a background app, the overlay-less capture, the sound, and the
 file. It is the part no automated test in this repo can reach.
+
+### The permission round trip passed — what it took, and what it means
+
+`tccutil reset` for `com.github.Electron`, then launched via `open` so Electron
+is its own responsible process rather than a child of the terminal. In order:
+**Files and Folders › Desktop** at launch, then **Screen Recording** on the
+first ⌃⌥⇧⌘1, then — after the quit and relaunch an SCK grant requires — the
+overlay, a region drag, and `shot.json` + `frame.png` on disk. Electron was
+never listed under Accessibility at any point.
+
+Read it precisely, because the first attempt looked identical and proved
+nothing (below): the app was **asked** for a Screen Recording grant of its own
+and the capture worked once it had one. That is the criterion. The Desktop
+prompt is a consequence of writing takes to `~/Desktop/stc`, not of how capture
+works — see §7 for why the ticket's "only Screen Recording granted" is best
+recorded as *only Screen Recording among the grants CAPTURE needs*.
+
+**The attempt that proved nothing, kept because it is the trap.** The same
+reset, run correctly, produced no prompt at all — the app was launched with
+`npm run app:start`, iTerm2 holds Screen Recording, and Electron inherited it
+as a child process. A working capture and no prompt reads as a pass and was the
+question never being asked. Only the Accessibility half survived that run,
+because a missing Accessibility grant would have failed the capture wherever
+the Screen Recording grant came from.
 
 ## Still unverified
 
@@ -27,22 +52,14 @@ file. It is the part no automated test in this repo can reach.
   system one is not, and only the second proves `com.apple.sound.uiaudio.enabled`
   is actually read. Also zero alert volume. §5 steps 3-4.
 * **Rebinding by hand, and the third-party conflict wording.** §6 — step 5 needs
-  a second app holding a key and cannot be produced any other way.
-* **The permission round trip, SCREEN RECORDING HALF ONLY.** §7. The ticket's
-  third acceptance criterion, and the largest thing still open.
+  a second app holding a key. NB it does not need a THIRD-PARTY app: the code
+  cannot distinguish a foreign holder from a system binding absent from
+  `SYSTEM_CLAIMED`, since both are `globalShortcut.register` returning false, so
+  a shortcut assigned by hand in System Settings › Keyboard produces the same
+  wording.
 
-**What the 2026-09-08 attempt did and did not settle.** The reset was run
-correctly and the app was never prompted — because it was launched from iTerm2,
-which holds Screen Recording, and Electron inherited it as a child process. So
-the criterion splits, and only one half is contaminated:
-
-| half | state |
-|---|---|
-| Capture does not need **Accessibility** | ✅ **Settled.** Electron unlisted under Accessibility, ⌃⌥⇧⌘1 gave an overlay and a shot on disk. Where the Screen Recording grant came from cannot change this — a missing Accessibility grant would have failed the capture either way. |
-| The app needs **only Screen Recording**, granted to itself | ❌ **Not asked.** Launched from a granted terminal the app never needed a grant of its own, so nothing was measured. §7's `open` launch is what asks it. |
-
-That is the good half of the two: Accessibility is the dependency that would
-have been a BUG, and it is ruled out. What is left is the fresh-install story.
+None of the three is an acceptance criterion; all three are now the only things
+left in this file.
 
 Everything below assumes `npm run app:build && npx electron .` (or
 `npm run app:start`) on the Mac, with the real helper built — **except §7**,
@@ -257,6 +274,11 @@ ate. That is a real finding — Carbon accepting a hotkey it will not deliver �
 and the fix is to add it to `SYSTEM_CLAIMED`, not to widen the report.
 
 ## 7. The permission story — the acceptance criterion
+
+**PASSED on hardware 2026-09-08.** Kept in full because the route to it is the
+point: the first attempt was run correctly, produced no prompt, and proved
+nothing. Re-run this whole section after any change to how the app is launched
+or where it writes.
 
 The one that needs a clean machine, or a reset.
 
