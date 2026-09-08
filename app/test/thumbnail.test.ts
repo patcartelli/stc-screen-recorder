@@ -4,6 +4,7 @@ import {
   clampTimeoutMs, parseCorner, parseSettleAction,
   discardDirection, isHorizontal, swipeOffset, isDiscardSwipe, SWIPE_DISCARD_PX,
   classifyDrag, DRAG_START_PX,
+  stackPosition, STACK_STEP_PX, MAX_STACKED,
   DEFAULT_THUMBNAIL_TIMEOUT_MS, MIN_THUMBNAIL_TIMEOUT_MS, CORNERS,
   type ThumbnailState,
 } from "../src/thumbnail.js";
@@ -253,5 +254,58 @@ describe("one gesture, two outcomes (STC-296 drag-out)", () => {
     // The cheap-to-undo gesture is the easy one to reach: an OS drag dropped
     // on nothing does nothing, a discard destroys a capture.
     expect(DRAG_START_PX).toBeLessThan(SWIPE_DISCARD_PX);
+  });
+});
+
+
+describe("stacking (STC-296 follow-up)", () => {
+  const workArea = { x: 0, y: 0, width: 1440, height: 900 };
+  const size = { width: 220, height: 150 };
+
+  test("the newest panel sits exactly where a lone panel would", () => {
+    // Not a separate calculation: the single-panel case cannot drift from the
+    // stacked one because index 0 IS `positionFor`.
+    for (const corner of CORNERS) {
+      expect(stackPosition(0, corner, workArea, size))
+        .toEqual(positionFor(corner, workArea, size));
+    }
+  });
+
+  test("older panels move further INTO the screen, never off its edge", () => {
+    const topLeft = stackPosition(1, "top-left", workArea, size);
+    const bottomLeft = stackPosition(1, "bottom-left", workArea, size);
+    // Down from a top corner, up from a bottom one.
+    expect(topLeft.y).toBeGreaterThan(stackPosition(0, "top-left", workArea, size).y);
+    expect(bottomLeft.y).toBeLessThan(stackPosition(0, "bottom-left", workArea, size).y);
+  });
+
+  test("the step is uniform, so the stack reads as a deck", () => {
+    const ys = [0, 1, 2, 3].map((i) => stackPosition(i, "bottom-right", workArea, size).y);
+    const gaps = ys.slice(1).map((y, i) => Math.abs(y - ys[i]!));
+    expect(gaps).toEqual([STACK_STEP_PX, STACK_STEP_PX, STACK_STEP_PX]);
+  });
+
+  test("stacking never moves a panel sideways", () => {
+    // The stack is anchored to its corner; drifting horizontally would take it
+    // away from the edge it belongs to.
+    for (const corner of CORNERS) {
+      const xs = [0, 1, 2, 3].map((i) => stackPosition(i, corner, workArea, size).x);
+      expect(new Set(xs).size).toBe(1);
+    }
+  });
+
+  test("a full stack still fits the work area", () => {
+    // MAX_STACKED panels at STACK_STEP_PX apart must not walk off the screen,
+    // or the oldest becomes unreachable rather than merely behind.
+    for (const corner of CORNERS) {
+      const last = stackPosition(MAX_STACKED - 1, corner, workArea, size);
+      expect(last.y).toBeGreaterThanOrEqual(workArea.y);
+      expect(last.y + size.height).toBeLessThanOrEqual(workArea.y + workArea.height);
+    }
+  });
+
+  test("the cap matches the acceptance case it exists for", () => {
+    // "Five captures in five seconds produce five recoverable shots."
+    expect(MAX_STACKED).toBeGreaterThanOrEqual(5);
   });
 });

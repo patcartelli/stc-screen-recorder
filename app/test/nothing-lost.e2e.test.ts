@@ -144,10 +144,23 @@ describe("gate 4: nothing is lost in a burst of captures", () => {
    *
    * The shots being on disk is the helper's doing and happens before any panel
    * exists. What this half proves is the ticket's actual sentence — "lets every
-   * thumbnail time out untouched" — which exercises the path where a capture
-   * arrives while a panel is still showing: STC-296 replaces the panel rather
-   * than stacking, and the outgoing shot must be settled rather than discarded.
-   * A burst is the only way to reach that path N times over.
+   * thumbnail time out untouched" — which is a different claim: N panels must
+   * each reach an export without a person touching any of them.
+   *
+   * What that exercises has CHANGED under the gate, and the assertion is worth
+   * more for it. It used to be the replace path — a capture arriving while a
+   * panel showed replaced it, and the outgoing shot had to be settled rather
+   * than discarded. Captures stack now (#104), so what a burst reaches is N
+   * panels alive at once, each holding its own timer and settling on its own
+   * clock, with N exports overlapping in the destination folder. The property
+   * asserted is identical and the mechanism underneath it is not, which is the
+   * point of asserting the OUTCOME (N files) rather than the mechanism.
+   *
+   * `N` is 5 because the ticket says five, and `MAX_STACKED` happens to be 5
+   * as well, so today this burst fills the stack exactly and evicts nothing.
+   * Lower the cap and the same burst would additionally exercise overflow
+   * eviction — a broader run of the same assertion, not a broken one, which is
+   * why nothing here is pinned to that coincidence.
    */
   test(`ignoring all ${N} panels still exports all ${N}`, async () => {
     const { win, recordings, destDir } = await launch();

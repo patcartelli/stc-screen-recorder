@@ -1,6 +1,6 @@
 import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { join } from "node:path";
 import {
   DEFAULT_FLATTEN_COLOR, FORMATS, clampQuality, colorSpaceFor, metadataPlan, parseFormat,
   parseScale, planFileName, tokensFor,
@@ -150,33 +150,35 @@ export function destinationDir(settings: Pick<StillSettings, "destination">,
 }
 
 /**
- * Names this process has already handed out but not yet finished writing.
+ * Names handed out but not yet on disk, as absolute paths.
  *
- * The directory listing is a snapshot, and every export in flight took its own
- * before any of them wrote — so five settles racing (which a burst of captures
- * produces, since each panel settles independently in the background) all see
- * an empty folder, all compute the same name, and overwrite each other.
- * STC-301's gate 4 measured it: five captures produced five export requests
- * and THREE files.
+ * `namesIn` lists the destination BEFORE the encode, and the file appears
+ * AFTER it — so between those two moments the name exists only here. Two
+ * exports overlapping in that window both see a directory without the other's
+ * file, both render the same stem from `{app} {date} at {time}`, and one
+ * silently overwrites the other: a capture lost with nothing to show for it,
+ * which is the one outcome STC-296 exists to prevent.
  *
- * The suffix loop in `uniqueFileName` was meant to be the belt-and-braces for
- * exactly this — its own comment says "a counter derived from a directory
- * listing is correct only until two exports race" — but it re-checks against
- * the SAME stale snapshot, so belt and braces were reading one number. That
- * comment described a guarantee the code did not have.
+ * It was unreachable until captures could STACK. One panel at a time meant one
+ * settle at a time; two panels settling on their own timers is the first thing
+ * in this app that can export twice at once. The comment below already named
+ * the hazard — "correct only until two exports race" — and the race simply had
+ * no way to happen yet.
  *
- * Full paths, so two destinations cannot collide with each other, and never
- * released: a name reserved by an export that then failed is simply skipped by
- * the next one, which costs a gap in the numbering and nothing else. Correct
- * for this app because every export goes through this one funnel in the main
- * process; it is NOT a defence against another program writing to the same
- * folder, and the only real answer to that is an exclusive create in the
- * helper.
+ * In-process only, and that is the honest scope: it makes THIS app's exports
+ * not collide with each other. Nothing else writes to the destination folder,
+ * and a cross-process guarantee would need the writer to create the file
+ * exclusively, which happens inside the helper.
  */
-const reserved = new Set<string>();
+const claimedPaths = new Set<string>();
 
-/** For tests, and for a caller that wants a clean slate. */
-export function clearExportReservations(): void { reserved.clear(); }
+/** The claimed names that would collide inside `dir`. */
+function claimedIn(dir: string): string[] {
+  const prefix = dir.endsWith("/") ? dir : `${dir}/`;
+  return [...claimedPaths]
+    .filter((p) => p.startsWith(prefix) && !p.slice(prefix.length).includes("/"))
+    .map((p) => p.slice(prefix.length));
+}
 
 /**
  * What is already in `dir`, for the collision check.
@@ -287,15 +289,10 @@ export async function exportStill(send: SendExport, req: ExportRequest,
   // reads could disagree, and a filename whose counter came from a different
   // listing than its uniqueness check is exactly the kind of nearly-right that
   // survives every test and collides in the wild.
-  const onDisk = await namesIn(dir);
-  // The listing PLUS what this process has already promised — see `reserved`.
-  // Without the second half, concurrent exports each pick the same name from
-  // the same stale snapshot and overwrite one another.
-  const taken = new Set(onDisk);
-  for (const full of reserved) {
-    const [d, n] = [dirname(full), basename(full)];
-    if (d === dir) taken.add(n);
-  }
+  // On disk, PLUS what another export in flight has already claimed. Without
+  // the second half two concurrent settles pick the same name — see
+  // `claimedPaths`.
+  const taken = new Set([...await namesIn(dir), ...claimedIn(dir)]);
   const name = planFileName(req.options, {
     tokens: tokensFor({
       ...req.info,
@@ -308,15 +305,18 @@ export async function exportStill(send: SendExport, req: ExportRequest,
     }, at),
     taken,
   });
-  // Claimed BEFORE the await that writes it, which is the whole point: the
-  // window between choosing a name and the file existing is exactly where the
-  // next export would otherwise choose the same one.
-  reserved.add(join(dir, name));
 
   // A copy always writes a file too, so the pasteboard's file URL points at
   // something real. A save-only export never touches the clipboard.
   const wantsFile = req.target.file || req.target.clipboard;
   const meta = metadataPlan(req.still.colorSpace, at, settings.stripMetadata === true);
+
+  // Claimed for as long as this export is in flight, so a concurrent one sees
+  // the name as taken even though nothing is on disk yet. Released in the same
+  // `finally` as the scratch file: an export that fails must not leave a name
+  // reserved forever.
+  const claimed = wantsFile ? (req.explicitFile ?? join(dir, name)) : undefined;
+  if (claimed !== undefined) claimedPaths.add(claimed);
 
   const scratch = await mkdtemp(join(tmpdir(), "stc-still-"));
   const rgba = join(scratch, "composite.rgba");
@@ -352,6 +352,9 @@ export async function exportStill(send: SendExport, req: ExportRequest,
     // The scratch copy is 33 MB and has no reason to outlive the encode, on
     // the failure path least of all.
     await rm(scratch, { recursive: true, force: true }).catch(() => {});
+    // Released whatever happened. A failed export that kept its name reserved
+    // would push every later shot to a suffix for a file that never existed.
+    if (claimed !== undefined) claimedPaths.delete(claimed);
   }
 }
 

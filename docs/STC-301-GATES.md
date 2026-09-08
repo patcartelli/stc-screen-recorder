@@ -107,8 +107,19 @@ requests, and two files**.
    five racing settles all saw an empty folder and chose the same name.
    `uniqueFileName`'s own comment says a counter from a listing "is correct
    only until two exports race" and offers the suffix loop as belt-and-braces —
-   but the suffix loop re-checks the **same stale snapshot**. Names are now
-   reserved in-process before the write.
+   but the suffix loop re-checks the **same stale snapshot**. Names are claimed
+   in-process before the write now.
+   **This fix is not in this branch either**, and for the same reason: #104
+   (captures stack instead of replacing) hit the identical race from the other
+   direction — stacking is the first thing in the app that can export twice at
+   once — and fixed it with a claim that is RELEASED in the same `finally` as
+   the scratch file. Mine never released, which trades a lost file for a gap in
+   the numbering; releasing is better. Merging master took that version whole.
+
+**So both of gate 4's bugs were fixed on master rather than here, and the
+gate's value is unchanged by that.** It is the thing that measured them —
+5/3/2 → 5/5/3 → 5/5/5 — and it is the thing that will notice if either comes
+back. A gate whose findings someone else fixed first has done its job.
 
 Measured at each step rather than assumed: 5/3/2 → 5/5/3 after the first fix →
 5/5/5 after the second.
@@ -124,7 +135,11 @@ three times (STC-250, STC-258, STC-259). Per gate:
 * **4** — the panel timeout is pinned to its 3 s floor rather than the 6 s
   default; it waits on **directories and files**, never on an animation or a
   panel appearing; and it captures through the `display` action, which opens no
-  overlay and needs no pointer, so there is no window-server race.
+  overlay and needs no pointer, so there is no window-server race. Its teardown
+  carries a bound DERIVED from `SETTLE_READY_MS` rather than vitest's default,
+  which is the same 10 s and made `app.close()` a coin flip against the wait
+  sitting underneath it — observed failing 1 run in 5, with the test body green,
+  before the bound went in and 6 of 6 after.
 * **5** — pure arithmetic over a frozen document. No canvas at all.
 * **3** — the budget is on the STEADY state, not the cold first call, which
   pays for `SCShareableContent` enumeration every later call does not. Five

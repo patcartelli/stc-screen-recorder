@@ -1,20 +1,27 @@
 import { BrowserWindow, screen } from "electron";
 import { join } from "node:path";
 import {
-  clampTimeoutMs, positionFor, type Corner, type Size, type PanelSettle,
+  clampTimeoutMs, positionFor, stackPosition, MAX_STACKED,
+  type Corner, type Size, type PanelSettle,
 } from "./thumbnail.js";
 import { HIDE_SETTLE_MS, windowIdOf } from "./overlay-session.js";
 
 /**
  * The post-capture floating thumbnail's window (STC-296).
  *
- * `thumbnail.ts` decides what STATE the panel is in; this owns the one real
- * `BrowserWindow` and the one real timer that state describes, the same split
- * `overlay-session.ts` makes for the selection overlay. One panel at a time —
- * a capture that arrives while a panel is still up REPLACES it rather than
- * stacking (the ticket's stacking behaviour is deferred, see CLAUDE.md), and
- * the outgoing panel is always SETTLED, never merely discarded, so a rapid
- * second capture cannot cost the first one its save.
+ * `thumbnail.ts` decides what STATE a panel is in; this owns the real
+ * `BrowserWindow`s and the real timers that state describes, the same split
+ * `overlay-session.ts` makes for the selection overlay.
+ *
+ * Captures STACK, newest at the corner, up to `MAX_STACKED`. A panel pushed
+ * out by the cap is SETTLED, never merely dropped — the promise that made
+ * replacing safe before stacking existed, and the reason a burst of captures
+ * has never cost anyone a shot.
+ *
+ * Every panel keeps its OWN timer, armed when it paints, which is what makes
+ * the ticket's "drains oldest-first on timeout" true without a queue: panels
+ * that appeared in order expire in order. A central drain would have taken
+ * that away and then had to reimplement it.
  *
  * ## Timeout dismissal must never block on a render (the ticket's own words)
  *
@@ -83,18 +90,38 @@ type ThumbEvent =
   | { kind: "redact"; on: boolean }
   | { kind: "done" };
 
-let active: ThumbnailSession | undefined;
+/**
+ * Every panel on screen, NEWEST FIRST.
+ *
+ * Was a single slot until stacking: a capture arriving while a panel was up
+ * replaced it. It still settles what it displaces — that was always true, and
+ * is why nothing was lost by replacing — but a burst of captures now leaves a
+ * legible stack instead of one survivor.
+ */
+let panels: ThumbnailSession[] = [];
 
 /**
  * Put the panel on screen for a fresh capture, replacing whatever panel — if
  * any — was already showing.
  */
 export function presentThumbnail(opts: PresentOptions): void {
-  const outgoing = active;
-  active = new ThumbnailSession(opts);
-  // Settled AFTER the new one is already `active`, so a "done" racing back
-  // from the outgoing session cannot be mistaken for the new one's.
-  outgoing?.settleAndDestroy();
+  panels.unshift(new ThumbnailSession(opts));
+  // Over the cap, the oldest is SETTLED to make room — never merely dropped,
+  // which is the same promise replacing always kept.
+  const overflow = panels.slice(MAX_STACKED);
+  for (const old of overflow) old.settleAndDestroy();
+  restack();
+}
+
+/**
+ * Put every panel where its position in the stack says it belongs.
+ *
+ * Called whenever the list changes — a new capture, or one settling out of the
+ * middle — because every panel's place is a function of the whole stack, not
+ * of where it happened to start.
+ */
+function restack(): void {
+  panels.forEach((p, i) => p.moveToStackIndex(i));
 }
 
 /**
@@ -104,17 +131,34 @@ export function presentThumbnail(opts: PresentOptions): void {
  * `overlay-session.ts` reasons about it: the exclusion list is what makes the
  * capture correct, this only keeps the common case from depending on it.
  *
- * Does NOT destroy the panel: it is about to be replaced by `presentThumbnail`
- * for the capture this is guarding, and that replacement is what settles it.
- * A caller that hides without following up with a new capture (there is none
- * today) would leave the panel hidden but alive — worth knowing if one is
- * ever added.
+ * Does NOT destroy the panels: they are hidden for the duration of one capture
+ * and `presentThumbnail` shows the stack again. A caller that hides without
+ * following up with a new capture (there is none today) would leave them
+ * hidden but alive — worth knowing if one is ever added.
  */
 export async function beforeCapture(): Promise<number[]> {
-  if (!active) return [];
-  const id = active.hide();
+  if (panels.length === 0) return [];
+  // EVERY panel, not just the newest. With a stack, excluding one and leaving
+  // the rest visible would photograph the others — the exact failure
+  // `excludeWindowIds` exists to prevent, reintroduced by the feature that
+  // made more than one panel possible.
+  const ids = panels.map((p) => p.hide()).filter((id): id is number => id !== undefined);
   await sleep(HIDE_SETTLE_MS);
-  return id !== undefined ? [id] : [];
+  return ids;
+}
+
+/**
+ * Put the stack back on screen after a capture.
+ *
+ * The counterpart to `beforeCapture`, and it has to be called on EVERY exit
+ * from a capture — including a cancelled one. `beforeCapture` hides panels
+ * that are not about to be replaced (a stack persists where a single panel
+ * used to be destroyed), so without this a cancelled selection would leave
+ * the whole stack invisible while its timers ran on, and the shots would
+ * settle out of sight.
+ */
+export function afterCapture(): void {
+  for (const p of panels) p.reshow();
 }
 
 /**
@@ -125,14 +169,18 @@ export async function beforeCapture(): Promise<number[]> {
  * the export it just asked for.
  */
 export function closeThumbnail(): Promise<void> {
-  const session = active;
-  if (!session) return Promise.resolve();
-  session.settleAndDestroy();
-  return session.waitUntilClosed();
+  // A copy: settling mutates `panels` as each one closes.
+  const all = [...panels];
+  if (all.length === 0) return Promise.resolve();
+  for (const p of all) p.settleAndDestroy();
+  return Promise.all(all.map((p) => p.waitUntilClosed())).then(() => undefined);
 }
 
-/** Whether a panel is on screen right now, for tests. */
-export function thumbnailIsOpen(): boolean { return active !== undefined; }
+/** Whether any panel is on screen right now, for tests. */
+export function thumbnailIsOpen(): boolean { return panels.length > 0; }
+
+/** How many are stacked right now, for tests. */
+export function thumbnailCount(): number { return panels.length; }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -143,19 +191,36 @@ class ThumbnailSession {
   private done = false;
   private expanded = false;
   /**
+   * It has painted at least once, so it is a panel the user has SEEN.
+   *
+   * `showInactive` is called on the one-time `painted` event, so re-showing a
+   * panel hidden for a capture cannot go through that path — and showing one
+   * that has never painted would flash the desktop through a transparent
+   * window, which is the reason `show: false` is set in the first place.
+   */
+  private hasPainted = false;
+  /** Where in the stack this panel currently sits; 0 is the newest. */
+  private stackIndex = 0;
+  /**
    * Whether the page has loaded far enough to be listening.
    *
    * `webContents.send` to a renderer whose scripts have not run yet is DROPPED
    * — silently, with no error and no queue — so a settle sent into that window
-   * is simply lost.
+   * is simply lost, and `SETTLE_BACKSTOP_MS` then destroys it having exported
+   * nothing.
    *
-   * **This was NOT what gate 4 caught**, and saying so matters: it was the
-   * first hypothesis, it was implemented, and the measurement was unchanged at
-   * five captures / three exports. The actual cause was in the renderer
-   * (`runExport`'s `if (!composite) return false`). This stayed because the
-   * renderer-side fix can only run if the message ARRIVES, so the two are
-   * complementary — but nothing here has been observed failing, and it should
-   * be read as a guard rather than as a fix for a measured fault.
+   * **Nothing has been observed failing here, and that is stated rather than
+   * implied.** It was STC-301 gate 4's first hypothesis, it was implemented,
+   * and the measurement did not move — the real cause was in the renderer
+   * (`runExport`'s `if (!composite) return false`, fixed by #102). The path
+   * that motivated it is gone as well: a capture used to REPLACE and settle a
+   * panel that might still be loading, and captures stack now (#104). What is
+   * left is the overflow eviction above `MAX_STACKED`, which settles the
+   * OLDEST panel and so will almost always have painted.
+   *
+   * Kept anyway because it is orthogonal to stacking and cheap, and because
+   * the renderer's own bounded wait can only run if the message ARRIVES. Read
+   * it as a guard, not as a fix for a measured fault.
    */
   private loaded = false;
   private pendingSettle = false;
@@ -166,6 +231,8 @@ class ThumbnailSession {
   constructor(private readonly opts: PresentOptions) {
     this.closed = new Promise((res) => { this.resolveClosed = res; });
     this.corner = opts.corner;
+    // At the corner: a new panel is always the newest, so index 0. `restack`
+    // moves the ones behind it immediately afterwards.
     const { x, y } = positionFor(this.corner, this.workArea(), COLLAPSED_SIZE, CORNER_MARGIN);
     this.win = new BrowserWindow({
       x, y, width: COLLAPSED_SIZE.width, height: COLLAPSED_SIZE.height,
@@ -208,7 +275,7 @@ class ThumbnailSession {
     });
     this.win.on("closed", () => {
       this.done = true; this.clearTimers();
-      if (active === this) active = undefined;
+      this.leaveStack();
       this.resolveClosed();
     });
   }
@@ -223,6 +290,7 @@ class ThumbnailSession {
     if (this.done) return;
     if (ev.kind === "painted") {
       // Never sent by a `silent` panel — see the class doc's "drives itself".
+      this.hasPainted = true;
       this.win.showInactive();
       this.armTimer();
     } else if (ev.kind === "expanded") {
@@ -248,7 +316,10 @@ class ThumbnailSession {
    */
   private resizeTo(size: Size): void {
     if (this.done || this.win.isDestroyed()) return;
-    const { x, y } = positionFor(this.corner, this.workArea(), size, CORNER_MARGIN);
+    // Through `stackPosition`, not `positionFor`: a panel expanded from the
+    // middle of a stack must grow where it IS, not jump to the corner.
+    const { x, y } = stackPosition(this.stackIndex, this.corner, this.workArea(),
+                                   size, CORNER_MARGIN);
     this.win.setBounds({ x, y, width: size.width, height: size.height });
   }
 
@@ -264,6 +335,19 @@ class ThumbnailSession {
     if (this.backstop) clearTimeout(this.backstop);
     this.timer = undefined;
     this.backstop = undefined;
+  }
+
+  /**
+   * Show a panel that was hidden for a capture.
+   *
+   * Only one that has already painted: see `hasPainted`. Never re-arms the
+   * timer — it was armed when the panel first appeared and has been running
+   * throughout, which is what keeps a panel's lifetime the length the user was
+   * promised rather than being extended by every capture that hides it.
+   */
+  reshow(): void {
+    if (this.done || this.win.isDestroyed() || !this.hasPainted) return;
+    if (!this.win.isVisible()) this.win.showInactive();
   }
 
   /** Hides the window and returns its CGWindowID, for `beforeCapture`. */
@@ -298,7 +382,31 @@ class ThumbnailSession {
     this.done = true;
     this.clearTimers();
     if (!this.win.isDestroyed()) this.win.destroy();
-    if (active === this) active = undefined;
+    this.leaveStack();
+  }
+
+  /**
+   * Drop out of the stack and close the gap.
+   *
+   * A panel can settle from the MIDDLE — its own timeout, or a click on Close
+   * — so the ones behind it have to move up. Without the restack they would
+   * keep a hole where it was, which reads as a panel that failed to appear.
+   */
+  private leaveStack(): void {
+    const at = panels.indexOf(this);
+    if (at === -1) return;
+    panels.splice(at, 1);
+    restack();
+  }
+
+  /** Move to the place `index` in the stack says, keeping its current size. */
+  moveToStackIndex(index: number): void {
+    if (this.done || this.win.isDestroyed()) return;
+    this.stackIndex = index;
+    const { width, height } = this.win.getBounds();
+    const { x, y } = stackPosition(index, this.corner, this.workArea(),
+                                   { width, height }, CORNER_MARGIN);
+    this.win.setBounds({ x, y, width, height });
   }
 }
 
