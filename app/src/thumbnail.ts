@@ -16,8 +16,9 @@
  * (`NSFilePromiseProvider`), a right-click menu, and multiple captures
  * stacking rather than replacing. This module — and STC-296 in this pass —
  * is the FIRST of those: one panel at a time, replaced (not stacked) by a
- * capture that arrives while it is still showing. Drag-out, the right-click
- * menu, and stacking are follow-up work; see CLAUDE.md.
+ * capture that arrives while it is still showing. The right-click menu and
+ * swipe-to-discard have since landed; drag-out and stacking are still
+ * follow-up work. See CLAUDE.md.
  *
  * ## Why the clock is a parameter
  *
@@ -106,6 +107,86 @@ export function isExpired(state: ThumbnailState, now: number): boolean {
  * `finish` follows: whichever path gets here first is the answer.
  */
 export function dismiss(): ThumbnailState { return { kind: "idle" }; }
+
+// ── swipe to discard ────────────────────────────────────────────────────────
+
+/**
+ * Throwing the shot away by pushing the panel off the screen (STC-296's
+ * "swipe the panel off-screen to discard the shot entirely").
+ *
+ * ## Why the corner decides the direction
+ *
+ * The panel sits in a corner, so only ONE horizontal direction takes it off
+ * the screen — right from a right-hand corner, left from a left-hand one.
+ * Accepting either direction would mean a shot could be destroyed by a drag
+ * that visibly moved it further INTO the screen, which reads as a bug however
+ * it is documented. It also makes the gesture self-describing: the panel
+ * follows the pointer, and the direction that makes it leave is the one where
+ * you can see it leaving.
+ *
+ * ## Why discarding is not the same risk as it looks
+ *
+ * This is the only gesture in the panel that destroys a capture, in a feature
+ * whose stated principle is "nothing is ever lost by doing nothing". Doing
+ * nothing still saves; this is doing SOMETHING, deliberately, and it goes to
+ * the Trash exactly like the right-click Delete it shares its semantics with.
+ * Two ways to throw a shot away that disagreed about where it went would be
+ * the defect, not the second gesture.
+ */
+
+/** Which way is off-screen from a given corner: -1 is left, +1 is right. */
+export function discardDirection(corner: Corner): -1 | 1 {
+  return corner.endsWith("left") ? -1 : 1;
+}
+
+/**
+ * How far the panel must travel along that direction before releasing throws
+ * the shot away.
+ *
+ * 90 px against a 220 px collapsed panel — a little under half its own width,
+ * so the panel is visibly on its way out before the threshold is met. Below
+ * about a third it starts to compete with the click that expands the panel,
+ * which is the gesture immediately next to this one in the same pixels.
+ */
+export const SWIPE_DISCARD_PX = 90;
+
+/**
+ * A drag has to be predominantly horizontal to count.
+ *
+ * Without this a slow diagonal drag reaches the distance eventually and
+ * destroys a capture the user was not aiming at. `>` rather than `>=` so a
+ * perfect 45° diagonal — genuinely ambiguous — does not discard.
+ */
+export function isHorizontal(dx: number, dy: number): boolean {
+  return Math.abs(dx) > Math.abs(dy);
+}
+
+/**
+ * How far the panel should be DRAWN from its resting place, in pixels.
+ *
+ * Only ever along the discard direction: a drag the wrong way returns 0, so
+ * the panel does not budge and the gesture reads as "that is not a thing you
+ * can do here" without needing to be told. Vertical movement never displaces
+ * it either — this panel leaves sideways or not at all.
+ */
+export function swipeOffset(dx: number, dy: number, corner: Corner): number {
+  if (!isHorizontal(dx, dy)) return 0;
+  const along = dx * discardDirection(corner);
+  return along > 0 ? along : 0;
+}
+
+/**
+ * Whether releasing here throws the shot away.
+ *
+ * Deliberately a function of the WHOLE gesture (its total delta), not of
+ * velocity: a flick and a slow shove both mean the same thing, and a velocity
+ * threshold would make the panel's behaviour depend on how fast the machine
+ * happened to deliver pointer events — which on a loaded machine is the same
+ * class of defect as every timing-dependent test in this repo.
+ */
+export function isDiscardSwipe(dx: number, dy: number, corner: Corner): boolean {
+  return swipeOffset(dx, dy, corner) >= SWIPE_DISCARD_PX;
+}
 
 export interface Size { width: number; height: number }
 export interface Bounds { x: number; y: number; width: number; height: number }
