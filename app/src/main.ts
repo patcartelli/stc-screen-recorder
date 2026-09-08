@@ -20,9 +20,10 @@ import { parseShot } from "@transform/shot.js";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { existsSync, readdirSync } from "node:fs";
-import { readFile, writeFile, stat, open } from "node:fs/promises";
+import { readFile, writeFile, stat, open, mkdir, readdir, copyFile, rm } from "node:fs/promises";
 import { HelperSupervisor } from "./supervisor.js";
-import { newTakeDir, takesRoot, listTakes, setTakeLabel, insideTakesRoot } from "./takes.js";
+import { newTakeDir, takesRoot, setTakeLabel, insideTakesRoot } from "./takes.js";
+import { listTakes, listLibrary, THUMBNAIL_FILE } from "./library.js";
 import { openOverlay, closeOverlay, overlayIsOpen } from "./overlay-session.js";
 import type { WindowInfo } from "./selection.js";
 import { presentThumbnail, beforeCapture as hideThumbnailForCapture, closeThumbnail } from "./thumbnail-window.js";
@@ -514,6 +515,112 @@ ipcMain.handle("recorder:stop", async () => {
   return { ok: true, info: r };
 });
 
+
+// ---- the library: one index over two kinds (STC-294) ----------------------
+
+ipcMain.handle("library:list", async (_e, filter?: string) =>
+  listLibrary(process.env, typeof filter === "string" ? filter : undefined));
+
+/**
+ * Cache a decorated thumbnail beside the document it was rendered from.
+ *
+ * In the take DIRECTORY, deliberately, and that choice is what makes the
+ * ticket's delete criterion — *"delete removes the frame, shot.json and
+ * thumbnail with no orphans"* — true by construction rather than by
+ * remembering: `take:delete` trashes the whole directory, so the thumbnail
+ * goes with it and an orphan is not merely unlikely but unreachable. A cache
+ * in userData would need its own eviction, which is the orphan the criterion
+ * names.
+ *
+ * The filename is fixed rather than supplied, so there is no name to traverse
+ * with; what IS checked is that the bytes are actually a PNG. The renderer is
+ * the sandboxed side, and "write these bytes into the user's take folder" is
+ * worth exactly one magic-number check.
+ */
+const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+
+ipcMain.handle("library:writeThumbnail", async (_e, dir: string, bytes: ArrayBuffer) => {
+  if (!insideTakesRoot(process.env, dir)) {
+    throw new Error("refusing to write a path outside the recordings folder");
+  }
+  const buf = Buffer.from(bytes);
+  if (!buf.subarray(0, PNG_MAGIC.length).equals(PNG_MAGIC)) {
+    throw new Error("refusing to cache a thumbnail that is not a PNG");
+  }
+  await writeFile(join(dir, THUMBNAIL_FILE), buf);
+  return true;
+});
+
+/**
+ * Re-open a stored shot into the post-capture panel (STC-294).
+ *
+ * The payoff of keeping the decoration in JSON: the panel is handed the STORED
+ * document, so the mode, the canvas and STC-297's redaction regions all come
+ * back exactly as they were left, and the shot can be re-exported without
+ * re-capturing. It is the same panel a fresh capture gets — not a second still
+ * UI, which is what STC-293's Note and STC-300's gate both forbid.
+ *
+ * `settleAction: "none"` is the one difference and it matters: ignoring a
+ * FRESH capture must still save it, because the panel is the only place it
+ * exists; ignoring a re-opened one must do nothing at all, because it is
+ * already on disk and a second copy is not what a glance meant.
+ */
+/** The stored document for one shot, so the library can render its decoration. */
+ipcMain.handle("library:shot", async (_e, dir: string) => {
+  if (!insideTakesRoot(process.env, dir)) {
+    throw new Error("refusing to read a path outside the recordings folder");
+  }
+  return parseShot(JSON.parse(await readFile(join(dir, "shot.json"), "utf8")));
+});
+
+ipcMain.handle("still:reopen", async (_e, dir: string) => {
+  if (!insideTakesRoot(process.env, dir)) {
+    throw new Error("refusing to open a path outside the recordings folder");
+  }
+  const shot = parseShot(JSON.parse(await readFile(join(dir, "shot.json"), "utf8")));
+  const { thumbnail } = readSettings(app.getPath("userData"));
+  presentThumbnail({
+    dir, shot, corner: thumbnail.corner, timeoutMs: thumbnail.timeoutMs,
+    settleAction: "none",
+    dist: here, rendererDir: join(here, "..", "renderer"),
+  });
+  return { ok: true };
+});
+
+/**
+ * Copy a shot so a second decoration can be tried without re-capturing.
+ *
+ * The whole directory minus its cached thumbnail: the copy's decoration is
+ * about to diverge, so carrying the original's picture over would show the old
+ * decoration under the new document until something happened to redraw it —
+ * a cache that lies is worse than one that is cold. Everything else is copied
+ * rather than linked, because the point is two shots that can be edited apart.
+ *
+ * The new directory gets a fresh timestamp from the same `newTakeDir` a
+ * capture uses, so the duplicate sorts as what it is — made now — and cannot
+ * collide with a capture taken in the same second.
+ */
+ipcMain.handle("still:duplicate", async (_e, dir: string) => {
+  if (!insideTakesRoot(process.env, dir)) {
+    throw new Error("refusing to duplicate a path outside the recordings folder");
+  }
+  // Read it back through `parseShot` first: duplicating a document this build
+  // cannot load would produce a second directory the library also refuses.
+  parseShot(JSON.parse(await readFile(join(dir, "shot.json"), "utf8")));
+
+  const root = takesRoot(process.env);
+  const existing = existsSync(root) ? readdirSync(root) : [];
+  const dest = newTakeDir(process.env, new Date(), existing);
+  await mkdir(dest, { recursive: true });
+  for (const name of await readdir(dir)) {
+    if (name === THUMBNAIL_FILE) continue;
+    const from = join(dir, name);
+    if (!(await stat(from)).isFile()) continue;
+    await copyFile(from, join(dest, name));
+  }
+  return { ok: true, dir: dest };
+});
+
 ipcMain.handle("recorder:takes", async () => listTakes(process.env));
 
 ipcMain.handle("take:label", async (_e, dir: string, label: string) => {
@@ -895,6 +1002,12 @@ ipcMain.handle("still:writeShot", async (_e, dir: string, redactions: unknown) =
     decoration: { ...stored.decoration, redactions },
   });
   await writeFile(file, JSON.stringify(next, null, 2));
+  // The library's cached thumbnail (STC-294) was rendered from the document
+  // that just changed, so it now shows a decoration this shot no longer has.
+  // Dropped rather than re-rendered: this process has no canvas, and the grid
+  // renders a missing one the next time the tile is on screen. A failure here
+  // costs a stale picture, never the regions that were just written.
+  await rm(join(dir, THUMBNAIL_FILE), { force: true }).catch(() => {});
   return { ok: true, redactions: next.decoration.redactions.length };
 });
 

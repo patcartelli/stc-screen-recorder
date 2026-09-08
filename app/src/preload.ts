@@ -36,6 +36,21 @@ contextBridge.exposeInMainWorld("recorder", {
   exportStill: (req: Record<string, unknown>) => ipcRenderer.invoke("still:export", req),
   chooseStillDestination: () => ipcRenderer.invoke("still:chooseDestination"),
   clearStillDestination: () => ipcRenderer.invoke("still:clearDestination"),
+  // The library (STC-294): one index over both kinds. The renderer asks for a
+  // filtered list and is handed items it renders without knowing what kinds
+  // exist — the filtering happens on this side of the bridge for exactly that
+  // reason, since `items.filter((i) => i.kind === sel)` in the view is the
+  // branch the ticket's fourth acceptance criterion forbids.
+  library: (filter?: string) => ipcRenderer.invoke("library:list", filter),
+  writeThumbnail: (dir: string, bytes: ArrayBuffer) =>
+    ipcRenderer.invoke("library:writeThumbnail", dir, bytes),
+  // Reading a still's own files. `still:frame` already admits any .png inside
+  // a take directory, which is what lets the cached thumbnail be read back
+  // through the same door the capture is.
+  getFrame: (dir: string, name: string) => ipcRenderer.invoke("still:frame", dir, name),
+  getShot: (dir: string) => ipcRenderer.invoke("library:shot", dir),
+  reopenStill: (dir: string) => ipcRenderer.invoke("still:reopen", dir),
+  duplicateStill: (dir: string) => ipcRenderer.invoke("still:duplicate", dir),
   start: () => ipcRenderer.invoke("recorder:start"),
   stop: () => ipcRenderer.invoke("recorder:stop"),
   reveal: (dir: string) => ipcRenderer.invoke("recorder:reveal", dir),

@@ -2,7 +2,8 @@ import { describe, test, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { listTakes, setTakeLabel } from "../src/takes.js";
+import { setTakeLabel } from "../src/takes.js";
+import { listTakes } from "../src/library.js";
 
 let root: string;
 beforeEach(() => { root = mkdtempSync(join(tmpdir(), "stc-lib-")); });
@@ -67,11 +68,11 @@ describe("listTakes — anchors version support (STC-262)", () => {
   // was not, and every test stayed green because the fixtures are all v1.
   test("the take scanner and the transform accept the same anchors versions", () => {
     const repo = join(__dirname, "..", "..");
-    const takesSrc = readFileSync(join(repo, "app/src/takes.ts"), "utf8");
+    const takesSrc = readFileSync(join(repo, "app/src/library-items.ts"), "utf8");
     const sessionSrc = readFileSync(join(repo, "transform/src/session.ts"), "utf8");
 
     const listed = takesSrc.match(/SUPPORTED_ANCHORS_VERSIONS[^=]*=\s*\[([^\]]*)\]/)?.[1];
-    expect(listed, "SUPPORTED_ANCHORS_VERSIONS not found in app/src/takes.ts — renamed?")
+    expect(listed, "SUPPORTED_ANCHORS_VERSIONS not found in app/src/library-items.ts — renamed?")
       .toBeDefined();
     const scanner = listed!.split(",").map((n) => Number(n.trim())).filter((n) => !Number.isNaN(n));
 
