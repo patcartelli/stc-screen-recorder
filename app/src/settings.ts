@@ -7,6 +7,10 @@ import {
   DEFAULT_EXPORT_OPTIONS, DEFAULT_FILENAME_TEMPLATE, clampQuality, parseFormat, parseScale,
   type ExportOptions,
 } from "@transform/still-export.js";
+import {
+  DEFAULT_CORNER, DEFAULT_THUMBNAIL_TIMEOUT_MS, clampTimeoutMs, parseCorner, parseSettleAction,
+  type Corner, type SettleAction,
+} from "./thumbnail.js";
 
 /**
  * User preferences, owned by the main process.
@@ -58,7 +62,34 @@ export interface Settings {
    * frame grab — neither carries its own default.
    */
   still: StillSettings;
+  /**
+   * The post-capture floating thumbnail (STC-296) — where it sits, how long it
+   * waits, and what "ignoring it" does. Its own block rather than folded into
+   * `still`, because these answer "what happens to the panel", not "what does
+   * an export look like" — `still` is read from inside the panel same as
+   * everywhere else, never duplicated by it.
+   */
+  thumbnail: ThumbnailSettings;
 }
+
+export interface ThumbnailSettings {
+  corner: Corner;
+  /** Milliseconds; never below `MIN_THUMBNAIL_TIMEOUT_MS` (thumbnail.ts). */
+  timeoutMs: number;
+  /** What an ignored (timed-out) or explicitly closed panel does with the shot. */
+  settleAction: SettleAction;
+  /**
+   * "Some days you take twenty shots and want none of this" (the ticket's own
+   * words). When set, a capture never shows the panel at all and goes straight
+   * to the clipboard — the one settle action that needs no destination folder
+   * and leaves nothing for the user to clean up.
+   */
+  skip: boolean;
+}
+
+export const DEFAULT_THUMBNAIL_SETTINGS: ThumbnailSettings = {
+  corner: DEFAULT_CORNER, timeoutMs: DEFAULT_THUMBNAIL_TIMEOUT_MS, settleAction: "save", skip: false,
+};
 
 export interface StillSettings extends ExportOptions {
   /**
@@ -81,6 +112,7 @@ export const DEFAULT_SETTINGS: Settings = {
   camera: false, displayId: null, shortcuts: { ...DEFAULT_SHORTCUTS },
   shutterSound: true,
   still: { ...DEFAULT_STILL_SETTINGS },
+  thumbnail: { ...DEFAULT_THUMBNAIL_SETTINGS },
 };
 
 /**
@@ -107,6 +139,20 @@ function cleanStill(v: unknown): StillSettings {
     stripMetadata: d.stripMetadata === true,
     template,
     destination,
+  };
+}
+
+/**
+ * Same rule as every other block here: an unknown shape falls back whole, and
+ * each field is validated on its own terms rather than half-trusted.
+ */
+function cleanThumbnail(v: unknown): ThumbnailSettings {
+  const d = (v && typeof v === "object" && !Array.isArray(v) ? v : {}) as Record<string, unknown>;
+  return {
+    corner: parseCorner(d.corner),
+    timeoutMs: clampTimeoutMs(d.timeoutMs),
+    settleAction: parseSettleAction(d.settleAction),
+    skip: d.skip === true,
   };
 }
 
@@ -166,6 +212,7 @@ export function readSettings(dir: string): Settings {
     shutterSound: typeof doc.shutterSound === "boolean"
       ? doc.shutterSound : DEFAULT_SETTINGS.shutterSound,
     still: cleanStill(doc.still),
+    thumbnail: cleanThumbnail(doc.thumbnail),
   };
 }
 
@@ -186,12 +233,14 @@ export function writeSettings(dir: string, patch: Partial<Settings>): Settings {
   const merged: Settings = {
     ...current, ...patch,
     still: { ...current.still, ...(patch.still ?? {}) },
+    thumbnail: { ...current.thumbnail, ...(patch.thumbnail ?? {}) },
   };
   const clean: Settings = {
     camera: merged.camera === true,
     displayId: cleanDisplayId(merged.displayId),
     shortcuts: cleanShortcuts(merged.shortcuts),
     still: cleanStill(merged.still),
+    thumbnail: cleanThumbnail(merged.thumbnail),
     // Not `=== true`: the default is ON, so an absent or malformed value must
     // fall back to on rather than to silence. The camera's `=== true` is the
     // opposite case for the opposite reason — it defaults off because it turns
