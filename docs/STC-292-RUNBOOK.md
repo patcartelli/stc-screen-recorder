@@ -28,12 +28,25 @@ file. It is the part no automated test in this repo can reach.
   is actually read. Also zero alert volume. §5 steps 3-4.
 * **Rebinding by hand, and the third-party conflict wording.** §6 — step 5 needs
   a second app holding a key and cannot be produced any other way.
-* **The permission round trip** — `tccutil reset`, Screen Recording only, hotkey
-  to saved shot. §7. This is the ticket's third acceptance criterion and the
-  largest thing still open.
+* **The permission round trip, SCREEN RECORDING HALF ONLY.** §7. The ticket's
+  third acceptance criterion, and the largest thing still open.
+
+**What the 2026-09-08 attempt did and did not settle.** The reset was run
+correctly and the app was never prompted — because it was launched from iTerm2,
+which holds Screen Recording, and Electron inherited it as a child process. So
+the criterion splits, and only one half is contaminated:
+
+| half | state |
+|---|---|
+| Capture does not need **Accessibility** | ✅ **Settled.** Electron unlisted under Accessibility, ⌃⌥⇧⌘1 gave an overlay and a shot on disk. Where the Screen Recording grant came from cannot change this — a missing Accessibility grant would have failed the capture either way. |
+| The app needs **only Screen Recording**, granted to itself | ❌ **Not asked.** Launched from a granted terminal the app never needed a grant of its own, so nothing was measured. §7's `open` launch is what asks it. |
+
+That is the good half of the two: Accessibility is the dependency that would
+have been a BUG, and it is ruled out. What is left is the fresh-install story.
 
 Everything below assumes `npm run app:build && npx electron .` (or
-`npm run app:start`) on the Mac, with the real helper built.
+`npm run app:start`) on the Mac, with the real helper built — **except §7**,
+which must be launched via `open` for exactly the reason above.
 
 ---
 
@@ -291,14 +304,43 @@ Settings › Privacy & Security › Screen & System Audio Recording; Electron mu
 be **gone from the list**, not merely switched off. A reset that silently did
 nothing leaves every step below asserting the grant it was meant to remove.
 
+### Do NOT launch it from a terminal — that is the trap this section is for
+
+**Observed 2026-09-08: the reset was run correctly and the app was never
+prompted.** Not because the reset failed, but because `npm run app:start` makes
+Electron a CHILD of the terminal, and iTerm2 already holds Screen Recording —
+it has to, since `npm run test:capture` spawns the helper directly and the
+helper inherits the launching process's TCC identity (CLAUDE.md). The whole
+chain, terminal → node → Electron → `stc-helper`, resolved to iTerm's grant.
+No prompt, a working capture, and `com.github.Electron` being reset made no
+difference to any of it.
+
+That run tells you nothing about the acceptance criterion. It cannot: the
+question is whether the APP needs only Screen Recording, and launched this way
+the app never needed a grant of its own at all.
+
+**The tell**, in Privacy & Security › Screen & System Audio Recording: your
+terminal is listed and switched on. If it is, anything launched from it is
+borrowing that grant.
+
+So launch it the way CLAUDE.md says permission work has to be done — via
+`open`, so it is launched by launchd and is its own responsible process, which
+is the whole reason `tools/test-host` exists:
+
+```
+npm run app:build
+open -a "$(pwd)/node_modules/electron/dist/Electron.app" --args "$(pwd)"
+```
+
+Safe to launch detached from the checkout: the helper binary is resolved from
+`import.meta.url` (`app/src/main.ts`'s `HELPER`) and takes go to
+`~/Desktop/stc` (`takesRoot`), so neither depends on the working directory.
+
 Then, **without ever running a recording**:
 
-1. Launch with `npm run app:start`, by hand. Not under Playwright — driven from
-   a test runner the responsible process is the launching shell, so no grant is
-   attributable to Electron and no entry ever appears for the user to grant
-   (see CLAUDE.md's TCC-by-launch-path trap). Grant Screen Recording when asked
-   (or in System Settings › Privacy & Security › Screen & System Audio
-   Recording).
+1. Grant Screen Recording when asked — and being ASKED is itself half the
+   result. If no prompt appears, stop: something is still inheriting a grant,
+   and every step below is measuring that instead.
 2. Do **not** grant Accessibility. Confirm the app is not even listed under
    Privacy & Security › Accessibility.
 3. Press ⌃⌥⇧⌘1. The overlay appears, a region is captured, `shot.json` and
