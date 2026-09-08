@@ -345,8 +345,25 @@ canvas.addEventListener("pointerup", (e) => {
 async function settle(): Promise<void> {
   if (settling) return;
   settling = true;
-  try { if (settleAction !== "none") await runExport(settleAction); }
-  finally { window.thumb.event({ kind: "done" }); }
+  try {
+    if (settleAction !== "none") {
+      // Waits for the frame to be decoded and drawn — see `ready`. A settle
+      // can arrive before any of that has happened (a capture replacing this
+      // panel moments after it was created), and exporting nothing because
+      // there was nothing composited YET is how a burst quietly loses shots.
+      // `ready` rejecting means the frame could not be loaded at all, which is
+      // a genuine "nothing to export" rather than a race, so it falls through
+      // to `done` exactly as before.
+      //
+      // Guarded on `composite` rather than awaited unconditionally, and that
+      // is load-bearing: the `silent` path calls `settle()` from INSIDE the
+      // same IIFE that `ready` is the promise for, so an unconditional await
+      // would have it wait on itself forever. By then `draw()` has run, so
+      // there is nothing to wait for.
+      if (!composite) await ready.catch(() => {});
+      await runExport(settleAction);
+    }
+  } finally { window.thumb.event({ kind: "done" }); }
 }
 
 // ---- wiring ----------------------------------------------------------------
@@ -422,7 +439,24 @@ document.addEventListener("keydown", (e) => {
 // exactly what "timeout dismissal must never block on a render" requires.
 window.thumb.onSettle(() => { void settle(); });
 
-void (async () => {
+/**
+ * Resolves once there is something to export.
+ *
+ * A settle that arrives before the frame has been fetched and decoded used to
+ * find `composite` undefined, and `runExport`'s `if (!composite) return false`
+ * turned that into a silent no-op: the panel reported "done", main destroyed
+ * it, and the capture was never exported. STC-301's gate 4 measured it — five
+ * captures in quick succession produced five shots on disk but only THREE
+ * export requests and two files. Nothing was destroyed (the take directory is
+ * written by the helper before any panel exists) but the user's chosen settle
+ * action silently did not happen, which is the quiet half of "nothing is lost
+ * by doing nothing".
+ *
+ * So settle WAITS for this rather than giving up. It is a promise rather than
+ * a flag because the wait has to be joinable from the settle path, which can
+ * arrive at any point during the load.
+ */
+const ready: Promise<void> = (async () => {
   const bytes = await window.thumb.getFrame(dir, shot.frame.file);
   frame = await createImageBitmap(new Blob([bytes], { type: "image/png" }));
   await draw();

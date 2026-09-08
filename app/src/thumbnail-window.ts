@@ -142,6 +142,23 @@ class ThumbnailSession {
   private backstop?: NodeJS.Timeout;
   private done = false;
   private expanded = false;
+  /**
+   * Whether the page has loaded far enough to be listening.
+   *
+   * `webContents.send` to a renderer whose scripts have not run yet is DROPPED
+   * — silently, with no error and no queue — so a settle sent into that window
+   * is simply lost.
+   *
+   * **This was NOT what gate 4 caught**, and saying so matters: it was the
+   * first hypothesis, it was implemented, and the measurement was unchanged at
+   * five captures / three exports. The actual cause was in the renderer
+   * (`runExport`'s `if (!composite) return false`). This stayed because the
+   * renderer-side fix can only run if the message ARRIVES, so the two are
+   * complementary — but nothing here has been observed failing, and it should
+   * be read as a guard rather than as a fix for a measured fault.
+   */
+  private loaded = false;
+  private pendingSettle = false;
   private readonly corner: Corner;
   private resolveClosed!: () => void;
   private readonly closed: Promise<void>;
@@ -176,6 +193,15 @@ class ThumbnailSession {
     });
     this.win.webContents.on("ipc-message", (_e, channel, ev: ThumbEvent) => {
       if (channel === "thumbnail:event") this.onEvent(ev);
+    });
+    // The renderer registers its listeners at module scope, so this is the
+    // first moment a `send` can be heard. A settle that arrived before it is
+    // delivered here rather than lost.
+    this.win.webContents.once("did-finish-load", () => {
+      this.loaded = true;
+      if (this.pendingSettle && !this.done && !this.win.isDestroyed()) {
+        this.win.webContents.send("thumbnail:settle");
+      }
     });
     this.win.on("closed", () => {
       this.done = true; this.clearTimers();
@@ -256,7 +282,11 @@ class ThumbnailSession {
     this.clearTimers();
     this.hide();
     if (this.win.isDestroyed()) { this.destroy(); return; }
-    this.win.webContents.send("thumbnail:settle");
+    // Held until the page is listening, rather than sent into a void — see
+    // `loaded`. The backstop is armed either way, so a page that never loads
+    // still gets torn down instead of leaking a hidden window.
+    if (this.loaded) this.win.webContents.send("thumbnail:settle");
+    else this.pendingSettle = true;
     this.backstop = setTimeout(() => this.destroy(), SETTLE_BACKSTOP_MS);
   }
 

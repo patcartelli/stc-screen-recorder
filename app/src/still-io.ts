@@ -1,6 +1,6 @@
 import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import {
   DEFAULT_FLATTEN_COLOR, FORMATS, clampQuality, colorSpaceFor, metadataPlan, parseFormat,
   parseScale, planFileName, tokensFor,
@@ -124,6 +124,35 @@ export function destinationDir(settings: Pick<StillSettings, "destination">,
 }
 
 /**
+ * Names this process has already handed out but not yet finished writing.
+ *
+ * The directory listing is a snapshot, and every export in flight took its own
+ * before any of them wrote — so five settles racing (which a burst of captures
+ * produces, since each panel settles independently in the background) all see
+ * an empty folder, all compute the same name, and overwrite each other.
+ * STC-301's gate 4 measured it: five captures produced five export requests
+ * and THREE files.
+ *
+ * The suffix loop in `uniqueFileName` was meant to be the belt-and-braces for
+ * exactly this — its own comment says "a counter derived from a directory
+ * listing is correct only until two exports race" — but it re-checks against
+ * the SAME stale snapshot, so belt and braces were reading one number. That
+ * comment described a guarantee the code did not have.
+ *
+ * Full paths, so two destinations cannot collide with each other, and never
+ * released: a name reserved by an export that then failed is simply skipped by
+ * the next one, which costs a gap in the numbering and nothing else. Correct
+ * for this app because every export goes through this one funnel in the main
+ * process; it is NOT a defence against another program writing to the same
+ * folder, and the only real answer to that is an exclusive create in the
+ * helper.
+ */
+const reserved = new Set<string>();
+
+/** For tests, and for a caller that wants a clean slate. */
+export function clearExportReservations(): void { reserved.clear(); }
+
+/**
  * What is already in `dir`, for the collision check.
  *
  * A directory that does not exist yet is empty, not an error: a destination
@@ -203,7 +232,15 @@ export async function exportStill(send: SendExport, req: ExportRequest,
   // reads could disagree, and a filename whose counter came from a different
   // listing than its uniqueness check is exactly the kind of nearly-right that
   // survives every test and collides in the wild.
-  const taken = await namesIn(dir);
+  const onDisk = await namesIn(dir);
+  // The listing PLUS what this process has already promised — see `reserved`.
+  // Without the second half, concurrent exports each pick the same name from
+  // the same stale snapshot and overwrite one another.
+  const taken = new Set(onDisk);
+  for (const full of reserved) {
+    const [d, n] = [dirname(full), basename(full)];
+    if (d === dir) taken.add(n);
+  }
   const name = planFileName(req.options, {
     tokens: tokensFor({
       ...req.info,
@@ -216,6 +253,10 @@ export async function exportStill(send: SendExport, req: ExportRequest,
     }, at),
     taken,
   });
+  // Claimed BEFORE the await that writes it, which is the whole point: the
+  // window between choosing a name and the file existing is exactly where the
+  // next export would otherwise choose the same one.
+  reserved.add(join(dir, name));
 
   // A copy always writes a file too, so the pasteboard's file URL points at
   // something real. A save-only export never touches the clipboard.
