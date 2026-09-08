@@ -4,7 +4,9 @@ import {
 import { decorationForMode, layoutStill, pxPerPointOf } from "@transform/still-decorate";
 import { renderStill, sampleRedactionFills } from "@transform/still-render";
 import { normaliseRegion, undoLast } from "@transform/still-redact";
-import { discardDirection, isDiscardSwipe, parseCorner, swipeOffset } from "./thumbnail.js";
+import {
+  classifyDrag, discardDirection, isDiscardSwipe, parseCorner, swipeOffset,
+} from "./thumbnail.js";
 import { colorSpaceFor, planRender, stillIsBlocked, type ExportOptions } from "@transform/still-export";
 
 /**
@@ -23,9 +25,9 @@ import { colorSpaceFor, planRender, stillIsBlocked, type ExportOptions } from "@
  *
  * ## What is deliberately not here
  *
- * True OS drag-out and multiple captures stacking rather than replacing are
- * still follow-up work — see CLAUDE.md. The right-click menu
- * (`thumbnail-menu.ts`) and swipe-to-discard have landed. Format, quality and scale are NOT controls here either: they are
+ * Multiple captures stacking rather than replacing is the one follow-up left
+ * — see CLAUDE.md. The right-click menu (`thumbnail-menu.ts`),
+ * swipe-to-discard and drag-out have landed. Format, quality and scale are NOT controls here either: they are
  * `still` settings, read once from the stored preference, the same as every
  * other exit out of the app. Only the decoration MODE is a per-shot choice,
  * because the ticket names it as one ("the five output modes as a preset
@@ -46,6 +48,8 @@ declare global {
       menu(ctx: { redacting: boolean; busy: boolean }): Promise<string | null>;
       revealShot(dir: string): Promise<boolean>;
       deleteShot(dir: string): Promise<{ ok: boolean; detail?: string }>;
+      dragFile(req: Record<string, unknown>): Promise<{ ok: boolean; file?: string; detail?: string }>;
+      startDrag(file: string): void;
       reveal(): Promise<boolean>;
       writeShot(dir: string, redactions: unknown): Promise<{ ok: boolean; redactions: number }>;
       event(ev: { kind: "painted" | "expanded" | "done" } | { kind: "redact"; on: boolean }): void;
@@ -294,6 +298,9 @@ function expand(): void {
  * the file being exported now.
  */
 async function persistRegions(): Promise<void> {
+  // The drag file is now wrong in the way that matters most: it still has
+  // whatever the box was drawn over legible in it.
+  void refreshDragFile();
   try {
     await window.thumb.writeShot(dir, regions);
   } catch (e: any) {
@@ -391,7 +398,12 @@ for (const m of availableModes()) {
 }
 modeSel.value = currentMode;
 modeSel.addEventListener("click", (e) => e.stopPropagation());
-modeSel.addEventListener("change", () => { currentMode = modeSel.value as DecorationMode; void draw(); });
+modeSel.addEventListener("change", () => {
+  currentMode = modeSel.value as DecorationMode;
+  // `draw` first: the file is rendered FROM the composite, so refreshing it
+  // before the redraw would write the previous preset.
+  void draw().then(refreshDragFile);
+});
 
 copyBtn.addEventListener("click", async (e) => {
   e.stopPropagation();
@@ -438,6 +450,57 @@ closeBtn.addEventListener("click", (e) => { e.stopPropagation(); void settle(); 
 /** The gesture in progress, in client pixels. */
 let swipeFrom: { x: number; y: number } | undefined;
 /**
+ * The decorated file a drag would hand over, written AHEAD of the gesture.
+ *
+ * It has to exist before `startDrag` is called, and the export is not fast
+ * enough to happen inside one: measured, the 33 MB RGBA scratch write alone —
+ * before any IPC or any encode — is around a quarter of a second, and a drag
+ * that began by freezing for that long is not a drag. So it is written in the
+ * background while the panel sits there, which is time the app is doing
+ * nothing anyway.
+ *
+ * `undefined` means not ready. A drag that starts before it is REFUSES rather
+ * than handing over something else: the acceptance criterion is that a drop
+ * produces the decorated file, and an undecorated one would satisfy the
+ * gesture while failing the requirement — the worst of the two failures,
+ * because it looks like it worked.
+ */
+let dragFile: string | undefined;
+/** Bumped by every change that invalidates the file above. */
+let dragGeneration = 0;
+
+/**
+ * Write (or rewrite) the file a drag would carry.
+ *
+ * Every preset change and every redaction makes the previous one wrong, so
+ * this runs again on each — and the generation counter is what stops a slow
+ * earlier render landing after a fast later one and handing over the shot as
+ * it used to look. Redaction makes that concrete: a stale file is one with
+ * somebody's address still legible in it.
+ */
+async function refreshDragFile(): Promise<void> {
+  if (!composite) return;
+  const mine = ++dragGeneration;
+  dragFile = undefined;
+  const decorated = currentShot();
+  const layout = layoutStill(decorated);
+  const plan = planRender({ ...(await window.thumb.getSettings()).still },
+                          { layout, pxPerPoint: pxPerPointOf(decorated) });
+  const ctx = composite.getContext("2d", { alpha: true });
+  const data = ctx!.getImageData(0, 0, composite.width, composite.height).data;
+  const r = await window.thumb.dragFile({
+    bytes: data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength),
+    width: composite.width, height: composite.height, alpha: plan.alpha,
+    colorSpace: shot.display.colorSpace ?? "",
+    options: {},
+    info: { ...(decorated.window?.app ? { app: decorated.window.app } : {}),
+            ...(decorated.window?.title ? { title: decorated.window.title } : {}),
+            mode: currentMode },
+  });
+  if (mine !== dragGeneration) return;
+  if (r.ok && r.file) dragFile = r.file;
+}
+/**
  * The last gesture threw the shot away.
  *
  * Read by the `click` handler, which fires AFTER `pointerup` — so it is
@@ -462,7 +525,25 @@ card.addEventListener("pointerdown", (e) => {
 
 card.addEventListener("pointermove", (e) => {
   if (!swipeFrom) return;
-  const off = swipeOffset(e.clientX - swipeFrom.x, e.clientY - swipeFrom.y, corner);
+  const dx = e.clientX - swipeFrom.x;
+  const dy = e.clientY - swipeFrom.y;
+  if (classifyDrag(dx, dy, corner) === "drag-out") {
+    // The OS takes the pointer from here, so this gesture is over as far as
+    // the panel is concerned — released or dropped, no pointerup will mean
+    // anything to us.
+    const file = dragFile;
+    swipeFrom = undefined;
+    card.classList.remove("dragging");
+    card.style.transform = "";
+    card.style.opacity = "";
+    // Not ready yet: say so rather than dragging the wrong picture. See
+    // `dragFile`'s note — an undecorated file would look like success.
+    if (!file) { setStatus("Still preparing — try again in a moment."); return; }
+    swiped = true;
+    window.thumb.startDrag(file);
+    return;
+  }
+  const off = swipeOffset(dx, dy, corner);
   // Follows the pointer only outward; a drag the wrong way leaves it put, so
   // "you cannot discard in that direction" needs no explaining.
   card.style.transform = off === 0 ? "" : `translateX(${off * discardDirection(corner)}px)`;
@@ -598,4 +679,9 @@ void (async () => {
     card.classList.add("in");
     window.thumb.event({ kind: "painted" });
   });
+  // Only NOW, and deliberately not awaited: the panel is on screen and idle
+  // for its whole timeout, so the export that a drag would otherwise have to
+  // wait for happens in time nobody is using. Nothing downstream waits on it
+  // — a drag that beats it is refused rather than served the wrong file.
+  void refreshDragFile();
 })();

@@ -3,6 +3,7 @@ import {
   initialState, show, expand, isExpired, dismiss, positionFor,
   clampTimeoutMs, parseCorner, parseSettleAction,
   discardDirection, isHorizontal, swipeOffset, isDiscardSwipe, SWIPE_DISCARD_PX,
+  classifyDrag, DRAG_START_PX,
   DEFAULT_THUMBNAIL_TIMEOUT_MS, MIN_THUMBNAIL_TIMEOUT_MS, CORNERS,
   type ThumbnailState,
 } from "../src/thumbnail.js";
@@ -189,5 +190,68 @@ describe("swipe to discard (STC-296 follow-up)", () => {
     // Same total delta, however it was delivered: nothing here reads a clock,
     // so a loaded machine cannot change the answer.
     expect(isDiscardSwipe(D + 1, 0, "bottom-right")).toBe(true);
+  });
+});
+
+
+describe("one gesture, two outcomes (STC-296 drag-out)", () => {
+  const D = SWIPE_DISCARD_PX;
+  const S = DRAG_START_PX;
+  const BR = "bottom-right" as const;
+
+  test("a small movement is still a click — the panel expands on release", () => {
+    expect(classifyDrag(0, 0, BR)).toBe("none");
+    expect(classifyDrag(S - 1, 0, BR)).toBe("none");
+    expect(classifyDrag(0, S - 1, BR)).toBe("none");
+  });
+
+  test("far toward the near edge discards", () => {
+    expect(classifyDrag(D, 0, BR)).toBe("discard");
+  });
+
+  test("away from the edge is a drag-out, at the shorter threshold", () => {
+    expect(classifyDrag(-S, 0, BR)).toBe("drag-out");
+    expect(classifyDrag(0, -S, BR)).toBe("drag-out");
+  });
+
+  test("PARTWAY toward the edge is neither — the swipe must stay reachable", () => {
+    // The load-bearing case. If this returned "drag-out", the OS would take
+    // the pointer at 12 px and the discard could never reach 90: one feature
+    // would silently make the other unreachable, and both would look built.
+    for (const dx of [S, S + 1, D / 2, D - 1]) {
+      expect(classifyDrag(dx, 0, BR)).toBe("none");
+    }
+    expect(classifyDrag(D, 0, BR)).toBe("discard");
+  });
+
+  test("the same partway drag from the OTHER corner IS a drag-out", () => {
+    // The positive discriminator: identical delta, opposite corners, and the
+    // only thing that can separate them is the corner being in the decision.
+    expect(classifyDrag(D / 2, 0, "bottom-right")).toBe("none");
+    expect(classifyDrag(D / 2, 0, "bottom-left")).toBe("drag-out");
+  });
+
+  test("a drag can never be both", () => {
+    // One answer, so a drag cannot discard a shot it has just handed over.
+    for (const dx of [-200, -S, 0, S, D, 400]) {
+      for (const dy of [-200, 0, 200]) {
+        for (const corner of CORNERS) {
+          expect(["none", "discard", "drag-out"]).toContain(classifyDrag(dx, dy, corner));
+        }
+      }
+    }
+  });
+
+  test("a mostly-vertical drag toward the edge is a drag-out, not a discard", () => {
+    // isHorizontal gates the discard arm, so this falls through to drag-out
+    // rather than being stuck as "none" — dragging diagonally up-and-out to
+    // Finder from a bottom-right panel has to work.
+    expect(classifyDrag(D, D * 2, BR)).toBe("drag-out");
+  });
+
+  test("drag-out commits sooner than discard, deliberately", () => {
+    // The cheap-to-undo gesture is the easy one to reach: an OS drag dropped
+    // on nothing does nothing, a discard destroys a capture.
+    expect(DRAG_START_PX).toBeLessThan(SWIPE_DISCARD_PX);
   });
 });

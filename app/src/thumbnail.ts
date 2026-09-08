@@ -124,6 +124,18 @@ export function dismiss(): ThumbnailState { return { kind: "idle" }; }
  * follows the pointer, and the direction that makes it leave is the one where
  * you can see it leaving.
  *
+ * ## The same gesture also starts a drag-out, and direction is what tells them apart
+ *
+ * A drag toward the near edge discards; a drag ANY OTHER WAY hands the file to
+ * whatever it is dropped on (`classifyDrag`). One pointer gesture, two
+ * outcomes, and nothing but its direction to choose between them — which is
+ * the arrangement macOS's own screenshot thumbnail uses, and the reason the
+ * corner had to be in this decision from the start rather than being added
+ * for the second feature.
+ *
+ * It also means the two can never both fire: `classifyDrag` returns ONE
+ * answer, so a drag cannot discard a shot it has just handed to Finder.
+ *
  * ## Why discarding is not the same risk as it looks
  *
  * This is the only gesture in the panel that destroys a capture, in a feature
@@ -186,6 +198,41 @@ export function swipeOffset(dx: number, dy: number, corner: Corner): number {
  */
 export function isDiscardSwipe(dx: number, dy: number, corner: Corner): boolean {
   return swipeOffset(dx, dy, corner) >= SWIPE_DISCARD_PX;
+}
+
+/**
+ * What a drag on the collapsed panel MEANS.
+ *
+ * `none` while it is still small enough to be a click — the panel expands on
+ * click, and that gesture lives in these same pixels, so nothing may commit
+ * until the pointer has clearly left. `discard` toward the near edge.
+ * `drag-out` any other way, which is where the OS takes over.
+ *
+ * Note the asymmetry, and that it is deliberate: `discard` needs
+ * `SWIPE_DISCARD_PX` of travel because it destroys something, while
+ * `drag-out` commits at `DRAG_START_PX` because the OS drag it starts is
+ * itself cancellable — dropping on nothing does nothing. The cheap-to-undo
+ * gesture is the easy one to reach.
+ */
+export type DragIntent = "none" | "discard" | "drag-out";
+
+/**
+ * How far the pointer must move before a drag-out is a drag rather than a
+ * click that wobbled. Below this the panel still expands on release.
+ */
+export const DRAG_START_PX = 12;
+
+export function classifyDrag(dx: number, dy: number, corner: Corner): DragIntent {
+  const toward = dx * discardDirection(corner);
+  // The discard axis first: a long horizontal push toward the edge is the one
+  // gesture that must not be mistaken for anything else.
+  if (isHorizontal(dx, dy) && toward >= SWIPE_DISCARD_PX) return "discard";
+  if (Math.hypot(dx, dy) < DRAG_START_PX) return "none";
+  // Still travelling toward the edge, just not far enough yet. Committing to
+  // a drag-out here would make the discard unreachable: the OS would take the
+  // pointer at 12 px and the swipe could never reach 90.
+  if (isHorizontal(dx, dy) && toward > 0) return "none";
+  return "drag-out";
 }
 
 export interface Size { width: number; height: number }

@@ -29,6 +29,11 @@ contextBridge.exposeInMainWorld("thumb", {
   // touches anything — the renderer names a take, never a path to act on.
   revealShot: (dir: string) => ipcRenderer.invoke("still:revealShot", dir),
   deleteShot: (dir: string) => ipcRenderer.invoke("still:deleteShot", dir),
+  // Drag-out (STC-296 follow-up). Two steps on purpose: the FILE is written
+  // ahead of time (it takes long enough that a drag cannot wait for it), and
+  // `startDrag` is the instant hand-over once the gesture commits.
+  dragFile: (req: Record<string, unknown>) => ipcRenderer.invoke("still:dragFile", req),
+  startDrag: (file: string) => ipcRenderer.send("still:startDrag", file),
   // Fire-and-forget notices to the window that owns this panel
   // (`thumbnail-window.ts`), not request/response: it reacts by resizing or
   // destroying the window, and has nothing to hand back.

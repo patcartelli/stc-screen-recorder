@@ -1,5 +1,5 @@
 import {
-  app, BrowserWindow, ipcMain, dialog, shell, globalShortcut, screen, Menu,
+  app, BrowserWindow, ipcMain, dialog, shell, globalShortcut, screen, Menu, nativeImage,
 } from "electron";
 import { readSettings, writeSettings, type Settings } from "./settings.js";
 import {
@@ -12,7 +12,7 @@ import {
 } from "./thumbnail-menu.js";
 import { playShutter } from "./shutter.js";
 import {
-  exportStill, plannedFileName, resolveExportOptions,
+  CLIPBOARD_SUBDIR, exportStill, plannedFileName, resolveExportOptions,
   type CompositedStill, type ExportTarget,
 } from "./still-io.js";
 import { colorSpaceFor, type ExportOptions } from "@transform/still-export.js";
@@ -726,6 +726,69 @@ ipcMain.handle("thumbnail:menu", async (e, ctx: ThumbMenuContext) => {
     // the unbounded-wait trap this repo keeps re-learning.
     menu.popup({ ...(owner ? { window: owner } : {}), callback: () => answer(null) });
   });
+});
+
+/**
+ * Write the decorated file a drag-out will hand over (STC-296 follow-up).
+ *
+ * Goes through the SAME funnel as every other exit, using #98's
+ * `explicitFile` exactly as it was built: main names the destination, the
+ * renderer never does. The destination is the clipboard cache, for the reason
+ * `CLIPBOARD_SUBDIR` exists — someone dragging a shot into Slack did not ask
+ * for a copy to accumulate in their shots folder.
+ *
+ * A separate VERB rather than a flag on `ExportTarget`: a drag is not a save
+ * and not a copy, and folding it into either would set `lastStillFile` — so
+ * Reveal in Finder would jump to a file the user never asked to keep.
+ */
+ipcMain.handle("still:dragFile", async (_e, req: {
+  bytes: ArrayBuffer; width: number; height: number; alpha: boolean;
+  colorSpace?: string;
+  options: Partial<ExportOptions>;
+  info: { app?: string; title?: string; mode: string };
+}) => {
+  if (!sup) throw new Error("supervisor not running");
+  const stored = readSettings(app.getPath("userData")).still;
+  const options = resolveExportOptions(stored, req.options);
+  const still: CompositedStill = {
+    bytes: req.bytes, width: req.width, height: req.height,
+    alpha: req.alpha === true, colorSpace: colorSpaceFor(req.colorSpace),
+  };
+  const cache = join(app.getPath("temp"), CLIPBOARD_SUBDIR);
+  try {
+    const r = await exportStill((params) => sup!.exportStill(params), {
+      still, target: { file: true, clipboard: false }, options, info: req.info,
+      explicitFile: join(cache, plannedFileName(options, req.info, still)),
+    }, stored, app.getPath("temp"));
+    // Deliberately NOT `lastStillFile`: see the note above.
+    return { ok: true, file: r.file };
+  } catch (e: any) {
+    return { ok: false, code: e?.code ?? "export-failed",
+             detail: e?.detail ?? String(e?.message ?? e) };
+  }
+});
+
+/**
+ * Hand the file to the window server (STC-296 follow-up).
+ *
+ * `startDrag` is reached through pointer events rather than an HTML5
+ * `dragstart`, and that is the point: making the card `draggable` would put a
+ * native drag in the same pixels as the swipe's pointer gesture, and the two
+ * would race for every press. Electron lets `startDrag` be called from
+ * anywhere, so the panel stays on one input model and `classifyDrag` remains
+ * the only thing deciding what a press means.
+ *
+ * NOT `NSFilePromiseProvider`, per STC-293: a promise needs a live provider to
+ * answer at paste time, the helper has answered and gone idle by then, and a
+ * promise nobody answers hands the receiver a ZERO-BYTE file.
+ */
+ipcMain.on("still:startDrag", (e, file: string) => {
+  if (typeof file !== "string" || !existsSync(file)) return;
+  // macOS refuses an empty drag icon. Built from the file being dragged, so
+  // what the cursor carries is what will land.
+  const icon = nativeImage.createFromPath(file).resize({ width: 128 });
+  if (icon.isEmpty()) return;
+  e.sender.startDrag({ file, icon });
 });
 
 /**
