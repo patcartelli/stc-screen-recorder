@@ -26,7 +26,10 @@ import { newTakeDir, takesRoot, setTakeLabel, insideTakesRoot } from "./takes.js
 import { listTakes, listLibrary, THUMBNAIL_FILE } from "./library.js";
 import { openOverlay, closeOverlay, overlayIsOpen } from "./overlay-session.js";
 import type { WindowInfo } from "./selection.js";
-import { presentThumbnail, beforeCapture as hideThumbnailForCapture, closeThumbnail } from "./thumbnail-window.js";
+import {
+  presentThumbnail, beforeCapture as hideThumbnailForCapture,
+  afterCapture as showThumbnailsAfterCapture, closeThumbnail,
+} from "./thumbnail-window.js";
 
 /**
  * Electron main process. Owns the helper: it is spawned as a CHILD of this
@@ -368,6 +371,10 @@ async function captureStill(action: CaptureAction, source: CaptureSource): Promi
              detail: e?.detail ?? String(e?.message ?? e), source };
   } finally {
     capturing = false;
+    // Every exit, the cancelled one included: `hideThumbnailForCapture` hides
+    // panels that are NOT about to be replaced, so anything that returns
+    // without presenting a new one has to put the stack back.
+    showThumbnailsAfterCapture();
     tray?.update({ shortcuts, busy: false });
   }
 }
