@@ -15,9 +15,8 @@ for.
 * Auto-settles after a timeout (default 6 s, never below 3 s, both
   configurable in the window's **Still capture** section).
 * Click expands it in place into the whole still UI in v1: a decoration-mode
-  preset picker, a disabled **Redact** button (STC-297 is a separate,
-  unstarted ticket — stubbed so the layout will not shift once it lands),
-  **Copy**, **Save**, and a **✕** close.
+  preset picker, **Redact** (a stub when this was written; live as of STC-297,
+  which has its own runbook), **Copy**, **Save**, and a **✕** close.
 * Ignoring the panel (the timeout) or pressing **✕** both settle it — export
   per the **then** preference (Save or Copy), defaulting to Save. A **Skip
   it** preference bypasses the panel entirely and always copies.
@@ -105,8 +104,9 @@ page's `body`/`html` background is opaque.
    alpha — a display crop offers only "Selected area"). The preview should
    redraw for each mode, matching what STC-291's runbook already describes for
    each preset.
-4. **Redact should visibly do nothing** — greyed out, no click response, no
-   console error. That absence is deliberate (STC-297).
+4. **Redact** was a greyed-out stub when this runbook was written and is live
+   as of STC-297 — it now grows the panel into a drag surface. Check it there:
+   `docs/STC-297-RUNBOOK.md`.
 5. Click **Copy**. The panel should show a brief confirmation and STAY OPEN —
    paste into Preview or Mail and confirm the decorated image (not the raw
    capture) arrived.

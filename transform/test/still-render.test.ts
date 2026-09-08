@@ -3,6 +3,7 @@ import { recorder } from "./_canvas-recorder.js";
 import { renderStill, gradientLine, shadowParkDistance, type StillRenderContext } from "../src/still-render.js";
 import { layoutStill, PRESET_SHADOW } from "../src/still-decorate.js";
 import { parseShot, type Shot } from "../src/shot.js";
+import { REDACTION_FILL_ON_LIGHT, REDACTION_FILL_ON_DARK } from "../src/still-redact.js";
 
 /**
  * What the decorated still DRAWS, and in what order (STC-291).
@@ -277,7 +278,64 @@ describe("redactions", () => {
     const fill = ops.indexOf(`fillRect(${r.x},${r.y},${r.width},${r.height})`);
     const draw = ops.indexOf("drawImage(<frame>,0,0,1280,720)");
     expect(fill).toBeGreaterThan(draw);
-    expect(ops).toContain("fillStyle=#000000");
+    expect(ops).toContain(`fillStyle=${REDACTION_FILL_ON_LIGHT}`);
+  });
+
+  test("each region takes its own sampled colour, in order (STC-297)", () => {
+    // Per REGION rather than per capture: a dark terminal inside a light page
+    // needs the near-white box while the page around it needs the near-black.
+    const layout = layoutStill(regionShot({
+      mode: "selected-area", canvas: "natural", cursor: false,
+      redactions: [
+        { x: 0.1, y: 0.1, width: 0.2, height: 0.1 },
+        { x: 0.5, y: 0.5, width: 0.2, height: 0.1 },
+      ],
+    }));
+    const { ctx, ops } = ctxOf();
+    renderStill(ctx, {
+      frame: FRAME,
+      redactionFills: [REDACTION_FILL_ON_DARK, REDACTION_FILL_ON_LIGHT],
+    }, layout);
+    const [a, b] = layout.redactions as [typeof layout.redactions[0], typeof layout.redactions[0]];
+    const firstStyle = ops.indexOf(`fillStyle=${REDACTION_FILL_ON_DARK}`);
+    const firstRect = ops.indexOf(`fillRect(${a.x},${a.y},${a.width},${a.height})`);
+    const secondRect = ops.indexOf(`fillRect(${b.x},${b.y},${b.width},${b.height})`);
+    expect(firstStyle).toBeGreaterThan(-1);
+    expect(firstRect).toBe(firstStyle + 1);
+    expect(secondRect).toBeGreaterThan(firstRect);
+  });
+
+  test("a missing or short fill list still fills — never skips a region", () => {
+    // The failure this feature cannot have is a redaction that quietly did not
+    // happen, so an absent colour falls back to a colour rather than to no box.
+    const layout = layoutStill(regionShot({
+      mode: "selected-area", canvas: "natural", cursor: false,
+      redactions: [
+        { x: 0.1, y: 0.1, width: 0.2, height: 0.1 },
+        { x: 0.5, y: 0.5, width: 0.2, height: 0.1 },
+      ],
+    }));
+    const { ctx, ops } = ctxOf();
+    renderStill(ctx, { frame: FRAME, redactionFills: [REDACTION_FILL_ON_DARK] }, layout);
+    expect(ops.filter((o) => o.startsWith("fillRect(")).length)
+      .toBeGreaterThanOrEqual(layout.redactions.length);
+    expect(ops).toContain(`fillStyle=${REDACTION_FILL_ON_LIGHT}`);
+  });
+
+  test("the fill pass forces globalAlpha to 1 — opaque means opaque", () => {
+    // Partial alpha is the difference between covered and merely dimmed, and
+    // the two are indistinguishable in review.
+    const layout = layoutStill(regionShot({
+      mode: "selected-area", canvas: "natural", cursor: false,
+      redactions: [{ x: 0.1, y: 0.2, width: 0.3, height: 0.05 }],
+    }));
+    const { ctx, ops } = ctxOf();
+    renderStill(ctx, { frame: FRAME }, layout);
+    const r = layout.redactions[0]!;
+    const fill = ops.indexOf(`fillRect(${r.x},${r.y},${r.width},${r.height})`);
+    const alpha = ops.lastIndexOf("globalAlpha=1", fill);
+    expect(alpha).toBeGreaterThan(-1);
+    expect(ops.slice(alpha, fill).some((o) => /^globalAlpha=(?!1$)/.test(o))).toBe(false);
   });
 
   test("nothing is drawn after them that could soften them", () => {

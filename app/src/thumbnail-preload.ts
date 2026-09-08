@@ -14,6 +14,11 @@ import { contextBridge, ipcRenderer } from "electron";
 contextBridge.exposeInMainWorld("thumb", {
   getFrame: (dir: string, name: string) => ipcRenderer.invoke("still:frame", dir, name),
   getSettings: () => ipcRenderer.invoke("recorder:getSettings"),
+  // Regions only — main re-reads the stored document and re-validates it, so
+  // this window can change a shot's redactions and nothing else about it
+  // (STC-297; see the handler's own note).
+  writeShot: (dir: string, redactions: unknown) =>
+    ipcRenderer.invoke("still:writeShot", dir, redactions),
   exportStill: (req: Record<string, unknown>) => ipcRenderer.invoke("still:export", req),
   reveal: () => ipcRenderer.invoke("still:reveal"),
   // Fire-and-forget notices to the window that owns this panel

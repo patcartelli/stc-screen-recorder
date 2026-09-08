@@ -12,6 +12,7 @@ import {
   exportStill, resolveExportOptions, type CompositedStill, type ExportTarget,
 } from "./still-io.js";
 import { colorSpaceFor, type ExportOptions } from "@transform/still-export.js";
+import { parseShot } from "@transform/shot.js";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { existsSync, readdirSync } from "node:fs";
@@ -707,6 +708,40 @@ ipcMain.handle("still:frame", async (_e, dir: string, name: string) => {
   }
   const buf = await readFile(join(dir, name));
   return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+});
+
+/**
+ * Store this shot's redaction regions (STC-297), so they survive the panel and
+ * the app.
+ *
+ * The renderer sends REGIONS, never a document. That is the whole shape of
+ * this handler: `shot.json` IS the still — the description is the artefact and
+ * the pixels are derived (shot.ts's header) — so letting a sandboxed renderer
+ * hand over a replacement document would let it rewrite the display, the crop,
+ * the frame's filename and the capture time of a file the app then treats as
+ * authoritative. Instead the stored document is read, the ONE field the panel
+ * is allowed to change is replaced, and the result goes back through
+ * `parseShot` before anything is written — so a region the schema would refuse
+ * cannot reach the disk, and neither can a document this process did not
+ * already have.
+ *
+ * The write is not atomic and deliberately is not: the alternative is a temp
+ * file plus a rename in the take directory, and a half-written `shot.json`
+ * from a crash mid-write costs the DECORATION, never the capture — `frame.png`
+ * is untouched here and is what the shot actually is.
+ */
+ipcMain.handle("still:writeShot", async (_e, dir: string, redactions: unknown) => {
+  if (!insideTakesRoot(process.env, dir)) {
+    throw new Error("refusing to write a path outside the recordings folder");
+  }
+  const file = join(dir, "shot.json");
+  const stored = parseShot(JSON.parse(await readFile(file, "utf8")));
+  const next = parseShot({
+    ...stored,
+    decoration: { ...stored.decoration, redactions },
+  });
+  await writeFile(file, JSON.stringify(next, null, 2));
+  return { ok: true, redactions: next.decoration.redactions.length };
 });
 
 ipcMain.handle("preview:read", async (_e, name: string) => {
