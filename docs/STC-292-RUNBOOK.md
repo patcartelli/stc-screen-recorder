@@ -354,6 +354,38 @@ any of this — which is why media keys are refused as bindings
 CGEventTap, and binding one would quietly reintroduce the dependency this
 criterion exists to rule out.
 
+### The criterion says "only Screen Recording" and that is not literally true
+
+**Observed 2026-09-08, launched via `open`:** the first prompt is not Screen
+Recording at all. It is **Files and Folders › Desktop**, at launch, because
+takes live in `~/Desktop/stc` (`takesRoot`) and the app enumerates that folder
+for the take library before anything is captured. Desktop is TCC-protected
+alongside Documents and Downloads.
+
+Launched from a terminal you never see it — the terminal already has Desktop
+access and the app inherits it — which is the same borrowed-grant effect that
+hid the Screen Recording question, showing up on a second service.
+
+It is not a bug and nothing here should change to avoid it: `~/Desktop/stc`
+over a temp dir is a deliberate decision (CLAUDE.md, "a take is a deliverable,
+not scratch"), and a Files and Folders prompt is an ordinary thing for an app
+that writes where the user can find its output.
+
+But it does mean the ticket's wording — "install, hit the hotkey, and get a
+screenshot with only Screen Recording granted" — is not literally achievable.
+The honest version of the criterion is **only Screen Recording among the
+grants the CAPTURE needs**: no Accessibility, no Input Monitoring, no
+automation. Desktop access is a consequence of where output is written, not of
+how capture works. Record the pass in those terms rather than pretending the
+prompt did not appear.
+
+**Expect the Screen Recording prompt LATER**, on the first ⌃⌥⇧⌘1 — TCC asks
+only when something tries to capture, not at launch. And expect that first
+capture to fail even after you allow it: a ScreenCaptureKit grant does not
+apply to a running process. Quit properly (menu-bar › Quit, not ⌘W), relaunch
+with the same `open` command, and press again. That second press is the one
+that must produce a shot.
+
 ### The cheaper check, if the reset is not to hand
 
 The criterion's substance is that capture does not DEPEND on Accessibility, and
