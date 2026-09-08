@@ -20,8 +20,28 @@ import { mkdtempSync, existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Readable } from "node:stream";
+import AjvImport from "ajv";
 
+const Ajv = (AjvImport as any).default ?? AjvImport;
 const root = join(__dirname, "..", "..");
+
+/**
+ * STC-311: these two tests asserted the reason and never validated the
+ * document, and the reasons they assert — "signal-15" and "quit" — were
+ * exactly the ones anchors-2's enum refused. Each half of the check existed;
+ * they were on different reasons, so the gap sat between them. Validating
+ * here means a take this path produces is held to the same schema as one from
+ * capture.grant.test.ts.
+ */
+function expectValidAnchors(dir: string): Record<string, any> {
+  const anchors = JSON.parse(readFileSync(join(dir, "anchors.json"), "utf8"));
+  const ajv = new Ajv({ allErrors: true, strict: true });
+  const validate = ajv.compile(
+    JSON.parse(readFileSync(join(root, "schema/anchors-2.schema.json"), "utf8")),
+  );
+  expect(validate(anchors), `anchors.json: ${JSON.stringify(validate.errors, null, 2)}`).toBe(true);
+  return anchors;
+}
 const BIN = join(root, "helper", "build", "stc-helper");
 
 interface Line { ev: string; seq?: number; [k: string]: unknown }
@@ -114,7 +134,7 @@ describe("helper shutdown while recording (STC-304)", () => {
 
     expect(existsSync(join(dir, "anchors.json")), "anchors.json missing — the take was lost").toBe(true);
     expect(existsSync(join(dir, "events.json")), "events.json missing — the take was lost").toBe(true);
-    const anchors = JSON.parse(readFileSync(join(dir, "anchors.json"), "utf8"));
+    const anchors = expectValidAnchors(dir);
     // SIGTERM is signal 15; main.swift's signal handler names it "signal-\(sig)".
     expect(anchors.stop?.reason).toBe("signal-15");
   }, 60_000);
@@ -145,7 +165,7 @@ describe("helper shutdown while recording (STC-304)", () => {
     expect(stoppedIndex, "`stopped` must be answered before `bye`, not after").toBeLessThan(byeIndex);
 
     expect(existsSync(join(dir, "anchors.json")), "anchors.json missing — the take was lost").toBe(true);
-    const anchors = JSON.parse(readFileSync(join(dir, "anchors.json"), "utf8"));
+    const anchors = expectValidAnchors(dir);
     expect(anchors.stop?.reason).toBe("quit");
   }, 60_000);
 });

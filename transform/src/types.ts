@@ -63,7 +63,21 @@ export interface Anchors {
   capture: { width: number; height: number; codec: "h264" };
   camera?: CameraTrack;
   files: { display: string; camera?: string };
-  stop?: { t: number; reason: "user" | "display-reconfigured" | "device-lost" | "error" };
+  /**
+   * `reason` is a plain string, not a union, ON PURPOSE (STC-311).
+   *
+   * It was `"user" | "display-reconfigured" | "device-lost" | "error"` — a
+   * fourth copy of a list that already lived in the schema and in the Swift
+   * call sites, and it had drifted from both: it never gained
+   * `stream-stopped`, and it could not express the shutdown reasons at all
+   * (`quit`, `stdin-closed`, `signal-N`, plus a `-timeout` suffix on any of
+   * them). A union that is missing values a real file carries is worse than
+   * no union: it makes a `switch` look exhaustive when it is not, and it
+   * type-checks a lie. The enumeration lives in anchors-2 and nowhere else;
+   * `helper/test/stop-reasons.test.ts` holds the schema to what the helper
+   * can actually write.
+   */
+  stop?: { t: number; reason: string };
 }
 
 /** Mirrors `cursor.style` in schema/project-2.schema.json. */

@@ -1,6 +1,9 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
+  CAPTURE_ACTIONS, DEFAULT_SHORTCUTS, parseAccelerator, type Shortcuts,
+} from "./hotkeys.js";
+import {
   DEFAULT_EXPORT_OPTIONS, DEFAULT_FILENAME_TEMPLATE, clampQuality, parseFormat, parseScale,
   type ExportOptions,
 } from "@transform/still-export.js";
@@ -32,6 +35,22 @@ export interface Settings {
    */
   displayId: number | null;
   /**
+   * The global capture shortcuts (STC-292), as Electron accelerators. `null`
+   * for an action the user deliberately unbound — which is a preference like
+   * any other, and must survive a restart rather than springing back to the
+   * default the next time the file is read.
+   */
+  shortcuts: Shortcuts;
+  /**
+   * Whether a completed still capture makes the system shutter noise
+   * (STC-292). On by default, because macOS's own screenshot does.
+   *
+   * It only ever SILENCES: with this ticked the sound still follows the Mac's
+   * "Play user interface sound effects" setting and its alert volume. There is
+   * no combination that makes a noise the system was told not to make.
+   */
+  shutterSound: boolean;
+  /**
    * How a still leaves the app (STC-293), and the one place those answers
    * live. The ticket's Note: "One encoder, one filename template, one
    * destination setting; no second implementation hiding in the thumbnail."
@@ -59,8 +78,8 @@ export const DEFAULT_STILL_SETTINGS: StillSettings = {
 };
 
 export const DEFAULT_SETTINGS: Settings = {
-  camera: false,
-  displayId: null,
+  camera: false, displayId: null, shortcuts: { ...DEFAULT_SHORTCUTS },
+  shutterSound: true,
   still: { ...DEFAULT_STILL_SETTINGS },
 };
 
@@ -96,6 +115,31 @@ function cleanDisplayId(v: unknown): number | null {
   return typeof v === "number" && Number.isInteger(v) && v > 0 ? v : null;
 }
 
+/**
+ * A stored binding is trusted only as far as it still parses.
+ *
+ * Absent means "never set" and takes the default; explicit `null` means
+ * unbound and is kept. Anything else that no longer parses — a hand-edited
+ * file, or a binding written by a version with a different grammar — falls
+ * back to the default rather than to nothing, on the same rule as every other
+ * field here: a corrupt preferences file must not silently cost the user the
+ * feature.
+ */
+function cleanShortcuts(v: unknown): Shortcuts {
+  const raw = (v && typeof v === "object" && !Array.isArray(v))
+    ? v as Record<string, unknown> : {};
+  const out = {} as Shortcuts;
+  for (const action of CAPTURE_ACTIONS) {
+    const stored = raw[action];
+    if (stored === null) { out[action] = null; continue; }
+    const parsed = typeof stored === "string" ? parseAccelerator(stored) : undefined;
+    // Stored NORMALISED, so what preferences shows and what the menu bar draws
+    // is the same string the registration used.
+    out[action] = parsed?.ok ? parsed.accelerator : DEFAULT_SHORTCUTS[action];
+  }
+  return out;
+}
+
 const FILE = "settings.json";
 
 /**
@@ -118,6 +162,9 @@ export function readSettings(dir: string): Settings {
   return {
     camera: typeof doc.camera === "boolean" ? doc.camera : DEFAULT_SETTINGS.camera,
     displayId: cleanDisplayId(doc.displayId),
+    shortcuts: cleanShortcuts(doc.shortcuts),
+    shutterSound: typeof doc.shutterSound === "boolean"
+      ? doc.shutterSound : DEFAULT_SETTINGS.shutterSound,
     still: cleanStill(doc.still),
   };
 }
@@ -143,7 +190,13 @@ export function writeSettings(dir: string, patch: Partial<Settings>): Settings {
   const clean: Settings = {
     camera: merged.camera === true,
     displayId: cleanDisplayId(merged.displayId),
+    shortcuts: cleanShortcuts(merged.shortcuts),
     still: cleanStill(merged.still),
+    // Not `=== true`: the default is ON, so an absent or malformed value must
+    // fall back to on rather than to silence. The camera's `=== true` is the
+    // opposite case for the opposite reason — it defaults off because it turns
+    // on a physical LED.
+    shutterSound: merged.shutterSound !== false,
   };
   try {
     writeFileSync(join(dir, FILE), JSON.stringify(clean, null, 2));

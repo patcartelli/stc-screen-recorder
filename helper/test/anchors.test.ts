@@ -48,5 +48,16 @@ describe("anchors document", () => {
 
     const withCamera = extractJSON(out, "JSON-WITH-CAMERA:");
     expect(validate(withCamera), JSON.stringify(validate.errors, null, 2)).toBe(true);
+
+    // STC-311: the documents a SHUTDOWN produces. Every case above stops for
+    // reason "user", so the schema was only ever exercised on reasons it
+    // already allowed — and the helper writes four families it did not.
+    // `stop-reasons.test.ts` holds the schema to what the Swift can emit;
+    // this validates whole documents actually built with those reasons.
+    for (const marker of ["JSON-STOP-QUIT:", "JSON-STOP-STDIN-CLOSED:", "JSON-STOP-SIGNAL-15:",
+                          "JSON-STOP-STOPPED-DURING-START:", "JSON-STOP-SIGNAL-TIMEOUT:"]) {
+      const d = extractJSON(out, marker);
+      expect(validate(d), `${marker} ${JSON.stringify(validate.errors, null, 2)}`).toBe(true);
+    }
   });
 }, 60_000);

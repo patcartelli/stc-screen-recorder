@@ -182,19 +182,33 @@
           "minimum": 0
         },
         "reason": {
-          "enum": [
-            "user",
-            "display-reconfigured",
-            "stream-stopped",
-            "device-lost",
-            "error",
-            "user-timeout",
-            "display-reconfigured-timeout",
-            "stream-stopped-timeout",
-            "device-lost-timeout",
-            "error-timeout"
+          "type": "string",
+          "anyOf": [
+            {
+              "enum": [
+              "user",
+              "display-reconfigured",
+              "stream-stopped",
+              "stopped-during-start",
+              "device-lost",
+              "error",
+              "quit",
+              "stdin-closed",
+              "user-timeout",
+              "display-reconfigured-timeout",
+              "stream-stopped-timeout",
+              "stopped-during-start-timeout",
+              "device-lost-timeout",
+              "error-timeout",
+              "quit-timeout",
+              "stdin-closed-timeout"
+            ]
+            },
+            {
+              "pattern": "^signal-[0-9]+(-timeout)?$"
+            }
           ],
-          "description": "Why the recording ended. 'stream-stopped' is a display stream that died mid-take (SCStream's didStopWithError after a successful start); the helper ends the take itself, and it is intact up to the failure. A '-timeout' suffix means the writer did not finalise in time and the sidecars were written anyway — display.mp4 may be incomplete."
+          "description": "Why the recording ended, as the helper writes it. Four families, all of which reach this field: a stop the user or the app asked for ('user'); a stop the helper decided on ('display-reconfigured', 'stream-stopped', 'stopped-during-start'); a shutdown that ended a live take (STC-304) — 'quit', 'stdin-closed', or 'signal-N' for the signal number, which is why this is not a closed enum; and reserved values nothing writes yet ('device-lost', 'error'). A '-timeout' suffix on ANY of them means the writer did not finalise in time and the sidecars were written anyway — display.mp4 may be incomplete; CaptureSession.stop appends it to whatever reason it was given, so the suffix is a property of every family rather than a fixed list. helper/test/stop-reasons.test.ts holds this schema to the reasons the Swift can actually produce."
         }
       }
     }

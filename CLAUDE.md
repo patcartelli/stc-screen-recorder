@@ -47,6 +47,10 @@ events → deterministic transform → CFR MP4 with cursor overlay.
 | `helper/test/still-encode.test.ts` | the encoder for real, on CI — encoding needs no grant, so PNG colour type, the P3 `iCCP` chunk and the HEIC brand are checked on every push |
 | `docs/STC-293-RUNBOOK.md` | what to run on the Mac for the export path: the pasteboard, the paste targets, and the P3 round trip an eye has to judge |
 | `docs/STC-291-RUNBOOK.md` | what to look at on the Mac for the decorated still, and which dial to turn when a preset is wrong |
+| `app/src/hotkeys.ts` | the global shortcuts' pure decisions (STC-292) — the accelerator grammar, the reserved list, duplicates, keystroke recording, and every sentence the user is shown. No Electron, no DOM |
+| `app/src/tray-menu.ts` | the menu-bar item's pure half — the template and the icon's pixels. Nothing in Electron can read a `Tray` back, so everything checkable is checked before it gets there |
+| `app/src/tray.ts`, `app/src/shutter.ts` | the Electron `Tray`; the system camera-shutter sound, honouring `com.apple.sound.uiaudio.enabled` and the alert volume |
+| `docs/STC-292-RUNBOOK.md` | what to press on the Mac for the hotkeys and the menu bar, and the permission round trip no test can do |
 | `fixtures/` | hand-authored 5 s fixture session + deterministic display.mp4 generator |
 | `harness/` | vite-served browser harness hosting both sinks |
 | `scripts/gate.mjs` | increment-0 determinism gate (Playwright + real Chrome) |
@@ -70,6 +74,19 @@ for an intermittent fault** — the regression test is the evidence, the green t
 
 Repo: https://github.com/patcartelli/stc-screen-recorder — **public** (unlimited Actions minutes;
 macOS bills 10x on private repos and burned ~42% of a monthly allowance in one day).
+Licensed **PolyForm Noncommercial 1.0.0** (`LICENSE.md`, STC-302) — read, fork and build on it for
+any noncommercial purpose; commercial use is not granted. GitHub's licence detector does not know
+PolyForm, so the repo sidebar shows no licence; that is expected, not a missing file.
+
+**STC-302's pre-public checklist, run 2026-09-08 (Linux):** gitleaks 8.28.0 over all 50 commits on
+every branch — no leaks; the same history grepped for AWS/GitHub/OpenAI/Slack/Google key shapes,
+private-key blocks, JWTs and `secret|token|password = "…"` assignments — no hits; no file ever
+committed under a `.p12/.pem/.key/.mobileprovision/.env` name; no email address anywhere in the
+tree; the only signing material is `SIGN_ID` as a shell variable and a truncated public cert
+fingerprint in prose. `fixtures/shot-window/frame.png` was LOOKED AT and is a synthetic mock, not a
+real window. Two items are open and neither is a secret: `fixtures/pip/camera.mp4` is a real camera
+track of a real person (112 KB — a synthetic one needs macOS, ffmpeg and a matching
+`camera-frames.json` PTS table), and the README's demo slot still needs the phase-3 recording.
 
 ### Workflow — master is protected
 
@@ -101,12 +118,14 @@ belonging to a different commit).
 | STC-286 | **cause found 2026-08-31, and now reported DURING the take.** In clamshell the built-in camera OPENS — `camera-started device: "FaceTime HD Camera"` — then delivers nothing: 0-byte camera.mp4, `present: false`. Not a failed open and not a wrong pick (`pickCamera` chose correctly over a virtual device and Continuity). A 3 s liveness watchdog warns while recording | nothing — both arms verified on hardware, lid shut AND lid open |
 | STC-239 | **transform half DONE 2026-09-02** — the placeholder circle is macOS pointer artwork (arrow, I-beam, crosshair, pointing hand), vector paths with the hotspot at the origin, drawn at `pxPerPoint` (display→output ratio × `project.cursor.scale`). `events-2` adds `{kind:"cursor", shape}`; the sim shows the arrow until the first one, which is what every v1 take means. `project.cursor.style: "circle"` keeps the old placeholder as an option (project.json only — no UI for it). **The helper still writes v1 and emits no cursor events**, so real takes show the arrow throughout. Merged as #65; closed 2026-09-02 | nothing — the helper half is STC-309 |
 | STC-309 | **DONE 2026-09-04, WATCHED on hardware.** The helper samples `NSCursor.currentSystem` at 30 Hz on its own thread (`helper/src/CursorShape.swift`), classifies against references MEASURED at start from the four `NSCursor` built-ins, emits `{kind:"cursor", shape}` only on change, and writes events.json **v2** time-ordered. Spike on hardware: the API sees other apps' pointers from the background helper, all four shapes match byte-for-byte, a sample costs 1.04 ms mean / 41 ms max (why it is NOT on the tap thread). An 11 s take from the app (726 moves, 37 shape changes) was exported and watched: I-beam over the field, hand over the links, arrow elsewhere, click highlight under the I-beam, in step with the video. Pinned as `fixtures/real-session-cursor/` + `helper/test/real-events-cursor.test.ts`. #67, #75, #76 | nothing. More shapes (resize, hands, not-allowed — seen as unknown, written as arrow) need artwork + events-3 |
-| STC-306 | **helper half DONE 2026-09-04.** A display stream that dies under a live take (`didStopWithError` after `started`) now ends the take the way a display change does: `CaptureSession.onStreamDied` → `App.stop(reason: "stream-stopped")`, warning first, unsolicited `stopped` after, sidecars written and `display.mp4` finalised. `anchors-2` `stop.reason` gained `stream-stopped` / `stream-stopped-timeout`. The helper's FIRST production fault injector: `STC_CAPTURE_FAULT=stream-died` makes the session call its own delegate 0.5 s after a successful start, which is how `helper/test/stream-died.grant.test.ts` watches the path fire instead of reasoning about it. Written on Linux with no swiftc — CI's macOS runner is the first compile | `npm run test:capture` on the Mac: both new tests need the grant. The enum still lacks `quit` / `signal-N` / `stdin-closed`, which `shutdown` writes and nothing validates at load — that is STC-311 |
+| STC-306 | **helper half DONE 2026-09-04.** A display stream that dies under a live take (`didStopWithError` after `started`) now ends the take the way a display change does: `CaptureSession.onStreamDied` → `App.stop(reason: "stream-stopped")`, warning first, unsolicited `stopped` after, sidecars written and `display.mp4` finalised. `anchors-2` `stop.reason` gained `stream-stopped` / `stream-stopped-timeout`. The helper's FIRST production fault injector: `STC_CAPTURE_FAULT=stream-died` makes the session call its own delegate 0.5 s after a successful start, which is how `helper/test/stream-died.grant.test.ts` watches the path fire instead of reasoning about it. Written on Linux with no swiftc — CI's macOS runner is the first compile | `npm run test:capture` on the Mac: both new tests need the grant. `npm run test:capture` also covers STC-311's new schema validation |
+| STC-311 | **DONE 2026-09-04.** `anchors-2` `stop.reason` now describes what the helper can actually write: the fixed reasons plus `quit` / `stdin-closed` / `stopped-during-start`, a `^signal-[0-9]+(-timeout)?$` pattern for the open-ended family, and a `-timeout` variant of every one. `helper/test/stop-reasons.test.ts` is the drift guard — it READS the reason literals out of the Swift call sites and holds the schema to them, so it needs no list of its own | nothing; the schema half runs in `npm test` |
 | STC-289 | **helper still capture — written 2026-09-04 on Linux; COMPILED and unit-tested on CI (SDK 15), NOT yet built against the Mac's 13.3 SDK or run with a grant.** `capture-still` returns one frame via `SCScreenshotManager` with no stream and no recording lifecycle; `windows` lists what a window shot can name. Display filter + `sourceRect` for region/full shots, `desktopIndependentWindow` filter for window shots with alpha end to end; `frame.png` + `shot.json` (shot-1, cherry-picked from the review branch) in the request's dir; cursor sampled from `NSEvent.mouseLocation`, absent when on another display; 10 s answer-once backstop. The pure half is tested without a grant and every document it writes is validated against the schema AND `parseShot` on every `npm test` | a Mac: `docs/STC-289-RUNBOOK.md`. The ObjC-runtime call is the one line no test on Linux can vouch for; `still.grant.test.ts` is the proof |
 | STC-290 | **selection overlay — written 2026-09-05 on Linux, so the LOOK is unseen.** One transparent Electron window per display at screen-saver level; the state machine lives in the main process, which is what lets a drag cross a bezel. Region mode hands `capture-still` a display id and a display-local crop, window mode a window id. 44 pure assertions with no screen, plus an E2E that drives the real windows against the stand-in helper. `capture-still` gained `excludeWindowIds` so the overlay cannot land in its own photograph | a Mac: `docs/STC-290-RUNBOOK.md`. The overlay's appearance, and whether Electron's `Display.id` really is the `CGDirectDisplayID` on a second display |
 | STC-293 | **still export — written 2026-09-08 on Linux, so the PASTEBOARD IS UNOBSERVED.** One verb out of the app (`export-still`): composited RGBA in, PNG/HEIC/JPEG on disk and/or PNG + TIFF + fileURL on the pasteboard. ImageIO rather than a canvas, because a canvas cannot write HEIC, cannot control the embedded profile and cannot withhold a timestamp. A JPEG over a transparent mode is a FORK the export waits on, never a silent fill. Destination folder, filename template, 1x/2x scale and a metadata strip all live in `still-export.ts`, and STC-298's frame grab was migrated onto it in the same change so there is no second encoder. A still panel in the app is the surface until STC-296's thumbnail replaces it | a Mac: `docs/STC-293-RUNBOOK.md`. The paste targets (Slack/Mail/Figma/Keynote/Preview), the P3 round trip, and whether `premultiplied` comes back false |
 | STC-291 | **decorated still — written 2026-09-05 on Linux, so the PRESETS ARE UNSEEN on real captures.** Background, padding, shadow and canvas presets for the five modes, split pure-layout (`still-decorate.ts`) / draw (`still-render.ts`). The window's corners are NOT synthesised — they arrive as alpha from `desktopIndependentWindow` and the shadow is cast from that same alpha; nothing is ever scaled. `npm run gate:still` renders in a real browser and asserts properties rather than goldens. Every mode rendered from a real 720x480 window mock and looked at | a Mac: `docs/STC-291-RUNBOOK.md`. Whether the presets look like a product shot, and whether a REAL window capture's alpha is as clean as the synthesised one |
 | STC-247 | **DONE 2026-09-08, VERIFIED on two displays (HP Z27 main id 4 @ 0,0; built-in id 1 @ 1920,0).** The helper refuses a `displayId` it cannot find (`display-not-found`) instead of quietly recording SCK's first; `devices` reports each display's `name` and global `originX/Y`; the app has a display picker beside Camera (sticky, "(not connected)" for a stored display that is gone). On hardware: `multi-display.grant.test.ts` recorded the NON-main built-in by id and its anchors named it (id 1, 1920,0, 1800×1169); a 21 s take from the app with the built-in picked had `anchors.display` = that display, capture 3326×2160, and the EXPORT was watched — the built-in's content, cursor where the pointer was, no whole-screen offset; Automatic recorded the HP (id 4, main, listed first — observed, not promised); both unplug arms ended the take with `stop.reason: display-reconfigured`, including the one where the captured display survived (review P7, deliberate). #85 | nothing. An origin timeline in anchors, so an unrelated display change need not end a take, is its own ticket |
+| STC-292 | **global hotkey and menu-bar quick capture. The FULL-DISPLAY HOTKEY PATH IS CONFIRMED ON HARDWARE 2026-09-08, end to end: ⌃⌥⇧⌘3 pressed with another app frontmost fired, opened NO overlay, made one shutter sound and wrote a shot — the part no test here can reach. ALL THREE hotkeys fire from a background app — ⌃⌥⇧⌘1 and ⌃⌥⇧⌘2 open the overlay and complete a capture. Also watched: the menu-bar icon legible and inverting in Dark, the accelerators rendering as glyphs, ⌘W removing the Dock icon while the item stays, and Open Library bringing the window back in front (CI disagrees about the Dock and the runner is what is wrong — see the trap below). A **Shutter sound** checkbox was added after the fact: the first person to look for a way to silence it looked in the app's own window, and honouring only `com.apple.sound.uiaudio.enabled` meant the switch lived somewhere nobody would find. It can only ever SILENCE — ticked, the sound still follows the Mac's setting and alert volume, so no combination makes a noise the Mac was told not to make. Unticking it gives silence with the shot still saved (watched). STILL UNSEEN: any hotkey during a live recording, the shutter obeying MACOS's OWN switch — only the app's has been tested, and only the system one proves `com.apple.sound.uiaudio.enabled` is really read — the third-party conflict wording, and the `tccutil reset` permission round trip — the ticket's third acceptance criterion.** Three global shortcuts (⌃⌥⇧⌘1/2/3 — the caps-lock hyperkey row), user-remappable and sticky, registered through Electron's `globalShortcut` (Carbon `RegisterEventHotKey`, no Accessibility grant). A menu-bar item with the three captures, Open Library and Quit. The app is menu-bar-FIRST now: the Dock icon goes when the last window closes and comes back with one. `still:capture` became a main-process FUNCTION with three doors — window button, hotkey, menu bar — and gained a `display` action that captures the display under the pointer with no overlay at all. Conflicts are surfaced, not swallowed: `hotkeys.ts` refuses what is knowably wrong (⌘⇧3/4/5/6 in any spelling, media keys, duplicates, bare keys) and `globalShortcut.register` returning false is reported apart from it. Feedback is the system shutter sound only — the corner animation is STC-296's | a Mac: `docs/STC-292-RUNBOOK.md`. Whether macOS delivers the chord to a background app, whether the icon inverts in both appearances, whether the sound plays and follows the setting, and the fresh-install round trip with only Screen Recording granted |
 | STC-251/252 | preview memory ceiling (~15 min at 4K); Node 20 actions deprecation | — |
 
 `PHASE-2.md` records the measured limits (export 1.52x realtime, preview ~1.2x file size in RAM).
@@ -464,6 +483,35 @@ reachable via KVC (`setValue(3, forKey: "captureResolution")`, verified in phase
   prints a whole subtree, and `grep -o 'Yes\|No'` on it matches an unrelated token long before the
   clamshell line. Scope the grep to `"AppleClamshellState"` or the reading is not about the lid at
   all.
+
+- **Two checks can each exist and still leave a hole between them, if they are on different
+  VALUES (STC-311).** `anchors-2`'s `stop.reason` was a closed enum of five reasons and their
+  `-timeout` variants. The helper writes four families it refused: `quit`, `stdin-closed` and
+  `signal-N` from `App.shutdown` (STC-304), and `stopped-during-start` (STC-305). Both halves of
+  the check were already in the repo and neither could see it —
+  `shutdown-during-recording.grant.test.ts` asserted `reason === "signal-15"` without validating
+  the document, and `anchors/main.swift` validated documents against the schema but only ever
+  built them with `stopReason: "user"`. Assertion on one value, validation on another; the gap
+  sat exactly between. Nothing broke downstream only because NOTHING validates anchors.json at
+  load — `recording.ts` and `takes.ts` read `stop.t` and never `stop.reason` — so it was a schema
+  that lies rather than a take that fails, which is why it survived three tickets.
+  The fix is not a longer enum: `CaptureSession.stop`'s backstop answers `\(reason)-timeout` for
+  WHATEVER reason it was given, so the suffix is a property of every family and hand-listing the
+  cross-product is the drift that caused this. The schema states the rule (enum + a `signal-`
+  pattern), and `helper/test/stop-reasons.test.ts` READS the reason literals out of the Swift call
+  sites — expanding `signal-\(sig)` from the signal list it finds in `installSignalHandlers`, and
+  THROWING on any interpolation it cannot expand rather than skipping it — and holds the schema to
+  them. Deliberately no list of its own: a fourth copy is the defect, not the fix. Watched failing
+  against the pre-STC-311 schema, against a schema missing only `stopped-during-start`, and — the
+  one that matters — against `{"type": "string"}`, which is what "fixing" a schema by widening it
+  until nothing fails looks like.
+  NB the signal list is grepped by WHAT ITS LOOP DOES (`shutdown(reason:)`), not by position:
+  `main.swift` has two `for sig in [...]` loops and the FIRST is `installCrashHandlers`
+  (SIGSEGV/BUS/ILL/FPE/ABRT/TRAP), which dies with a stderr line and never writes a reason at all.
+  A fourth copy was found while fixing this and deleted rather than corrected: `transform/src/
+  types.ts` typed `stop.reason` as a union of four, missing `stream-stopped` and every shutdown
+  reason. A union that cannot express values real files carry type-checks a lie and makes a
+  `switch` look exhaustive; it is `string` now, with the enumeration living only in the schema.
 
 - **A raw `display.mp4` never has a cursor, and a "the cursor is missing" report must say which file
   was watched.** `showsCursor` is off by design; the pointer exists only in an EXPORT, drawn from
@@ -1051,6 +1099,52 @@ reachable via KVC (`setValue(3, forKey: "captureResolution")`, verified in phase
   same scope every other gate here compares in. The capture it renders is SYNTHESISED in the page
   rather than committed, because the assertions have to name where the corner curve is.
 
+- **`app.dock.hide()` works on a real Mac and NOT on the CI runner — the runner is what is wrong,
+  and no bound was ever going to fix it (STC-292).** `dock.isVisible()` stayed `true` there with the
+  last window closed — as a single read, then through a full 10 s poll (runs 34243729730 and
+  34244375788) — while the window count was zero, the menu-bar item was alive and the shortcuts were
+  still registered. WATCHED on hardware 2026-09-08: ⌘W removes the Dock icon, the menu-bar item
+  stays. So it is a property of the runner's session, not of this code.
+  The route there is the lesson. The first push widened the read into a poll on the theory that
+  AppKit applies an activation-policy change asynchronously; the second, identical failure ruled
+  that out, and a third bound would have been a slower way of asserting the same false thing. The
+  claim moved to `docs/STC-292-RUNBOOK.md` §2 instead, where a person can look at a Dock — and a
+  person then did, which is the only reason this is settled. **Do not put the assertion back**: it
+  would be red forever for a behaviour that demonstrably works, and the next person would loosen it
+  until it passed without meaning anything. The two assertions that ARE the ticket's acceptance
+  criterion (no window, still running, still bound) stayed in the E2E and pass. A green tick bought
+  by loosening an assertion is worth less than a red one that named something true — and a claim an
+  automated environment cannot see is worth more in a runbook than in a test.
+
+- **A list of constants written in the reader's order is compared in the CODE's order, and the
+  mismatch is silent (STC-292).** `SYSTEM_CLAIMED` holds the macOS bindings the app refuses, and it
+  reads the way Apple writes them — `Command+Shift+4`. The canonical order `parseAccelerator`
+  produces is Control, Alt, Shift, Command, so the literal entries matched NOTHING: every system
+  screenshot binding was quietly accepted, and the acceptance criterion "rejects bindings already
+  claimed by the system" was false while looking implemented. Caught by the test on its first run,
+  not by reading the code. The list is normalised at load now, through the grammar with the reserved
+  check lifted out so it cannot recurse — and a typo in it THROWS at startup rather than becoming an
+  entry that silently never matches. Same family as every "one value, two copies" defect in this
+  file, with the second copy being an ordering convention rather than a number.
+
+- **A renderer-side guard can shadow the main-side one, and the E2E will not notice (STC-292).**
+  `shortcuts:set` refuses a reserved binding before storing anything, and the preferences field
+  refuses it too so the UI never briefly shows it as accepted. Both are wanted; the trap is that the
+  UI test can only ever reach the first refusal it meets. With `shortcuts:set`'s own check disabled,
+  the UI-driven test still passed — the renderer had already declined and main was never called.
+  Proven by mutation, and the fix is a second test that goes straight at the IPC through the preload
+  (`recorder.setShortcut(...)`), which fails with the guard removed and passes with it. Any time a
+  check exists at two layers, the outer one needs a test that cannot be satisfied by the inner.
+
+- **`skipIf(platform !== "darwin")` is the skip this repo already warns about, unless the BEHAVIOUR
+  is platform-specific (STC-292).** `shutter.ts` originally read `process.platform` directly, which
+  made four of its tests unrunnable on a Linux checkout — a skip that reads as covered and rots,
+  exactly what the `*.grant.test.ts` split exists to avoid. The platform is an injected dependency
+  now and all fifteen run everywhere, including the "off macOS it is suppressed" case. The one
+  remaining platform skip is legitimate and says so: `window-all-closed` quits on non-darwin BY
+  DESIGN, so there is no menu-bar-first survival to check on Linux rather than an unchecked one —
+  and its notice goes to `process.stderr`, because vitest discards `console.*` from a skipped test.
+
 - **A colour profile is NOT metadata, and one switch must not govern both (STC-293).** The ticket
   asks for an optional metadata strip "since a shot of a screen can carry the display's colour
   profile and a capture timestamp", which reads as one feature and is two. The TIMESTAMP is
@@ -1114,3 +1208,36 @@ reachable via KVC (`setValue(3, forKey: "captureResolution")`, verified in phase
   STC-289) and the shadow is cast from that same alpha, so a re-derived radius would throw away the
   fidelity window mode exists for. A canvas preset also only ever GROWS — a 16:9 preset that shaved
   the top off a window would be a decoration silently destroying the thing being decorated.
+
+- **An E2E that injects input must be the ONLY thing injecting input, and the overlay was not
+  (STC-290).** `still-overlay.e2e.test.ts` drives the overlay through `window.overlay.send`, and
+  the view's own DOM handlers call that SAME bridge — so the window server was a second writer
+  into one state machine. A real `pointermove` at whatever coordinate the cursor happens to
+  occupy, landing between an injected move and its pointerup, rewrites the marquee mid-gesture.
+  Reproduced under Xvfb as a crop **540 wide instead of 200**, where 540 is exactly the distance
+  from the drag's anchor to the centre of a 1280-wide screen — the parked cursor. The arithmetic
+  is what identified it; "flaky E2E" would not have.
+  On CI it landed the other way and was far less legible: the polluted rect confirmed to NOTHING,
+  and `reduce` treats an unconfirmable Return as a **no-op**, so the overlay never settled,
+  `still:capture` never answered, and the assertion read `expected '' to contain 'macOS 14'`
+  fifteen seconds later with no error anywhere. It reddened master runs #209 and #213 — two of the
+  four master pushes after it landed — while passing every PR run, which is precisely the
+  "reddens PRs at random" failure this repo already paid for with `ring-overflow`.
+  The fix is `STC_OVERLAY_SYNTHETIC_INPUT=1` → `?synthetic=1` → the view does not install its real
+  listeners. **Measured over 12 runs each, identical code but for the flag: 3 failures without,
+  0 with.** Nothing is lost: the E2E already called the bridge directly, so those handlers were
+  never covered by it. The chain spans three files and `app/test/overlay-listeners.test.ts` holds
+  it together, because dropping the env var reintroduces the flake and nothing else would notice.
+  NB the E2E now asserts the marquee is CONFIRMABLE (the `#size` chip, which is drawn from
+  `confirm()`'s own result) before pressing Return, and reports the overlay's state when it is
+  not. A test that presses Return on a hope reports an empty string when the hope fails.
+
+- **`confirm()` returning undefined is a HANG, not "no outcome yet" (STC-290).** `reduce` makes an
+  unconfirmable Return a no-op, `openOverlay`'s promise is settled only by an outcome, and
+  `still:capture` awaits it — so any of `confirm()`'s five refusals strands the whole still path
+  forever, with the app politely waiting for a selection the user already made. A human can still
+  press Escape; an automated caller cannot. `OverlaySession` now keeps its display list LIVE
+  (`screen.on("display-added"/"display-removed"/"display-metrics-changed")`) so a context snapshot
+  taken before the window server settled cannot be the cause. **This was the first hypothesis for
+  the flake above and turned out NOT to be it** — it is a separate latent fault, fixed on its own
+  merits and not verified on hardware.

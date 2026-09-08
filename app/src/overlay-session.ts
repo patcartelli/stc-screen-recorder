@@ -1,8 +1,8 @@
-import { BrowserWindow, ipcMain, screen } from "electron";
+import { app, BrowserWindow, ipcMain, screen } from "electron";
 import { join } from "node:path";
 import {
   reduce, confirm, initialState,
-  type DisplayInfo, type SelectionContext, type SelectionEvent,
+  type DisplayInfo, type Mode, type SelectionContext, type SelectionEvent,
   type SelectionOutcome, type SelectionState, type WindowInfo,
 } from "./selection.js";
 
@@ -84,6 +84,14 @@ export function overlayIsOpen(): boolean { return active !== undefined; }
 export interface OpenOptions {
   /** The helper's `windows` reply, already in global points. */
   windows: WindowInfo[];
+  /**
+   * Which mode to open in (STC-292). The window's one button opens in region
+   * mode as it always did; the hotkeys and the menu bar have an item each, and
+   * a "Capture Window" that opened on a crosshair and made the user press Space
+   * would not be the action it names. The mode toggle still works either way —
+   * this decides where the interaction STARTS, not what it can do.
+   */
+  mode?: Mode;
   /** Where the overlay's HTML and preload live. Injected so tests can point elsewhere. */
   dist: string;
   renderer: string;
@@ -123,21 +131,54 @@ class OverlaySession {
    * bounds that a display rearrangement may already have changed.
    */
   private readonly displayOf = new Map<BrowserWindow, number>();
-  private state: SelectionState = initialState("region");
+  private state: SelectionState;
   private readonly ctx: SelectionContext;
   private settle!: (r: OverlayResult) => void;
   readonly promise: Promise<OverlayResult>;
   private done = false;
 
   constructor(private readonly opts: OpenOptions) {
+    this.state = initialState(opts.mode ?? "region");
     this.ctx = { displays: screen.getAllDisplays().map(toDisplayInfo), windows: opts.windows };
     this.promise = new Promise<OverlayResult>((res) => { this.settle = res; });
   }
 
+  /**
+   * Keep `ctx.displays` LIVE for as long as the overlay is up.
+   *
+   * It used to be a snapshot taken in the constructor, and that is a hang, not
+   * a stale readout: `confirm()` returns undefined when the drawn rect
+   * overlaps none of the displays it is given, and `reduce` treats an
+   * unconfirmable Return as a NO-OP (selection.ts). So the overlay stays open,
+   * `openOverlay`'s promise never settles, and `still:capture` never answers —
+   * a wait with no bound and no reason, settled only by a callback that can no
+   * longer come. The user can still Escape; an automated caller cannot.
+   *
+   * The window list is deliberately NOT refreshed the same way: it comes from
+   * the helper, a window vanishing mid-selection is handled by `confirm`'s
+   * "still in the list" check, and re-asking the helper mid-gesture would put
+   * an IPC round trip in the path of a pointermove.
+   */
+  private readonly onDisplaysChanged = (): void => {
+    if (this.done) return;
+    this.ctx.displays = screen.getAllDisplays().map(toDisplayInfo);
+    this.broadcast();
+  };
+
   async run(): Promise<OverlayResult> {
     ipcMain.on("overlay:event", this.onEvent);
+    screen.on("display-added", this.onDisplaysChanged);
+    screen.on("display-removed", this.onDisplaysChanged);
+    screen.on("display-metrics-changed", this.onDisplaysChanged);
     try {
       for (const d of screen.getAllDisplays()) this.windows.push(this.makeWindow(d));
+      // The overlay needs the keyboard, and a hotkey capture (STC-292) starts
+      // with this app in the background — where focusing a window raises it
+      // BEHIND whatever is frontmost, leaving Escape dead and the user with an
+      // overlay they cannot dismiss. The main window is not activated by this;
+      // only the overlay is, which is what "without the main window ever
+      // activating" means in practice.
+      app.focus({ steal: true });
       // Focus one of them, or nothing receives the keyboard and Escape is dead.
       this.windows[0]?.focus();
     } catch (e) {
@@ -174,8 +215,15 @@ class OverlaySession {
     this.displayOf.set(w, d.id);
     w.setAlwaysOnTop(true, "screen-saver");
     w.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
-    w.loadFile(join(this.opts.renderer, "overlay.html"),
-               { query: { displayId: String(d.id) } });
+    // `synthetic=1` tells the view not to listen to the window server, so an
+    // automated caller's injected events are the only input. Set by the E2E
+    // suite alone; a real run never has it and behaves exactly as before.
+    w.loadFile(join(this.opts.renderer, "overlay.html"), {
+      query: {
+        displayId: String(d.id),
+        ...(process.env.STC_OVERLAY_SYNTHETIC_INPUT === "1" ? { synthetic: "1" } : {}),
+      },
+    });
     w.once("ready-to-show", () => {
       if (this.done) return;
       w.showInactive();
@@ -219,6 +267,9 @@ class OverlaySession {
     if (this.done) return;
     this.done = true;
     ipcMain.removeListener("overlay:event", this.onEvent);
+    screen.removeListener("display-added", this.onDisplaysChanged);
+    screen.removeListener("display-removed", this.onDisplaysChanged);
+    screen.removeListener("display-metrics-changed", this.onDisplaysChanged);
 
     const excludeWindowIds: number[] = [];
     for (const w of this.windows) {
