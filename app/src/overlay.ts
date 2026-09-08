@@ -136,6 +136,17 @@ function renderLegend(mode: string): void {
 
 function render(p: OverlayPayload): void {
   current = p;
+  // The last state this window was told to draw, for a failing test to report.
+  // A selection that cannot be confirmed makes Return a no-op and the overlay
+  // hangs open (selection.ts, `reduce`); without this the only evidence is an
+  // empty string in the main window fifteen seconds later, which is what made
+  // the two master failures unreadable. Diagnostic only — nothing reads it.
+  (window as unknown as Record<string, unknown>).__overlayState = {
+    mode: p.state.mode, rect: p.state.rect, pointer: p.state.pointer,
+    hoveredWindowId: p.state.hoveredWindowId,
+    confirmable: p.preview !== undefined,
+    displays: p.displays.map((d) => ({ id: d.id, bounds: d.bounds })),
+  };
   if (p.display) origin = { x: p.display.bounds.x, y: p.display.bounds.y };
   const { state } = p;
   document.body.classList.toggle("window-mode", state.mode === "window");
@@ -192,6 +203,33 @@ function render(p: OverlayPayload): void {
 
 // ── input ───────────────────────────────────────────────────────────────────
 
+/**
+ * Whether this window listens to REAL pointer and key input.
+ *
+ * Off when the session was opened with synthetic input (`?synthetic=1`), which
+ * only the E2E suite does. That suite drives the overlay through
+ * `window.overlay.send` — the same bridge these handlers use — and the window
+ * server was driving it at the same time: a real `pointermove` at whatever
+ * coordinate the cursor happened to occupy would land between an injected
+ * pointermove and its pointerup and rewrite the marquee from under it.
+ *
+ * That is the whole of the flake. Caught locally as a crop 540 wide instead of
+ * 200, where 540 is exactly the distance from the drag's anchor to the middle
+ * of the screen — the parked cursor. On CI it landed the other way: the
+ * polluted rect confirmed to nothing, `reduce` made Return a no-op, the
+ * overlay never settled, and the assertion read `expected '' to contain
+ * 'macOS 14'` fifteen seconds later with nothing to say (master #209, #213).
+ *
+ * These handlers are not what the E2E covers either way — it already calls the
+ * bridge directly, so the translation below (hit-testing a handle, `toGlobal`)
+ * was never exercised by it and is not exercised by it now. What is lost is
+ * nothing; what is gained is that the test's input is the only input.
+ */
+const SYNTHETIC_INPUT = new URLSearchParams(location.search).get("synthetic") === "1";
+
+if (!SYNTHETIC_INPUT) installRealInput();
+
+function installRealInput(): void {
 window.addEventListener("pointerdown", (e) => {
   const state = current?.state;
   const at = toGlobal(e);
@@ -238,6 +276,7 @@ for (const type of ["keydown", "keyup"] as const) {
     if (!p || !current?.state.drag) return;
     send({ t: "pointermove", at: p, mods: { shift: e.shiftKey, alt: e.altKey } });
   });
+}
 }
 
 window.overlay.onState(render);

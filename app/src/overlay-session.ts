@@ -134,8 +134,33 @@ class OverlaySession {
     this.promise = new Promise<OverlayResult>((res) => { this.settle = res; });
   }
 
+  /**
+   * Keep `ctx.displays` LIVE for as long as the overlay is up.
+   *
+   * It used to be a snapshot taken in the constructor, and that is a hang, not
+   * a stale readout: `confirm()` returns undefined when the drawn rect
+   * overlaps none of the displays it is given, and `reduce` treats an
+   * unconfirmable Return as a NO-OP (selection.ts). So the overlay stays open,
+   * `openOverlay`'s promise never settles, and `still:capture` never answers —
+   * a wait with no bound and no reason, settled only by a callback that can no
+   * longer come. The user can still Escape; an automated caller cannot.
+   *
+   * The window list is deliberately NOT refreshed the same way: it comes from
+   * the helper, a window vanishing mid-selection is handled by `confirm`'s
+   * "still in the list" check, and re-asking the helper mid-gesture would put
+   * an IPC round trip in the path of a pointermove.
+   */
+  private readonly onDisplaysChanged = (): void => {
+    if (this.done) return;
+    this.ctx.displays = screen.getAllDisplays().map(toDisplayInfo);
+    this.broadcast();
+  };
+
   async run(): Promise<OverlayResult> {
     ipcMain.on("overlay:event", this.onEvent);
+    screen.on("display-added", this.onDisplaysChanged);
+    screen.on("display-removed", this.onDisplaysChanged);
+    screen.on("display-metrics-changed", this.onDisplaysChanged);
     try {
       for (const d of screen.getAllDisplays()) this.windows.push(this.makeWindow(d));
       // Focus one of them, or nothing receives the keyboard and Escape is dead.
@@ -174,8 +199,15 @@ class OverlaySession {
     this.displayOf.set(w, d.id);
     w.setAlwaysOnTop(true, "screen-saver");
     w.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
-    w.loadFile(join(this.opts.renderer, "overlay.html"),
-               { query: { displayId: String(d.id) } });
+    // `synthetic=1` tells the view not to listen to the window server, so an
+    // automated caller's injected events are the only input. Set by the E2E
+    // suite alone; a real run never has it and behaves exactly as before.
+    w.loadFile(join(this.opts.renderer, "overlay.html"), {
+      query: {
+        displayId: String(d.id),
+        ...(process.env.STC_OVERLAY_SYNTHETIC_INPUT === "1" ? { synthetic: "1" } : {}),
+      },
+    });
     w.once("ready-to-show", () => {
       if (this.done) return;
       w.showInactive();
@@ -219,6 +251,9 @@ class OverlaySession {
     if (this.done) return;
     this.done = true;
     ipcMain.removeListener("overlay:event", this.onEvent);
+    screen.removeListener("display-added", this.onDisplaysChanged);
+    screen.removeListener("display-removed", this.onDisplaysChanged);
+    screen.removeListener("display-metrics-changed", this.onDisplaysChanged);
 
     const excludeWindowIds: number[] = [];
     for (const w of this.windows) {

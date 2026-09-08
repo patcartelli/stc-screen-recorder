@@ -1054,3 +1054,36 @@ reachable via KVC (`setValue(3, forKey: "captureResolution")`, verified in phase
   STC-289) and the shadow is cast from that same alpha, so a re-derived radius would throw away the
   fidelity window mode exists for. A canvas preset also only ever GROWS — a 16:9 preset that shaved
   the top off a window would be a decoration silently destroying the thing being decorated.
+
+- **An E2E that injects input must be the ONLY thing injecting input, and the overlay was not
+  (STC-290).** `still-overlay.e2e.test.ts` drives the overlay through `window.overlay.send`, and
+  the view's own DOM handlers call that SAME bridge — so the window server was a second writer
+  into one state machine. A real `pointermove` at whatever coordinate the cursor happens to
+  occupy, landing between an injected move and its pointerup, rewrites the marquee mid-gesture.
+  Reproduced under Xvfb as a crop **540 wide instead of 200**, where 540 is exactly the distance
+  from the drag's anchor to the centre of a 1280-wide screen — the parked cursor. The arithmetic
+  is what identified it; "flaky E2E" would not have.
+  On CI it landed the other way and was far less legible: the polluted rect confirmed to NOTHING,
+  and `reduce` treats an unconfirmable Return as a **no-op**, so the overlay never settled,
+  `still:capture` never answered, and the assertion read `expected '' to contain 'macOS 14'`
+  fifteen seconds later with no error anywhere. It reddened master runs #209 and #213 — two of the
+  four master pushes after it landed — while passing every PR run, which is precisely the
+  "reddens PRs at random" failure this repo already paid for with `ring-overflow`.
+  The fix is `STC_OVERLAY_SYNTHETIC_INPUT=1` → `?synthetic=1` → the view does not install its real
+  listeners. **Measured over 12 runs each, identical code but for the flag: 3 failures without,
+  0 with.** Nothing is lost: the E2E already called the bridge directly, so those handlers were
+  never covered by it. The chain spans three files and `app/test/overlay-listeners.test.ts` holds
+  it together, because dropping the env var reintroduces the flake and nothing else would notice.
+  NB the E2E now asserts the marquee is CONFIRMABLE (the `#size` chip, which is drawn from
+  `confirm()`'s own result) before pressing Return, and reports the overlay's state when it is
+  not. A test that presses Return on a hope reports an empty string when the hope fails.
+
+- **`confirm()` returning undefined is a HANG, not "no outcome yet" (STC-290).** `reduce` makes an
+  unconfirmable Return a no-op, `openOverlay`'s promise is settled only by an outcome, and
+  `still:capture` awaits it — so any of `confirm()`'s five refusals strands the whole still path
+  forever, with the app politely waiting for a selection the user already made. A human can still
+  press Escape; an automated caller cannot. `OverlaySession` now keeps its display list LIVE
+  (`screen.on("display-added"/"display-removed"/"display-metrics-changed")`) so a context snapshot
+  taken before the window server settled cannot be the cause. **This was the first hypothesis for
+  the flake above and turned out NOT to be it** — it is a separate latent fault, fixed on its own
+  merits and not verified on hardware.
