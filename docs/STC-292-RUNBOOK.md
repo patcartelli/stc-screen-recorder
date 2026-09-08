@@ -257,13 +257,22 @@ rather than trusting this line:
   node_modules/electron/dist/Electron.app/Contents/Info.plist
 ```
 
-Quit the app first, and confirm nothing is lingering — a leftover `electron .`
-holds the display and every capture after the reset fails as `-3805`, which
-reads as a permission fault and is not one:
+**Quit the recorder — and note that closing its window is not quitting it.**
+This ticket made the app menu-bar-first, so ⌘W leaves it running with its
+menu-bar item and its hotkeys still bound. Use the menu-bar icon (the four
+corner brackets) › **Quit stc recorder**, or ⌘Q with a recorder window
+frontmost, or Ctrl+C in the terminal running `npm run app:start`.
+
+Then confirm nothing is lingering. A leftover `electron .` holds the display,
+so the first capture after the reset fails as `-3805` — which reads as "the
+grant did not work" and is not that at all:
 
 ```
 ps -Ao pid,command | grep '[s]tc-screen-recorder/node_modules/electron'
 ```
+
+No output means you are clear. A line means it is still up: the first column
+is the PID, so `kill <pid>` and run the check again.
 
 Then:
 
