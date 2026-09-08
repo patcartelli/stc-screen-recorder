@@ -22,9 +22,9 @@ import { colorSpaceFor, planRender, stillIsBlocked, type ExportOptions } from "@
  *
  * ## What is deliberately not here
  *
- * True OS drag-out (`NSFilePromiseProvider`), a right-click menu, and
- * multiple captures stacking rather than replacing are follow-up work — see
- * CLAUDE.md. Format, quality and scale are NOT controls here either: they are
+ * True OS drag-out, swipe-to-discard, and multiple captures stacking rather
+ * than replacing are still follow-up work — see CLAUDE.md. The right-click
+ * menu has landed (`thumbnail-menu.ts`). Format, quality and scale are NOT controls here either: they are
  * `still` settings, read once from the stored preference, the same as every
  * other exit out of the app. Only the decoration MODE is a per-shot choice,
  * because the ticket names it as one ("the five output modes as a preset
@@ -39,7 +39,12 @@ declare global {
       exportStill(req: Record<string, unknown>): Promise<{
         ok: boolean; file?: string; bytes?: number; clipboard?: string[];
         code?: string; detail?: string;
+        /** The user closed the Save As panel without choosing. */
+        cancelled?: boolean;
       }>;
+      menu(ctx: { redacting: boolean; busy: boolean }): Promise<string | null>;
+      revealShot(dir: string): Promise<boolean>;
+      deleteShot(dir: string): Promise<{ ok: boolean; detail?: string }>;
       reveal(): Promise<boolean>;
       writeShot(dir: string, redactions: unknown): Promise<{ ok: boolean; redactions: number }>;
       event(ev: { kind: "painted" | "expanded" | "done" } | { kind: "redact"; on: boolean }): void;
@@ -208,7 +213,15 @@ function paintView(marquee?: { x: number; y: number; width: number; height: numb
  * rather than flattening onto a guessed colour — this panel has no colour
  * picker, and "keep everything, in a format that can" needs no guess at all.
  */
-async function runExport(action: "copy" | "save"): Promise<boolean> {
+/**
+ * `save-as` is a save that asks first. It is a third ACTION rather than an
+ * option on `save`, because the two differ in what the user has already told
+ * the app: a plain save has a destination and needs no interaction, and the
+ * whole design of this panel is that the silent path stays silent.
+ */
+type ExportAction = "copy" | "save" | "save-as";
+
+async function runExport(action: ExportAction): Promise<boolean> {
   if (!composite) return false;
   const settings = (await window.thumb.getSettings()).still;
   let options: ExportOptions = { ...settings };
@@ -230,15 +243,25 @@ async function runExport(action: "copy" | "save"): Promise<boolean> {
   const r = await window.thumb.exportStill({
     bytes, width: composite.width, height: composite.height, alpha: plan.alpha,
     colorSpace: shot.display.colorSpace ?? "",
-    target: { file: action === "save", clipboard: action === "copy" },
+    target: {
+      file: action !== "copy",
+      clipboard: action === "copy",
+      // main puts the panel up and keeps the path it gets back; this side only
+      // ever says that a choice was wanted (STC-296's right-click menu).
+      ...(action === "save-as" ? { saveAs: true } : {}),
+    },
     options,
     info: { ...(decorated.window?.app ? { app: decorated.window.app } : {}),
             ...(decorated.window?.title ? { title: decorated.window.title } : {}),
             mode: currentMode },
     dir,
   });
+  // Cancelling the save panel is a decision, not a fault. Saying "Could not
+  // save as: undefined" to someone who pressed Cancel would be the app
+  // reporting their own answer back to them as an error.
+  if (r.cancelled) { setStatus(""); return false; }
   if (!r.ok) {
-    setStatus(`Could not ${action}: ${r.detail ?? r.code ?? "unknown error"}`);
+    setStatus(`Could not ${action === "copy" ? "copy" : "save"}: ${r.detail ?? r.code ?? "unknown error"}`);
     return false;
   }
   setStatus((action === "copy" ? "Copied" : `Saved ${r.file?.split("/").pop() ?? ""}`)
@@ -401,6 +424,56 @@ undoBtn.addEventListener("click", (e) => {
 doneRedactBtn.addEventListener("click", (e) => { e.stopPropagation(); setRedacting(false); });
 
 closeBtn.addEventListener("click", (e) => { e.stopPropagation(); void settle(); });
+
+/**
+ * The right-click menu (STC-296's follow-up).
+ *
+ * The menu is built and popped up by MAIN — `thumbnail-menu.ts` decides its
+ * contents, `main.ts` turns them into a real `Menu`. This side reports the
+ * gesture and performs whichever id comes back, so the five actions are the
+ * same code paths the panel's own buttons use rather than a second set that
+ * could drift from them.
+ *
+ * Available collapsed as well as expanded: the ticket puts the menu on the
+ * thumbnail, and a shot whose panel has not been clicked yet is exactly when
+ * "copy it and get on with what I was doing" is worth most.
+ */
+document.addEventListener("contextmenu", (e) => {
+  e.preventDefault();
+  void (async () => {
+    const id = await window.thumb.menu({ redacting, busy });
+    if (id === null) return;
+    if (id === "copy" || id === "save-as") {
+      if (busy) return;
+      busy = true;
+      setStatus(id === "copy" ? "Copying…" : "Saving…");
+      const ok = await runExport(id);
+      busy = false;
+      // Same rule the Save button follows: a save ends the interaction, a copy
+      // does not. Cancelling the panel returns false, so it correctly does not
+      // close either.
+      if (ok && id === "save-as") { settling = true; window.thumb.event({ kind: "done" }); }
+      return;
+    }
+    if (id === "redact") { expand(); setRedacting(!redacting); return; }
+    if (id === "reveal") {
+      // The shot's own directory, not `still:reveal`'s last SAVED file: a panel
+      // that has not been settled yet has never saved anything, and revealing
+      // some earlier shot instead would be worse than doing nothing.
+      if (!await window.thumb.revealShot(dir)) setStatus("Nothing to show yet.");
+      return;
+    }
+    if (id === "delete") {
+      // `settling` FIRST, before anything is awaited: the timeout can fire
+      // while the trash call is in flight, and a settle that got through would
+      // export the shot this is throwing away.
+      settling = true;
+      const r = await window.thumb.deleteShot(dir);
+      if (!r.ok) { settling = false; setStatus(`Could not delete: ${r.detail ?? "unknown error"}`); return; }
+      window.thumb.event({ kind: "done" });
+    }
+  })();
+});
 
 document.addEventListener("keydown", (e) => {
   if (e.key !== "Escape" || !expanded) return;
