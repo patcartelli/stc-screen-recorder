@@ -65,6 +65,19 @@ for an intermittent fault** — the regression test is the evidence, the green t
 
 Repo: https://github.com/patcartelli/stc-screen-recorder — **public** (unlimited Actions minutes;
 macOS bills 10x on private repos and burned ~42% of a monthly allowance in one day).
+Licensed **PolyForm Noncommercial 1.0.0** (`LICENSE.md`, STC-302) — read, fork and build on it for
+any noncommercial purpose; commercial use is not granted. GitHub's licence detector does not know
+PolyForm, so the repo sidebar shows no licence; that is expected, not a missing file.
+
+**STC-302's pre-public checklist, run 2026-09-08 (Linux):** gitleaks 8.28.0 over all 50 commits on
+every branch — no leaks; the same history grepped for AWS/GitHub/OpenAI/Slack/Google key shapes,
+private-key blocks, JWTs and `secret|token|password = "…"` assignments — no hits; no file ever
+committed under a `.p12/.pem/.key/.mobileprovision/.env` name; no email address anywhere in the
+tree; the only signing material is `SIGN_ID` as a shell variable and a truncated public cert
+fingerprint in prose. `fixtures/shot-window/frame.png` was LOOKED AT and is a synthetic mock, not a
+real window. Two items are open and neither is a secret: `fixtures/pip/camera.mp4` is a real camera
+track of a real person (112 KB — a synthetic one needs macOS, ffmpeg and a matching
+`camera-frames.json` PTS table), and the README's demo slot still needs the phase-3 recording.
 
 ### Workflow — master is protected
 
