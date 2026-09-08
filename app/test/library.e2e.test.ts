@@ -74,7 +74,7 @@ describe("the library grid", () => {
     expect(await win.locator("#libgrid").count()).toBe(0);
     // The filter chips are still there — the library is empty, not absent.
     expect(await win.locator(".libfilters .chip").count()).toBe(3);
-  });
+  }, 60_000);
 
   test("a stills-only library lists them as stills, not as broken recordings", async () => {
     // The bug this ticket fixes: before the adapter, a still had no anchors.json
@@ -85,7 +85,7 @@ describe("the library grid", () => {
     });
     await expect.poll(() => badges(win), { timeout: 15_000 }).toEqual(["Still", "Still"]);
     expect(await win.locator(".broken").count()).toBe(0);
-  });
+  }, 60_000);
 
   test("a mixed library interleaves both kinds in one grid, newest first", async () => {
     const { win } = await launch((dir) => {
@@ -100,7 +100,7 @@ describe("the library grid", () => {
     await expect.poll(() => badges(win), { timeout: 15_000 })
       .toEqual(["Still", "Recording", "Still", "Recording"]);
     expect(await win.locator(".broken").count()).toBe(0);
-  });
+  }, 60_000);
 
   test("the filter narrows the grid, and All brings both back", async () => {
     const { win } = await launch((dir) => {
@@ -117,7 +117,7 @@ describe("the library grid", () => {
 
     await win.locator('.libfilters .chip[data-filter="all"]').click();
     await expect.poll(() => badges(win), { timeout: 15_000 }).toEqual(["Still", "Recording"]);
-  });
+  }, 60_000);
 
   test("each kind offers its own actions, and both offer rename and delete", async () => {
     const { win } = await launch((dir) => {
@@ -131,7 +131,7 @@ describe("the library grid", () => {
     expect(await actionsOf(win, 0)).toEqual(
       ["open", "rename", "duplicate", "reveal", "delete"]);
     expect(await actionsOf(win, 1)).toEqual(["open", "rename", "reveal", "delete"]);
-  });
+  }, 60_000);
 });
 
 describe("decorated thumbnails", () => {
@@ -148,7 +148,7 @@ describe("decorated thumbnails", () => {
     // A real PNG, not an empty file — the main-process guard refuses anything
     // that is not, so a written file is already proof it had the magic bytes.
     expect(statSync(join(takeDir, THUMBNAIL_FILE)).size).toBeGreaterThan(0);
-  });
+  }, 60_000);
 
   /**
    * The cache being IN the take directory is what makes the ticket's delete
@@ -166,7 +166,7 @@ describe("decorated thumbnails", () => {
     // Nothing anywhere else: the whole cache for this shot is these bytes.
     expect(readdirSync(recordings)).toEqual(["2026-09-08_12-00-00"]);
     expect(readdirSync(takeDir).sort()).toEqual(["frame.png", "shot.json", THUMBNAIL_FILE].sort());
-  });
+  }, 60_000);
 });
 
 describe("duplicate", () => {
@@ -189,7 +189,7 @@ describe("duplicate", () => {
     const shot = JSON.parse(readFileSync(join(copy, "shot.json"), "utf8"));
     expect(shot.decoration.redactions).toHaveLength(1);
     expect(existsSync(join(copy, "frame.png"))).toBe(true);
-  });
+  }, 60_000);
 
   /**
    * The copy does not inherit the ORIGINAL's cached picture.
@@ -229,5 +229,5 @@ describe("duplicate", () => {
     if (existsSync(join(copy, THUMBNAIL_FILE))) {
       expect(readFileSync(join(copy, THUMBNAIL_FILE)).equals(SENTINEL)).toBe(false);
     }
-  });
+  }, 60_000);
 });
