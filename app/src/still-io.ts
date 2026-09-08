@@ -2,7 +2,8 @@ import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  DEFAULT_FLATTEN_COLOR, FORMATS, colorSpaceFor, metadataPlan, planFileName, tokensFor,
+  DEFAULT_FLATTEN_COLOR, FORMATS, clampQuality, colorSpaceFor, metadataPlan, parseFormat,
+  parseScale, planFileName, tokensFor,
   type ExportOptions, type StillColorSpace,
 } from "@transform/still-export.js";
 import type { StillSettings } from "./settings.js";
@@ -136,6 +137,49 @@ export async function namesIn(dir: string): Promise<Set<string>> {
   } catch {
     return new Set();
   }
+}
+
+/**
+ * What a caller may decide about one export, and what only the stored
+ * preference decides.
+ *
+ * Built field by field rather than by spreading `{ ...stored, ...requested }`,
+ * so what a caller can influence is a LIST rather than whatever it happened to
+ * send. The renderer is handed the settings to populate its controls and sends
+ * them back, so a spread quietly let it choose the destination folder too —
+ * which is the one thing a sandboxed renderer must never choose, because it
+ * decides where the main process writes.
+ *
+ * The TEMPLATE is overridable and the rest of the preference is not, and that
+ * distinction is deliberate. The stored template is the default NAME for a
+ * still, not a rule that every artifact must be named that way: the preview's
+ * frame grab names its file after the take and the millisecond it came from,
+ * which no user-authored template can express (there is no position token),
+ * and forcing the stored one on it destroys that information. "One filename
+ * template" is about there being one SETTING and one renderer — `renderTemplate`
+ * plus `uniqueFileName` — which an overriding caller still goes through.
+ *
+ * This lives here rather than inside main's IPC handler because a closure in
+ * `ipcMain.handle` is unreachable from any test, and the first version of it
+ * shipped with the template pinned to the stored one — which renamed every
+ * saved frame and was caught by an E2E assertion rather than by anything that
+ * could say why.
+ */
+export function resolveExportOptions(stored: StillSettings,
+                                     requested: Partial<ExportOptions> | undefined): ExportOptions {
+  const template = typeof requested?.template === "string" && requested.template.trim()
+    ? requested.template : stored.template;
+  return {
+    format: parseFormat(requested?.format ?? stored.format),
+    quality: clampQuality(requested?.quality ?? stored.quality),
+    scale: parseScale(requested?.scale ?? stored.scale),
+    template,
+    // Never the caller's: the strip is a privacy preference, and a caller that
+    // could turn it off would silently re-attach a timestamp the user asked to
+    // have withheld.
+    stripMetadata: stored.stripMetadata === true,
+    ...(requested?.flattenColor ? { flattenColor: requested.flattenColor } : {}),
+  };
 }
 
 /**

@@ -3,7 +3,9 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { readdirSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CLIPBOARD_SUBDIR, destinationDir, exportStill, namesIn } from "../src/still-io.js";
+import {
+  CLIPBOARD_SUBDIR, destinationDir, exportStill, namesIn, resolveExportOptions,
+} from "../src/still-io.js";
 import { DEFAULT_STILL_SETTINGS, type StillSettings } from "../src/settings.js";
 
 /**
@@ -242,5 +244,78 @@ describe("the export funnel (STC-293)", () => {
       fallbackDir: dir,
     }, settings(), cache);
     expect(h.calls[0]!.alpha).toBe(false);
+  });
+});
+
+/**
+ * STC-293: what a caller may decide about one export.
+ *
+ * This is the seam that broke on the PR's first CI run. The IPC handler
+ * resolved options as `{ ...stored, ...requested, template: stored.template }`
+ * — pinning the template — so the preview's frame grab, which names its file
+ * after the take and the millisecond it came from, saved under the stored
+ * still template instead. Three E2E assertions went red saying only "expected
+ * [] to have a length of 1", which is a symptom two processes away from the
+ * cause. The logic lived in an `ipcMain.handle` closure where no test could
+ * reach it; it lives in `still-io.ts` now, and these are the assertions that
+ * would have named it.
+ */
+describe("what a caller may decide about an export (STC-293)", () => {
+  const stored: StillSettings = {
+    ...DEFAULT_STILL_SETTINGS,
+    destination: "/Users/me/Shots",
+    template: "{app} {date}",
+    stripMetadata: true,
+    format: "png",
+  };
+
+  test("a caller's template wins over the stored one", () => {
+    // The regression: an artifact whose name carries information no
+    // user-authored template can express — here, where in a take the frame
+    // came from — must be allowed to name itself.
+    expect(resolveExportOptions(stored, { template: "frame-take-437ms" }).template)
+      .toBe("frame-take-437ms");
+  });
+
+  test("no template means the stored one", () => {
+    expect(resolveExportOptions(stored, {}).template).toBe("{app} {date}");
+    expect(resolveExportOptions(stored, undefined).template).toBe("{app} {date}");
+    // An empty or blank template is not a choice, it is a missing one.
+    expect(resolveExportOptions(stored, { template: "   " }).template).toBe("{app} {date}");
+  });
+
+  test("format, quality and scale are the caller's for this one export", () => {
+    const o = resolveExportOptions(stored, { format: "jpeg", quality: 0.5, scale: "1x" });
+    expect(o.format).toBe("jpeg");
+    expect(o.quality).toBe(0.5);
+    expect(o.scale).toBe("1x");
+  });
+
+  test("a caller cannot turn off the metadata strip", () => {
+    // It is a privacy preference. A caller that could clear it would silently
+    // re-attach a timestamp the user asked to have withheld.
+    expect(resolveExportOptions(stored, { stripMetadata: false } as never).stripMetadata).toBe(true);
+  });
+
+  test("a caller cannot name a destination, even by sending the settings back", () => {
+    // The exact shape of the original bug: the renderer is handed the settings
+    // to populate its controls and sends them back, so a
+    // `{ ...stored, ...requested }` spread let it choose where main writes.
+    const o = resolveExportOptions(stored, { destination: "/tmp/anywhere" } as never);
+    expect((o as unknown as Record<string, unknown>).destination).toBeUndefined();
+    // ...and the real destination still comes from the stored settings.
+    expect(destinationDir(stored, { file: true, clipboard: false }, "/takes/shot-1", "/cache"))
+      .toBe("/Users/me/Shots");
+  });
+
+  test("a nonsense format or scale falls back rather than reaching the encoder", () => {
+    const o = resolveExportOptions(stored, { format: "webp" as never, scale: "4x" as never });
+    expect(o.format).toBe("png");
+    expect(o.scale).toBe("native");
+  });
+
+  test("a flatten colour is carried through only when one was chosen", () => {
+    expect(resolveExportOptions(stored, {}).flattenColor).toBeUndefined();
+    expect(resolveExportOptions(stored, { flattenColor: "#ff0000" }).flattenColor).toBe("#ff0000");
   });
 });

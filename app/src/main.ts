@@ -1,6 +1,8 @@
 import { app, BrowserWindow, ipcMain, dialog, shell } from "electron";
 import { readSettings, writeSettings, type Settings } from "./settings.js";
-import { exportStill, type CompositedStill, type ExportTarget } from "./still-io.js";
+import {
+  exportStill, resolveExportOptions, type CompositedStill, type ExportTarget,
+} from "./still-io.js";
 import { colorSpaceFor, type ExportOptions } from "@transform/still-export.js";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -321,23 +323,20 @@ ipcMain.handle("still:export", async (_e, req: {
   bytes: ArrayBuffer; width: number; height: number; alpha: boolean;
   colorSpace?: string;
   target: ExportTarget;
-  options: ExportOptions;
+  options: Partial<ExportOptions>;
   info: { app?: string; title?: string; mode: string };
   /** A take directory, for the "beside the shot" default destination. */
   dir?: string;
 }) => {
   if (!sup) throw new Error("supervisor not running");
-  const settings = readSettings(app.getPath("userData")).still;
-  // The renderer proposes format, quality and scale for THIS export — the
-  // panel's controls are live — but the destination folder and the strip
-  // switch are the stored preference's alone. A renderer that could name its
-  // own destination would be a second destination setting.
-  const options: ExportOptions = {
-    ...settings,
-    ...req.options,
-    template: settings.template,
-    stripMetadata: settings.stripMetadata,
-  };
+  const stored = readSettings(app.getPath("userData")).still;
+
+  // What the renderer may decide about this one export, and what only the
+  // stored preference decides. In `still-io.ts` rather than inline here: a
+  // closure in `ipcMain.handle` is unreachable from any test, and the first
+  // version of this pinned the template to the stored one, which renamed
+  // every saved frame.
+  const options = resolveExportOptions(stored, req.options);
 
   // A take directory is the only fallback destination that may be named, and
   // it must be inside the recordings root — the renderer is sandboxed and
@@ -356,7 +355,10 @@ ipcMain.handle("still:export", async (_e, req: {
     const r = await exportStill((params) => sup!.exportStill(params),
                                 { still, target: req.target, options, info: req.info,
                                   ...(fallbackDir ? { fallbackDir } : {}) },
-                                { ...settings, ...options }, app.getPath("temp"));
+                                // `stored`, never the merged options: the
+                                // destination folder and the strip are read
+                                // from here, and both are main's alone.
+                                stored, app.getPath("temp"));
     // Only a save is worth revealing. A copy's file lives in the cache and
     // exists so the pasteboard's URL points somewhere, not for the user.
     if (req.target.file && r.file) lastStillFile = r.file;
