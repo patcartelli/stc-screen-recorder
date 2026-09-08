@@ -1,9 +1,34 @@
 # STC-292 runbook — global hotkey and menu-bar quick capture
 
-Written on Linux, so **nothing about the menu bar's appearance, the Dock's
-behaviour or the shutter sound has been seen or heard.** The suite proves the
-app's side of every contract here; the window server's side, the speaker's side
-and the eye's side are what this file is for.
+Written on Linux, so the suite proves the app's side of every contract here;
+the window server's side, the speaker's side and the eye's side are what this
+file is for.
+
+## Confirmed on hardware, 2026-09-08
+
+| | |
+|---|---|
+| Menu-bar item present, icon legible, inverts in Dark appearance | ✅ §1 |
+| The three captures render `⌃⌥⇧⌘1/2/3` as glyphs, not literal text | ✅ §1 |
+| ⌘W removes the Dock icon; the menu-bar item stays; the app keeps running | ✅ §2 |
+| Open Library brings the icon back and the window to the FRONT | ✅ §2 |
+| ⌃⌥⇧⌘3 with another app frontmost: fires, **no overlay**, one shutter sound, a shot on disk | ✅ §3, §5 |
+
+That is the whole full-display hotkey path, end to end, on a real Mac — the
+hotkey reaching a background app, the overlay-less capture, the sound, and the
+file. It is the part no automated test in this repo can reach.
+
+## Still unverified
+
+* **⌃⌥⇧⌘1 and ⌃⌥⇧⌘2** — the two that open the overlay. §3.
+* **Any hotkey during a live recording.** §4.
+* **The shutter obeying the setting when it is turned OFF**, and at zero alert
+  volume. Only the on-and-audible case has been heard. §5.
+* **Rebinding by hand, and the third-party conflict wording.** §6 — step 5 needs
+  a second app holding a key and cannot be produced any other way.
+* **The permission round trip** — `tccutil reset`, Screen Recording only, hotkey
+  to saved shot. §7. This is the ticket's third acceptance criterion and the
+  largest thing still open.
 
 Everything below assumes `npm run app:build && npx electron .` (or
 `npm run app:start`) on the Mac, with the real helper built.
@@ -30,6 +55,10 @@ Do not re-litigate these by hand; they are checked on every `npm test`.
 ---
 
 ## 1. The menu-bar item — look at it
+
+**Confirmed 2026-09-08: the icon is legible, it inverts in Dark appearance, and
+the accelerators render as glyphs.** Re-run this after any change to
+`tray-menu.ts` or `tray.ts`.
 
 `npm run app:start`, then look at the right-hand end of the menu bar.
 
@@ -92,6 +121,7 @@ npm run app:start
      the remaining candidate is that it is never reached or throws.
 4. Menu bar → Open Library. The Dock icon comes back with the window, and the
    window comes to the FRONT — not behind whatever you were using.
+   **Confirmed 2026-09-08.**
 5. Menu bar → Quit. The app ends and the menu-bar item goes.
 
 **An objective reading, if you would rather not judge by eye.** With no window
@@ -120,7 +150,7 @@ Do **not** click the recorder first; the whole point is that it is not frontmost
 |---|---|
 | ⌃⌥⇧⌘1 | the dimming overlay appears on every display, in **region** mode (crosshair). Drag, Return. |
 | ⌃⌥⇧⌘2 | the overlay appears in **window** mode — windows highlight as the pointer moves; no crosshair. Click one. |
-| ⌃⌥⇧⌘3 | **no overlay at all.** One shutter sound, and a new shot directory. |
+| ⌃⌥⇧⌘3 | **no overlay at all.** One shutter sound, and a new shot directory. **Confirmed 2026-09-08 with another app frontmost.** |
 
 For each: a new directory under `~/Desktop/stc/` (or `$STC_RECORDINGS_DIR`)
 holding `frame.png` and `shot.json`.
@@ -152,6 +182,11 @@ Start a recording in the app. While it runs, press each of the three hotkeys.
 ## 5. The shutter sound
 
 The system's own `Grab.aif`, at the alert volume, through `afplay`.
+
+**Step 1 is confirmed 2026-09-08 — the shutter is audible on a real capture, so
+the sound file is where this expects it to be on current macOS.** Steps 2-4, the
+ones that prove it OBEYS the setting rather than merely making a noise, are the
+part still to do.
 
 1. Sound on: System Settings › Sound › **Play user interface sound effects**
    ticked. Press ⌃⌥⇧⌘3. **One shutter, at the same volume as macOS's own ⌘⇧3.**
