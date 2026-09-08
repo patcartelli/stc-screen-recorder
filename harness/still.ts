@@ -52,7 +52,8 @@ function makeCapture(): HTMLCanvasElement {
   return c;
 }
 
-function shotFor(mode: DecorationMode, canvasPreset = "natural"): Shot {
+function shotFor(mode: DecorationMode, canvasPreset = "natural",
+                 annotations: unknown[] = []): Shot {
   const dec = decorationForMode(mode, { canvas: canvasPreset as never });
   const base: Record<string, unknown> = {
     version: 1,
@@ -64,6 +65,10 @@ function shotFor(mode: DecorationMode, canvasPreset = "natural"): Shot {
     },
     decoration: JSON.parse(JSON.stringify(dec)),
   };
+  if (annotations.length > 0) {
+    base.version = 2;   // the minimum version that can express annotations
+    (base.decoration as Record<string, unknown>).annotations = annotations;
+  }
   if (mode === "selected-area") {
     base.kind = "display-crop";
     base.crop = { x: 40, y: 30, width: FRAME_W, height: FRAME_H };
@@ -116,10 +121,24 @@ export interface StillProbe {
   shadowRay: number[];
   /** Every pixel opaque? The test for "a background covers everything". */
   fullyOpaque: boolean;
+  /**
+   * A cross-section THROUGH an arrow's shaft where it passes over the window's
+   * transparent rounded corner (STC-295).
+   *
+   * The fourth acceptance criterion is "annotations composite correctly over
+   * transparent output modes, with no halo where an arrow crosses the window
+   * edge". A halo is a ring of partly-transparent pixels whose colour is
+   * NEITHER the accent nor the thing behind — which is what an outline stroke
+   * under the arrow would produce against nothing. Sampled perpendicular to
+   * the shaft, so it crosses stroke, antialiased edge and empty space in one
+   * line. Present only on the probe that draws one.
+   */
+  arrowCross?: Px[];
 }
 
-function render(mode: DecorationMode, canvasPreset: string): { probe: StillProbe; data: ImageData } {
-  const shot = shotFor(mode, canvasPreset);
+function render(mode: DecorationMode, canvasPreset: string,
+                annotations: unknown[] = []): { probe: StillProbe; data: ImageData } {
+  const shot = shotFor(mode, canvasPreset, annotations);
   const layout = layoutStill(shot);
   const cv = document.createElement("canvas");
   cv.width = layout.canvas.width;
@@ -165,8 +184,47 @@ function render(mode: DecorationMode, canvasPreset: string): { probe: StillProbe
       outsideCorner,
       canvasCorner: pixelAt(data, 0, 0),
       fringe, shadowRay, fullyOpaque,
+      ...(annotations.length > 0 ? { arrowCross: arrowCrossSection(data, content) } : {}),
     },
   };
+}
+
+/**
+ * A line of pixels ACROSS the arrow, out where the window's corner is
+ * transparent (STC-295).
+ *
+ * The probe arrow runs from the capture's top-left corner (0,0 normalised —
+ * outside the rounded corner, so genuinely nothing behind it) diagonally
+ * inward. Sampling perpendicular to that 45-degree shaft means walking the
+ * anti-diagonal, which crosses empty space, the antialiased edge, the stroke,
+ * and out again. Taken near the corner so every sample is over transparency
+ * rather than over the window's own fill.
+ */
+function arrowCrossSection(d: ImageData, content: { x: number; y: number }): Px[] {
+  const out: Px[] = [];
+  // A point ON the shaft that is OUTSIDE the window's rounded corner.
+  //
+  // Getting this wrong is easy and the gate caught it: (8, 8) is 22.6 px from
+  // the corner arc's centre at (R, R) with R = 24, so it is INSIDE the window
+  // and every sample came back as the window's own fill — which the halo
+  // assertion then correctly reported as "not the accent". The sample point
+  // has to be outside the arc: at (6, 6) the distance is 25.5 > R.
+  const S = 6;
+  const REACH = 8;   // ±8 along the anti-diagonal keeps every sample outside too
+  const cx = content.x + S;
+  const cy = content.y + S;
+  for (let t = -REACH; t <= REACH; t++) {
+    // Perpendicular to a 45-degree shaft is the other diagonal.
+    const x = cx + t * 0.7071;
+    const y = cy - t * 0.7071;
+    // Belt and braces: skip anything the capture would have painted anyway, so
+    // the assertion can only ever be about pixels over genuine transparency.
+    const rx = x - content.x, ry = y - content.y;
+    if (rx < CORNER_RADIUS && ry < CORNER_RADIUS &&
+        Math.hypot(CORNER_RADIUS - rx, CORNER_RADIUS - ry) <= CORNER_RADIUS) continue;
+    out.push(pixelAt(d, x, y));
+  }
+  return out;
 }
 
 /**
@@ -306,6 +364,18 @@ window.__stillGate = async () => {
     p.mode = `window-only@${preset}`;
     probes.push(p);
   }
+  // Markup over a genuinely transparent mode (STC-295). The arrow runs from
+  // the capture's very corner — which is OUTSIDE the window's rounded corner,
+  // so there is nothing behind it — diagonally into the window, which is the
+  // only place an annotation can cross the window's edge at all: annotations
+  // are normalised to the capture, so they cannot leave the content rect.
+  const marked = render("window-only", "natural", [
+    { kind: "arrow", from: { x: 0, y: 0 }, to: { x: 0.35, y: 0.35 }, weight: "bold" },
+    { kind: "box", shape: "rect", rect: { x: 0.55, y: 0.2, width: 0.3, height: 0.3 }, weight: "regular" },
+    { kind: "text", at: { x: 0.1, y: 0.75 }, text: "the thing", size: "regular" },
+  ]).probe;
+  marked.mode = "window-only+annotations";
+  probes.push(marked);
   mark("still gate: rendered");
 
   const a = render("window-shadow-background", "natural").probe.hash;

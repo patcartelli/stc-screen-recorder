@@ -1,7 +1,8 @@
 import type { Background } from "./shot.js";
-import type { StillLayout } from "./still-decorate.js";
+import type { AnnotationLayout, StillLayout } from "./still-decorate.js";
 import { drawCursor } from "./cursor-art.js";
 import { REDACTION_FILL_ON_LIGHT, fillForLuminance, meanLuminance } from "./still-redact.js";
+import { ANNOTATION_ACCENT, ANNOTATION_LINE_HEIGHT, annotationFont } from "./still-annotate.js";
 
 /**
  * The decorated still, drawn (STC-291). Everything it draws was decided by
@@ -58,6 +59,13 @@ export interface StillRenderContext {
   strokeStyle: string;
   lineWidth: number;
   lineJoin: string;
+  /** Annotation (STC-295): round caps, so an arrow's shaft does not end in a chisel. */
+  lineCap: string;
+  font: string;
+  textBaseline: string;
+  fillText(text: string, x: number, y: number): void;
+  ellipse(x: number, y: number, rx: number, ry: number,
+          rotation: number, start: number, end: number): void;
 }
 
 interface GradientLike { addColorStop(offset: number, color: string): void }
@@ -229,6 +237,88 @@ export function renderStill(ctx: StillRenderContext, sources: StillSources,
     const c = layout.cursor;
     drawCursor(ctx as never, c.shape, c.x, c.y, c.pxPerPoint);
   }
+
+  // LAST: markup is a pass over the decorated still (STC-295), which is the
+  // exact opposite of redaction. A redaction composites INTO the picture,
+  // before the decoration and before the encode, because it must be
+  // irreversible; an annotation sits on top of the finished thing, because it
+  // is a comment about the picture rather than part of it — and because that
+  // is what lets it cross the window's edge onto the background, which is
+  // where a caption or an arrow's tail usually wants to be.
+  if (layout.annotations.length > 0) drawAnnotations(ctx, layout.annotations);
+}
+
+/**
+ * Markup, in one accent colour with no outline and no shadow.
+ *
+ * The absent outline is the fourth acceptance criterion, discharged by
+ * construction rather than by testing for it afterwards. The obvious way to
+ * make markup legible on any background is a contrasting outline under the
+ * stroke — and where an arrow crosses the window edge into transparent pixels,
+ * that outline's own antialiased edge blends toward nothing and reads as a
+ * halo. One flat colour over `source-over` cannot produce one: every pixel the
+ * pass touches is either accent or an antialiased blend between accent and
+ * whatever is genuinely behind it.
+ *
+ * `globalAlpha` is forced to 1 for the same reason the redaction pass does it
+ * — not because anything above leaves it changed, but so that a future edit
+ * cannot make markup translucent without deleting a line that says why not.
+ */
+export function drawAnnotations(ctx: StillRenderContext,
+                                annotations: readonly AnnotationLayout[]): void {
+  ctx.save();
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = ANNOTATION_ACCENT;
+  ctx.strokeStyle = ANNOTATION_ACCENT;
+  ctx.lineJoin = "round";
+  ctx.lineCap = "round";
+  for (const a of annotations) {
+    if (a.kind === "arrow") {
+      ctx.lineWidth = a.strokePx;
+      ctx.beginPath();
+      ctx.moveTo(a.geometry.shaft.from.x, a.geometry.shaft.from.y);
+      ctx.lineTo(a.geometry.shaft.to.x, a.geometry.shaft.to.y);
+      ctx.stroke();
+      const [tip, left, right] = a.geometry.head;
+      ctx.beginPath();
+      ctx.moveTo(tip.x, tip.y);
+      ctx.lineTo(left.x, left.y);
+      ctx.lineTo(right.x, right.y);
+      ctx.closePath();
+      ctx.fill();
+    } else if (a.kind === "box") {
+      ctx.lineWidth = a.strokePx;
+      ctx.beginPath();
+      if (a.shape === "ellipse") {
+        ctx.ellipse(a.rect.x + a.rect.width / 2, a.rect.y + a.rect.height / 2,
+                    Math.max(0, a.rect.width / 2), Math.max(0, a.rect.height / 2),
+                    0, 0, Math.PI * 2);
+      } else {
+        // Built from lines rather than `strokeRect` so the whole pass needs one
+        // path primitive set, and so `lineJoin: round` shapes the corners the
+        // same way it shapes the arrow head.
+        ctx.moveTo(a.rect.x, a.rect.y);
+        ctx.lineTo(a.rect.x + a.rect.width, a.rect.y);
+        ctx.lineTo(a.rect.x + a.rect.width, a.rect.y + a.rect.height);
+        ctx.lineTo(a.rect.x, a.rect.y + a.rect.height);
+        ctx.closePath();
+      }
+      ctx.stroke();
+    } else {
+      // `top` baseline, so `at` means the visual top-left rather than a
+      // baseline the author would have to reason about. Lines are laid out
+      // from the font size rather than measured: `measureText` is the one
+      // thing here that differs between rasterisers, and the criterion is that
+      // preview and export agree — which they do only if neither measures.
+      ctx.font = annotationFont(a.sizePx);
+      ctx.textBaseline = "top";
+      const lines = a.text.split("\n");
+      lines.forEach((line, i) => {
+        ctx.fillText(line, a.x, a.y + i * a.sizePx * ANNOTATION_LINE_HEIGHT);
+      });
+    }
+  }
+  ctx.restore();
 }
 
 /**

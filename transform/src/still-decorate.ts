@@ -2,6 +2,10 @@ import type {
   Background, Decoration, DecorationMode, Rect, Shadow, Shot,
 } from "./shot.js";
 import type { CursorShape } from "./types.js";
+import {
+  ANNOTATION_TEXT_SIZES, ANNOTATION_WEIGHTS, arrowGeometry,
+  type Annotation, type ArrowGeometry, type BoxShape,
+} from "./still-annotate.js";
 
 /**
  * Where everything goes in a decorated still (STC-291), decided without a
@@ -57,6 +61,12 @@ export interface CursorLayout {
   pxPerPoint: number;
 }
 
+/** An annotation resolved into output pixels, ready to draw and nothing else. */
+export type AnnotationLayout =
+  | { kind: "arrow"; geometry: ArrowGeometry; strokePx: number }
+  | { kind: "box"; shape: BoxShape; rect: Rect; strokePx: number }
+  | { kind: "text"; x: number; y: number; text: string; sizePx: number };
+
 export interface StillLayout {
   /** The output image. */
   canvas: Size;
@@ -78,6 +88,16 @@ export interface StillLayout {
   cursor?: CursorLayout;
   /** Solid fills over the capture, already in output pixels. */
   redactions: Rect[];
+  /**
+   * Markup over the DECORATED still (STC-295), already in output pixels.
+   *
+   * Positioned against the CONTENT rect exactly as the redactions are, which is
+   * what makes the ticket's second acceptance criterion structural: change the
+   * crop, the padding or the canvas preset and an annotation moves with the
+   * picture, because the only thing it was ever expressed in terms of is the
+   * picture.
+   */
+  annotations: AnnotationLayout[];
 }
 
 /**
@@ -136,6 +156,7 @@ export function decorationForMode(mode: DecorationMode,
     canvas: over.canvas ?? "natural",
     cursor: over.cursor ?? false,
     redactions: over.redactions ?? [],
+    annotations: over.annotations ?? [],
     paddingPct: over.paddingPct ?? PRESET_PADDING_PCT[mode],
     ...(wantsShadow ? { shadow: over.shadow ?? { ...PRESET_SHADOW } } : {}),
     ...(wantsBackground ? { background: over.background ?? { ...PRESET_BACKGROUND } } : {}),
@@ -271,6 +292,46 @@ export function pxPerPointOf(shot: Shot): number {
     : shot.display.backingScale;
 }
 
+/** A normalised point over the capture, in output pixels. */
+function pointToPixels(p: { x: number; y: number }, content: Rect): { x: number; y: number } {
+  return { x: content.x + p.x * content.width, y: content.y + p.y * content.height };
+}
+
+/**
+ * Annotations in output pixels.
+ *
+ * Stroke widths and text sizes are POINTS at the capture's scale and go through
+ * `pxPerPoint`, the same path the shadow takes — so a 1x and a 2x capture of the
+ * same window get markup of the same apparent size. The arrow's geometry is
+ * computed HERE rather than in the draw call so that the shape is checkable
+ * without a rasteriser, and so a future hit-test cannot disagree with what was
+ * drawn.
+ */
+export function annotationLayouts(annotations: readonly Annotation[], content: Rect,
+                                  pxPerPoint: number): AnnotationLayout[] {
+  return annotations.map((a) => {
+    if (a.kind === "arrow") {
+      const strokePx = ANNOTATION_WEIGHTS[a.weight] * pxPerPoint;
+      return {
+        kind: "arrow" as const, strokePx,
+        geometry: arrowGeometry(pointToPixels(a.from, content), pointToPixels(a.to, content), strokePx),
+      };
+    }
+    if (a.kind === "box") {
+      const origin = pointToPixels({ x: a.rect.x, y: a.rect.y }, content);
+      return {
+        kind: "box" as const, shape: a.shape,
+        strokePx: ANNOTATION_WEIGHTS[a.weight] * pxPerPoint,
+        rect: { x: origin.x, y: origin.y,
+                width: a.rect.width * content.width, height: a.rect.height * content.height },
+      };
+    }
+    const at = pointToPixels(a.at, content);
+    return { kind: "text" as const, x: at.x, y: at.y, text: a.text,
+             sizePx: ANNOTATION_TEXT_SIZES[a.size] * pxPerPoint };
+  });
+}
+
 /**
  * Everything `still-render.ts` needs, from the document alone.
  *
@@ -318,6 +379,7 @@ export function layoutStill(shot: Shot): StillLayout {
   const layout: StillLayout = {
     canvas, content, alpha,
     redactions: dec.redactions.map((r) => redactionToPixels(r, content)),
+    annotations: annotationLayouts(dec.annotations, content, pxPerPoint),
   };
   if (shadow) layout.shadow = shadow;
   if (wantsBackground && dec.background) layout.background = dec.background;

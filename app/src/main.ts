@@ -12,7 +12,7 @@ import {
   exportStill, resolveExportOptions, type CompositedStill, type ExportTarget,
 } from "./still-io.js";
 import { colorSpaceFor, type ExportOptions } from "@transform/still-export.js";
-import { parseShot } from "@transform/shot.js";
+import { parseShot, shotForWrite } from "@transform/shot.js";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { existsSync, readdirSync } from "node:fs";
@@ -847,7 +847,11 @@ ipcMain.handle("still:writeShot", async (_e, dir: string, redactions: unknown) =
     ...stored,
     decoration: { ...stored.decoration, redactions },
   });
-  await writeFile(file, JSON.stringify(next, null, 2));
+  // Through `shotForWrite`, which decides the VERSION: a shot with no
+  // annotations stays shot-1 and must not carry the v2-only key, since shot-1
+  // declares additionalProperties: false and a document that fails its own
+  // schema is the defect this project has now paid for three times.
+  await writeFile(file, JSON.stringify(shotForWrite(next), null, 2));
   // The library's cached thumbnail (STC-294) was rendered from the document
   // that just changed, so it now shows a decoration this shot no longer has.
   // Dropped rather than re-rendered: this process has no canvas, and the grid
