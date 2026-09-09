@@ -5,6 +5,9 @@ import {
   uvRectToPixels,
 } from "./spaces.js";
 import { createCursorSim, type CursorSim } from "./cursor.js";
+import {
+  DEFAULT_ZOOM, FULL_FRAME, createZoomSim, zoomCrop, zoomWindows, type ZoomSim,
+} from "./zoom.js";
 
 /**
  * THE non-negotiable: render(project, session, t) → FrameState is a pure
@@ -33,6 +36,24 @@ export interface FrameState {
   cursor: CursorState & { pxPerPoint: number; style: CursorStyle };
   /** camera picture-in-picture, or null when there is none to draw */
   pip: PipState | null;
+  /**
+   * Which part of the capture to show, as a UV rect over it (STC-325).
+   *
+   * Always present, and `FULL_FRAME` when zoom is off — a null would make
+   * every sink write the same "or the whole thing" fallback, which is three
+   * copies of one rule and the shape of a defect this repo has fixed four
+   * times. While stage 2 is stubbed this is the full frame at every amount by
+   * construction, which is what makes `gate:identity` stage 1's acceptance:
+   * the whole derivation runs and the pixels must not move.
+   */
+  zoom: ZoomState;
+}
+
+export interface ZoomState {
+  /** 0 is the full frame, 1 is fully in. The spring's output, times intensity. */
+  amount: number;
+  /** UV over the capture. `FULL_FRAME` until stage 2 supplies a target. */
+  crop: { x: number; y: number; width: number; height: number };
 }
 
 export interface PipState {
@@ -78,12 +99,28 @@ function pipStateAt(project: Project, session: Session, tNs: number): PipState |
 }
 
 const simCache = new WeakMap<Session, CursorSim>();
+/** One sim per (session, easing preset) — see the note at the call site. */
+const zoomCache = new WeakMap<Session, Map<string, ZoomSim>>();
 
 export function render(project: Project, session: Session, tNs: number): FrameState {
   let sim = simCache.get(session);
   if (!sim) {
     sim = createCursorSim(session.events);
     simCache.set(session, sim);
+  }
+  // Memoised per (session, easing) for the same reason as the cursor's: every
+  // amount lives on the one canonical trajectory from tick 0, so a cached and
+  // a fresh sim are bit-identical. Keyed on the easing too, because changing
+  // the preset changes the trajectory and a stale sim would answer for the
+  // old one.
+  const zoomCfg = project.zoom ?? DEFAULT_ZOOM;
+  const zoomKey = `${zoomCfg.easing}`;
+  let zsims = zoomCache.get(session);
+  if (!zsims) { zsims = new Map(); zoomCache.set(session, zsims); }
+  let zsim = zsims.get(zoomKey);
+  if (!zsim) {
+    zsim = createZoomSim(zoomWindows(session.events), zoomCfg.easing);
+    zsims.set(zoomKey, zsim);
   }
 
   const tick = tickOf(tNs);
@@ -114,5 +151,22 @@ export function render(project: Project, session: Session, tNs: number): FrameSt
       pxPerPoint: project.cursor.scale * m.sx,
     },
     pip: pipStateAt(project, session, tNs),
+    zoom: zoomStateAt(zoomCfg, zsim, tick),
   };
+}
+
+/**
+ * Off means the full frame and an amount of zero — not a skipped spring.
+ *
+ * Reading the sim only when enabled would make "off" and "on with intensity 0"
+ * two different code paths for one visible result, and the cheaper of them is
+ * the one that never gets exercised.
+ */
+function zoomStateAt(cfg: { enabled: boolean; intensity: number },
+                     sim: ZoomSim, tick: number): ZoomState {
+  if (!cfg.enabled) return { amount: 0, crop: FULL_FRAME };
+  const amount = sim.amountAt(tick) * cfg.intensity;
+  // The target is stage 2's (STC-326). Until then it is the full frame, so
+  // this is the identity at every amount.
+  return { amount, crop: zoomCrop(amount, FULL_FRAME) };
 }

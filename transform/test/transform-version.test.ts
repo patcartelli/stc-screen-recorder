@@ -17,7 +17,7 @@ const load = (p: string) => JSON.parse(readFileSync(join(root, p), "utf8"));
  * transform: bump TRANSFORM_VERSION, add a TRANSFORM_HISTORY entry saying what
  * changed, then update this fingerprint. Never update the fingerprint alone.
  */
-const PINNED_FINGERPRINT = "795d7fb8";
+const PINNED_FINGERPRINT = "57b66bcc";
 
 describe("the transform version is honest about what it renders", () => {
   test("the fingerprint of every pixel-deciding constant is pinned to this version", () => {

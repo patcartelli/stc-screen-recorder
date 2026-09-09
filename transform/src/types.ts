@@ -89,9 +89,41 @@ export interface Trim {
   endNs: number;
 }
 
+/**
+ * How hard a zoom moves. The three named presets (STC-325).
+ *
+ * The NAME lives here with the other contract types and the NUMBERS live in
+ * `zoom.ts` — the same split `CursorShape` and `cursor-art.ts` already use,
+ * and it is what keeps `types.ts` free of a cycle: `zoom.ts` imports this
+ * file, so this file cannot import `zoom.ts`.
+ */
+export type EasingPreset = "calm" | "standard" | "snappy";
+
+/** Mirrors the optional `zoom` block in schema/project-4.schema.json (STC-325). */
+export interface Zoom {
+  /**
+   * Whether auto-zoom runs at all. The ticket's on/off.
+   *
+   * Defaults ON, and while stage 2 is stubbed that costs nothing: the target
+   * is the full frame, so the crop is the identity at every amount and no
+   * pixel moves. It is on by default so `gate:identity` exercises the whole
+   * derivation — windows, spring, per-tick amount, crop — without the gate
+   * having to hand-assemble a project outside `parseProject`, which is a
+   * defect CLAUDE.md already records finding in the harness.
+   *
+   * **Stage 2 must revisit this before it can point anywhere**: the moment the
+   * target stops being the full frame, this default decides whether every
+   * existing take suddenly zooms.
+   */
+  enabled: boolean;
+  /** How far in a fully-open window goes. 0 is no zoom; 1 is the preset's full amount. */
+  intensity: number;
+  easing: EasingPreset;
+}
+
 /** Mirrors schema/project-1.schema.json and schema/project-2.schema.json. */
 export interface Project {
-  version: 1 | 2 | 3;
+  version: 1 | 2 | 3 | 4;
   output: { fps: 60; width: number; height: number };
   /**
    * Which transform this edit was authored against (project-3, STC-308).
@@ -108,6 +140,13 @@ export interface Project {
   pip?: Pip;
   /** Absent means the full take. */
   trim?: Trim;
+  /**
+   * Auto-zoom (project-4, STC-325). Absent on every document written before
+   * it, which `parseProject` fills with the default rather than leaving
+   * undefined — a consumer that had to tell "off" from "older than zoom"
+   * would be answering a question the render does not care about.
+   */
+  zoom?: Zoom;
 }
 
 /**

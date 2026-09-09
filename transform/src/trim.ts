@@ -1,4 +1,5 @@
-import type { Pip, Project, Trim } from "./types.js";
+import type { Pip, Project, Trim, Zoom } from "./types.js";
+import { DEFAULT_ZOOM, parseEasing } from "./zoom.js";
 import { TRANSFORM_VERSION } from "./transform-version.js";
 
 const NS_PER_S = 1_000_000_000;
@@ -76,6 +77,12 @@ export function defaultProject(
     output: { fps: 60, width, height },
     cursor: { style: "default", scale: 1 },
     transform: { version: TRANSFORM_VERSION },
+    // Here rather than only in `parseProject`, so EVERY path out of this file
+    // produces the same shape. The first draft added it in the parse and not
+    // the default, which made `parseProject(null)` and `parseProject({version:
+    // 2})` return documents with different keys — one function, two shapes,
+    // and the trim tests caught it by comparing the two.
+    zoom: { ...DEFAULT_ZOOM },
   };
   // A recorded camera track is part of the take, so a take that has one shows
   // its PiP without needing an edit document to say so.
@@ -105,7 +112,7 @@ export function parseProject(
   // neither; v2 predates the transform stamp. Refusing an older version here
   // would discard every project written before the change and silently
   // replace it with a default.
-  if (doc.version !== 1 && doc.version !== 2 && doc.version !== 3) return fallback;
+  if (doc.version !== 1 && doc.version !== 2 && doc.version !== 3 && doc.version !== 4) return fallback;
 
   const outW = Number.isInteger(doc.output?.width) ? doc.output.width : width;
   const outH = Number.isInteger(doc.output?.height) ? doc.output.height : height;
@@ -131,12 +138,56 @@ export function parseProject(
   if (t && Number.isInteger(t.startNs) && Number.isInteger(t.endNs) && t.startNs >= 0 && t.endNs >= 0) {
     project.trim = clampTrim(t.startNs, t.endNs, durationNs, 60);
   }
+  // Always present after a parse, never left undefined (project-4, STC-325).
+  // A document written before zoom existed is not "zoom off" — it is a
+  // document with no opinion — and making every consumer tell those apart
+  // would be asking them a question the render does not care about.
+  project.zoom = cleanZoom(doc.zoom);
   return project;
 }
 
+/**
+ * Each field on its own terms, the rule every parser here follows.
+ *
+ * `enabled` defaults ON rather than off, and while stage 2 is stubbed that
+ * costs nothing — the target is the full frame, so the crop is the identity
+ * and no pixel moves (`zoom.test.ts` asserts exactly that). It is on so
+ * `gate:identity` exercises the derivation without the harness hand-rolling a
+ * project outside this function, which is a defect CLAUDE.md records finding
+ * there once already.
+ */
+function cleanZoom(v: unknown): Zoom {
+  const d = (v && typeof v === "object" && !Array.isArray(v) ? v : {}) as Record<string, unknown>;
+  const intensity = typeof d.intensity === "number" && d.intensity >= 0 && d.intensity <= 1
+    ? d.intensity : DEFAULT_ZOOM.intensity;
+  return {
+    enabled: d.enabled === undefined ? DEFAULT_ZOOM.enabled : d.enabled === true,
+    intensity,
+    easing: parseEasing(d.easing),
+  };
+}
+
+/**
+ * The MINIMUM version that can express this document (the shot-1/shot-2 rule,
+ * STC-295).
+ *
+ * A project whose zoom is exactly the default says nothing project-4 can say,
+ * so it stays v3 and an older build can still read it. Change any zoom field
+ * and it becomes v4; change it back and it returns.
+ */
+function versionFor(project: Project): 3 | 4 {
+  const z = project.zoom;
+  if (!z) return 3;
+  const same = z.enabled === DEFAULT_ZOOM.enabled
+    && z.intensity === DEFAULT_ZOOM.intensity
+    && z.easing === DEFAULT_ZOOM.easing;
+  return same ? 3 : 4;
+}
+
 export function projectForWrite(project: Project, durationNs: number): Project {
+  const version = versionFor(project);
   const out: Project = {
-    version: 3,
+    version,
     output: project.output,
     cursor: project.cursor,
     // Re-stamped, not carried: what is written is what the CURRENT transform
@@ -148,5 +199,8 @@ export function projectForWrite(project: Project, durationNs: number): Project {
   // added since — so a take with a PiP would lose it on the next save.
   if (project.pip) out.pip = project.pip;
   if (!isFullTake(project, durationNs) && project.trim) out.trim = project.trim;
+  // Only when it says something v3 cannot. Writing the default block into
+  // every document would push every take to v4 for a setting nobody changed.
+  if (version === 4 && project.zoom) out.zoom = project.zoom;
   return out;
 }

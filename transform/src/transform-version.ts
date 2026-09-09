@@ -1,5 +1,6 @@
 import { SIM_HZ, EXPORT_FPS } from "./time.js";
 import { OMEGA, CHECKPOINT_INTERVAL } from "./cursor.js";
+import { EASING_PRESETS, HOLD_NS, LEAD_NS, MERGE_GAP_NS } from "./zoom.js";
 import {
   CURSOR_SHAPES, DEFAULT_CURSOR_SHAPE, OUTLINE_PT, CLICK_HIGHLIGHT_PT, CIRCLE_PT, artFor,
 } from "./cursor-art.js";
@@ -20,12 +21,13 @@ import {
  * anything that reaches the pixels fails until the version is bumped and the
  * history says what changed.
  */
-export const TRANSFORM_VERSION = 2;
+export const TRANSFORM_VERSION = 3;
 
 /** What each version rendered. The last entry is TRANSFORM_VERSION. */
 export const TRANSFORM_HISTORY: readonly { version: number; since: string; changed: string }[] = [
   { version: 1, since: "2026-08-24", changed: "placeholder circle cursor; 120 Hz spring, OMEGA 30, checkpoints every 1024 ticks" },
   { version: 2, since: "2026-09-02", changed: "macOS pointer artwork (arrow, I-beam, crosshair, pointing hand) drawn from events-2 cursor-shape events; circle kept as project.cursor.style \"circle\" (#65)" },
+  { version: 3, since: "2026-09-09", changed: "auto-zoom stage 1 (STC-325): windows derived from click events (300 ms lead, 2500 ms hold, 2500 ms merge) drive a critically damped 120 Hz spring; render() gains zoom.amount and zoom.crop. The crop is the IDENTITY at every amount until stage 2 supplies a target, so no pixel moves at this version — the bump records that the derivation now runs, not that the picture changed" },
 ];
 
 /**
@@ -39,6 +41,11 @@ export function transformFingerprint(): string {
     SIM_HZ, EXPORT_FPS, OMEGA, CHECKPOINT_INTERVAL,
     OUTLINE_PT, CLICK_HIGHLIGHT_PT, CIRCLE_PT, DEFAULT_CURSOR_SHAPE,
     art: CURSOR_SHAPES.map((s) => [s, artFor(s).path]),
+    // Auto-zoom's constants reach the pixels the moment stage 2 gives the
+    // crop a target, and they shape `zoom.amount` already. In the fingerprint
+    // now rather than when it becomes visible: a constant that changes the
+    // render but not the hash is exactly what this guard exists to prevent.
+    zoom: { LEAD_NS, HOLD_NS, MERGE_GAP_NS, EASING_PRESETS },
   };
   const text = JSON.stringify(inputs);
   let h = 0x811c9dc5;

@@ -14,6 +14,9 @@ import { recorder } from "./_canvas-recorder.js";
 function frameState(over: Partial<FrameState["cursor"]> = {}): FrameState {
   return {
     tick: 0, frameIndex: null, framePtsNs: null, pip: null,
+    // Full frame, zero amount: the compositor's job is the cursor, and a zoom
+    // that moved here would be testing two things at once.
+    zoom: { amount: 0, crop: { x: 0, y: 0, width: 1, height: 1 } },
     cursor: {
       x: 300.5, y: 200.25, vx: 0, vy: 0, pressed: false, visible: true,
       shape: "arrow", style: "default", pxPerPoint: 1.5, ...over,
