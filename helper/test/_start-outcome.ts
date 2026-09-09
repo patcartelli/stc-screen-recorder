@@ -102,8 +102,20 @@ export function explainFailedStart(started: StartOutcome, what: string): Error {
         `DISPLAY-BUSY: another SCStream of this project's is holding the display, so ${what} ` +
         "could not be exercised. This is NOT a grant problem — check for a leftover app " +
         "before changing anything in System Settings:\n" +
-        "    ps -Ao pid,command | grep -i '[s]tc-screen-recorder\\|[E]lectron'\n" +
-        `Kill it and run again. A genuinely missing grant reports "no-displays" instead. ${said}`,
+        "    ps -Ao pid,command | grep '[s]tc-screen-recorder'\n" +
+        // Scoped to THIS project's path and nothing else. The pattern used to
+        // carry `\\|[E]lectron`, which matches every other Electron app's
+        // crashpad helper — on 2026-09-09 it returned nine lines of which five
+        // were Linear, Discord, Claude and Wispr Flow, and the two that
+        // mattered were in the middle. Both of ours (the app and the helper it
+        // spawned) have the repo path in argv, so the alternation bought
+        // nothing and cost the signal.
+        "Since STC-292 the app is MENU-BAR-FIRST: closing the window does not quit it, and the " +
+        "Dock icon goes with the last window — so it can hold the display while being invisible " +
+        "in both places you would look. Quit it from the MENU BAR rather than killing it, " +
+        "unless you know it is idle: `ps` cannot tell you whether a take is live, and killing " +
+        "one mid-recording loses it. " +
+        `A genuinely missing grant reports "no-displays" instead. ${said}`,
       );
     default:
       return new Error(
