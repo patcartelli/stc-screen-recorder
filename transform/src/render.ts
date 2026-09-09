@@ -2,8 +2,12 @@ import type { CursorState, CursorStyle, Project, Session } from "./types.js";
 import { frameIndexAt, tickOf } from "./time.js";
 import {
   displayToOutput, fixedCornerPipUv, mapPoint, mapVector, outputRect, roundRect,
-  uvRectToPixels,
+  uvRectToPixels, type Rect,
 } from "./spaces.js";
+import {
+  ZOOM_PRESETS, createZoomSim, zoomWindows, type ZoomPreset, type ZoomSim,
+} from "./zoom.js";
+import { DEFAULT_ZOOM } from "./trim.js";
 import { createCursorSim, type CursorSim } from "./cursor.js";
 
 /**
@@ -33,7 +37,32 @@ export interface FrameState {
   cursor: CursorState & { pxPerPoint: number; style: CursorStyle };
   /** camera picture-in-picture, or null when there is none to draw */
   pip: PipState | null;
+  /** auto-zoom (STC-325). Always present; `crop` is the whole frame while stage 2 is stubbed */
+  zoom: ZoomState;
 }
+
+/**
+ * Where the zoom is, at this instant.
+ *
+ * `amount` is stage 1's eased 0..1 — how far into the zoom we are. `crop` is
+ * stage 2's answer to *where*, as a UV rect over the CAPTURE: the same space
+ * a redaction lives in (spaces.ts), so it moves with the picture rather than
+ * with the canvas and needs no units of its own.
+ *
+ * **Stage 2 is not built, and `crop` is the whole frame at every amount.** So
+ * the zoom currently changes no pixels, and that is the point of shipping it
+ * this way: the machinery is in the render path and gated, and the only thing
+ * left for STC-326 to add is a rectangle. Wiring it later would mean landing
+ * the plumbing and the geometry in one change, with no run in between where
+ * the plumbing alone is known good.
+ */
+export interface ZoomState {
+  amount: number;
+  crop: Rect;
+}
+
+/** The whole capture, in UV. What `crop` is until STC-326 decides otherwise. */
+export const FULL_FRAME_UV: Rect = { x: 0, y: 0, width: 1, height: 1 };
 
 export interface PipState {
   frameIndex: number;
@@ -79,11 +108,34 @@ function pipStateAt(project: Project, session: Session, tNs: number): PipState |
 
 const simCache = new WeakMap<Session, CursorSim>();
 
+/**
+ * The zoom sim, memoised per session exactly as the cursor's is, and for the
+ * same reason: both replay one canonical trajectory from tick 0, so a cached
+ * answer and a fresh one are bit-identical.
+ *
+ * Keyed on the session AND the preset. It was keyed on the session alone while
+ * the easing was a constant, and the comment here said what to do when a
+ * project could choose one — this is that change. A cache that ignores an
+ * input is how two takes come to share one answer, and here it would have been
+ * worse than that: one take rendering with whichever preset happened to be
+ * asked for first, for the rest of the process's life.
+ */
+const zoomCache = new WeakMap<Session, Map<ZoomPreset, ZoomSim>>();
+
 export function render(project: Project, session: Session, tNs: number): FrameState {
   let sim = simCache.get(session);
   if (!sim) {
     sim = createCursorSim(session.events);
     simCache.set(session, sim);
+  }
+
+  const zoom = project.zoom ?? DEFAULT_ZOOM;
+  let byPreset = zoomCache.get(session);
+  if (!byPreset) { byPreset = new Map(); zoomCache.set(session, byPreset); }
+  let zoomSim = byPreset.get(zoom.preset);
+  if (!zoomSim) {
+    zoomSim = createZoomSim(zoomWindows(session.events), ZOOM_PRESETS[zoom.preset]);
+    byPreset.set(zoom.preset, zoomSim);
   }
 
   const tick = tickOf(tNs);
@@ -114,5 +166,16 @@ export function render(project: Project, session: Session, tNs: number): FrameSt
       pxPerPoint: project.cursor.scale * m.sx,
     },
     pip: pipStateAt(project, session, tNs),
+    // Stage 2 stubbed: the amount is real and eased, the crop is the whole
+    // frame, so this is a no-op on the pixels by construction.
+    //
+    // `enabled` short-circuits to a flat zero rather than skipping the sim,
+    // so "off" and "on at intensity 0" are one code path to one visible
+    // result — the cheaper of two paths to the same answer is the one that
+    // never gets exercised.
+    zoom: {
+      amount: zoom.enabled ? zoomSim.amountAt(tick) * zoom.intensity : 0,
+      crop: FULL_FRAME_UV,
+    },
   };
 }

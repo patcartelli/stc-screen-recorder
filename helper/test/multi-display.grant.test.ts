@@ -20,6 +20,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Readable } from "node:stream";
 import AjvImport from "ajv";
+import { explainFailedStart, type StartOutcome } from "./_start-outcome.js";
 
 const Ajv = (AjvImport as any).default ?? AjvImport;
 const root = join(__dirname, "..", "..");
@@ -95,11 +96,8 @@ describe("multi-display capture (STC-247) — requires Screen Recording and two 
     const dir = session();
     h.send({ cmd: "start", dir, displayId: target.id, seq: 2 });
     const started = await waitFor(() => h.fd3.find((l) => l.seq === 2), 20_000, "start outcome");
-    if (started.ev !== "started" && started.code === "no-displays") {
-      throw new Error(
-        "SKIP-GRANT: this environment has no Screen Recording grant, so the multi-display path is " +
-        `unverified. start said: ${JSON.stringify(started)}`,
-      );
+    if (started.ev !== "started") {
+      throw explainFailedStart(started, "the multi-display path");
     }
     expect(started.ev, JSON.stringify(started)).toBe("started");
     expect(started.display, "started names the display it is capturing").toBe(target.id);
@@ -152,7 +150,7 @@ describe("multi-display capture (STC-247) — requires Screen Recording and two 
     h.send({ cmd: "start", dir: session(), displayId: 4_000_000_001, seq: 1 });
     const r = await waitFor(() => h.fd3.find((l) => l.seq === 1), 20_000, "start outcome");
     if (r.code === "no-displays") {
-      throw new Error(`SKIP-GRANT: no Screen Recording grant here; start said: ${JSON.stringify(r)}`);
+      throw explainFailedStart(r, "the display-not-found refusal");
     }
     expect(r.ev).toBe("error");
     expect(r.code).toBe("display-not-found");

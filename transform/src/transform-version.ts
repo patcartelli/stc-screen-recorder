@@ -19,6 +19,20 @@ import {
  * fingerprint below is what makes that honest — a test pins it, so changing
  * anything that reaches the pixels fails until the version is bumped and the
  * history says what changed.
+ *
+ * ## Auto-zoom is deliberately NOT here yet (STC-325)
+ *
+ * Stage 1 is in the render path and its constants (`ZOOM_LEAD_NS`, the hold,
+ * the merge gap, the easing presets) decide nothing a viewer can see: stage 2
+ * is stubbed, the crop is the whole frame, and `composite` takes the same
+ * five-argument `drawImage` it always did. No pixel differs, so bumping the
+ * version would claim a change that did not happen and put a lie in the
+ * history — the stamp exists to EXPLAIN different pixels.
+ *
+ * The moment STC-326 makes the crop real, both halves are owed in the same
+ * change: add zoom's constants to `transformFingerprint` below and bump. This
+ * note is here rather than in the ticket because this file is where the
+ * omission would be made.
  */
 export const TRANSFORM_VERSION = 2;
 
