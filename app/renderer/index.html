@@ -102,6 +102,12 @@
     .sizebar { display: flex; align-items: center; gap: 8px; margin-top: 6px; font-size: 12px; }
     .sizebar select { font-size: 12px; }
     #outsizenote { opacity: .7; }
+    .legibar { display: flex; align-items: center; gap: 8px; margin-top: 6px; font-size: 12px; flex-wrap: wrap; }
+    .legibar select, .legibar input { font-size: 12px; }
+    #embedwidth { width: 5.5em; }
+    #textpt { width: 4em; }
+    #legibility { opacity: .7; font-variant-numeric: tabular-nums; }
+    #legibility.warn { opacity: 1; color: #b34; font-weight: 600; }
     #exportbar { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
     .sharebar { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
     #sharestatus { font-size: 12px; opacity: .75; }
@@ -224,6 +230,25 @@
       <label for="outsize">Export size</label>
       <select id="outsize"></select>
       <span id="outsizenote"></span>
+    </div>
+    <!--
+      Legibility at embed width (STC-318). The take is 4K; the demo is watched
+      in a column a fraction of that wide, and nobody in the category measures
+      what that does to the text. Its own row under the size picker because it
+      answers a different question: the size picker is about file weight, and
+      this is about whether anyone can read it — the output width cancels out
+      of the arithmetic entirely.
+    -->
+    <div class="legibar">
+      <label for="embedtarget">Shown at</label>
+      <select id="embedtarget"></select>
+      <input id="embedwidth" type="number" min="80" max="4096" step="1" aria-label="Embed width in CSS pixels">
+      <label for="textpt">Text</label>
+      <input id="textpt" type="number" min="1" max="144" step="0.5" aria-label="Base text size in points">
+      <label for="vieweye" title="Draw the preview at the embed width, 1:1 — what the viewer actually sees">
+        <input id="vieweye" type="checkbox"> Viewer's eye
+      </label>
+      <span id="legibility"></span>
     </div>
     <div id="exportbar" hidden>
       <progress id="exportprogress" max="1000" value="0"></progress>

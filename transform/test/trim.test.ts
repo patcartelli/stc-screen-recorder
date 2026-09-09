@@ -2,6 +2,9 @@ import { describe, test, expect } from "vitest";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { withoutComments } from "./_source-text.js";
+import AjvImport from "ajv";
+import { DEFAULT_TEXT_PT } from "../src/legibility.js";
+import type { Project } from "../src/types.js";
 import {
   availableFrames, clampTrim, defaultProject, estimateExportMs, exportWindow,
   isFullTake, minTrimNs, parseProject, projectForWrite, EXPORT_MS_PER_FRAME,
@@ -90,6 +93,99 @@ describe("projectForWrite", () => {
   test("keeps a real trim", () => {
     const p = defaultProject(640, 360, { startNs: NS, endNs: 2 * NS });
     expect(projectForWrite(p, duration).trim).toEqual(p.trim);
+  });
+});
+
+describe("project-5: the recorded app's text size (STC-318)", () => {
+  const Ajv = (AjvImport as any).default ?? AjvImport;
+  const schema = (n: number) => new Ajv({ allErrors: true, strict: true })
+    .compile(JSON.parse(readFileSync(join(root, `schema/project-${n}.schema.json`), "utf8")));
+  const validate4 = schema(4);
+  const validate5 = schema(5);
+  const raw = (textPt: unknown) => ({
+    version: 5, transform: { version: 1 }, output: { fps: 60, width: 640, height: 360 },
+    cursor: { style: "default", scale: 1 }, textPt,
+  });
+
+  test("always present after a parse, at every document version", () => {
+    for (const doc of [null, { version: 1 }, { version: 3 }, { version: 4 }, raw(undefined)]) {
+      expect(parseProject(doc, 640, 360, duration).textPt).toBe(DEFAULT_TEXT_PT);
+    }
+    expect(defaultProject(640, 360).textPt).toBe(DEFAULT_TEXT_PT);
+  });
+
+  test("carries a real value and falls back on nonsense, never throwing", () => {
+    expect(parseProject(raw(16), 640, 360, duration).textPt).toBe(16);
+    expect(parseProject(raw(9.5), 640, 360, duration).textPt).toBe(9.5);
+    for (const bad of [0, -1, 200, "13", null, NaN]) {
+      expect(parseProject(raw(bad), 640, 360, duration).textPt,
+        `textPt: ${JSON.stringify(bad)}`).toBe(DEFAULT_TEXT_PT);
+    }
+  });
+
+  test("the default text size writes v3 with no textPt key", () => {
+    const out = projectForWrite(defaultProject(640, 360), duration);
+    expect(out.version).toBe(3);
+    expect(out.textPt).toBeUndefined();
+  });
+
+  test("a changed text size writes v5, and round-trips", () => {
+    const p: Project = { ...defaultProject(640, 360), textPt: 16 };
+    const out = projectForWrite(p, duration);
+    expect(out.version).toBe(5);
+    expect(out.textPt).toBe(16);
+    expect(validate5(out), JSON.stringify(validate5.errors, null, 2)).toBe(true);
+    expect(parseProject(out, 640, 360, duration).textPt).toBe(16);
+  });
+
+  test("V5 IS A SUPERSET OF V4 — promoting the version must not drop the zoom", () => {
+    // The bug this guards: `if (version === 4 && zoom) out.zoom = ...` reads
+    // correctly and silently discards a non-default zoom the moment textPt
+    // pushes the document to 5. The setting would vanish on the very write
+    // that promoted it, and every test about zoom alone would still pass.
+    const p: Project = {
+      ...defaultProject(640, 360),
+      textPt: 16,
+      zoom: { enabled: false, intensity: 0.25, preset: "calm" },
+    };
+    const out = projectForWrite(p, duration);
+    expect(out.version).toBe(5);
+    expect(out.textPt).toBe(16);
+    expect(out.zoom).toEqual({ enabled: false, intensity: 0.25, preset: "calm" });
+    expect(validate5(out), JSON.stringify(validate5.errors, null, 2)).toBe(true);
+    const back = parseProject(out, 640, 360, duration);
+    expect(back.textPt).toBe(16);
+    expect(back.zoom).toEqual({ enabled: false, intensity: 0.25, preset: "calm" });
+  });
+
+  test("a v5 document with a DEFAULT zoom does not carry the zoom key", () => {
+    // The minimum-version rule still applies per field: v5 is needed for the
+    // text size and says nothing about zoom, so a default zoom stays absent.
+    const out = projectForWrite({ ...defaultProject(640, 360), textPt: 16 }, duration);
+    expect(out.version).toBe(5);
+    expect(out.zoom).toBeUndefined();
+    expect(validate5(out), JSON.stringify(validate5.errors, null, 2)).toBe(true);
+  });
+
+  test("changing the text size BACK returns the document to its old version", () => {
+    const p: Project = { ...defaultProject(640, 360), textPt: 16 };
+    expect(projectForWrite(p, duration).version).toBe(5);
+    p.textPt = DEFAULT_TEXT_PT;
+    expect(projectForWrite(p, duration).version).toBe(3);
+    p.zoom = { enabled: false, intensity: 1, preset: "standard" };
+    expect(projectForWrite(p, duration).version).toBe(4);
+    expect(validate4(projectForWrite(p, duration))).toBe(true);
+  });
+
+  test("project-5 refuses what the parser refuses", () => {
+    const doc = (textPt: unknown) => ({
+      version: 5, transform: { version: 1 }, output: { fps: 60, width: 640, height: 360 },
+      cursor: { style: "default", scale: 1 }, textPt,
+    });
+    expect(validate5(doc(0))).toBe(false);
+    expect(validate5(doc(200))).toBe(false);
+    expect(validate5(doc("13"))).toBe(false);
+    expect(validate5(doc(13))).toBe(true);
   });
 });
 
