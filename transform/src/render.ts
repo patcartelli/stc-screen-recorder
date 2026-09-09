@@ -4,7 +4,10 @@ import {
   displayToOutput, fixedCornerPipUv, mapPoint, mapVector, outputRect, roundRect,
   uvRectToPixels, type Rect,
 } from "./spaces.js";
-import { createZoomSim, zoomWindows, type ZoomSim } from "./zoom.js";
+import {
+  ZOOM_PRESETS, createZoomSim, zoomWindows, type ZoomPreset, type ZoomSim,
+} from "./zoom.js";
+import { DEFAULT_ZOOM } from "./trim.js";
 import { createCursorSim, type CursorSim } from "./cursor.js";
 
 /**
@@ -110,11 +113,14 @@ const simCache = new WeakMap<Session, CursorSim>();
  * same reason: both replay one canonical trajectory from tick 0, so a cached
  * answer and a fresh one are bit-identical.
  *
- * Keyed on the session alone, which is correct only while the easing preset is
- * a constant. When a project can choose one, this key has to include it — a
- * cache that ignores an input is how two takes come to share one answer.
+ * Keyed on the session AND the preset. It was keyed on the session alone while
+ * the easing was a constant, and the comment here said what to do when a
+ * project could choose one — this is that change. A cache that ignores an
+ * input is how two takes come to share one answer, and here it would have been
+ * worse than that: one take rendering with whichever preset happened to be
+ * asked for first, for the rest of the process's life.
  */
-const zoomCache = new WeakMap<Session, ZoomSim>();
+const zoomCache = new WeakMap<Session, Map<ZoomPreset, ZoomSim>>();
 
 export function render(project: Project, session: Session, tNs: number): FrameState {
   let sim = simCache.get(session);
@@ -123,10 +129,13 @@ export function render(project: Project, session: Session, tNs: number): FrameSt
     simCache.set(session, sim);
   }
 
-  let zoomSim = zoomCache.get(session);
+  const zoom = project.zoom ?? DEFAULT_ZOOM;
+  let byPreset = zoomCache.get(session);
+  if (!byPreset) { byPreset = new Map(); zoomCache.set(session, byPreset); }
+  let zoomSim = byPreset.get(zoom.preset);
   if (!zoomSim) {
-    zoomSim = createZoomSim(zoomWindows(session.events));
-    zoomCache.set(session, zoomSim);
+    zoomSim = createZoomSim(zoomWindows(session.events), ZOOM_PRESETS[zoom.preset]);
+    byPreset.set(zoom.preset, zoomSim);
   }
 
   const tick = tickOf(tNs);
@@ -159,6 +168,14 @@ export function render(project: Project, session: Session, tNs: number): FrameSt
     pip: pipStateAt(project, session, tNs),
     // Stage 2 stubbed: the amount is real and eased, the crop is the whole
     // frame, so this is a no-op on the pixels by construction.
-    zoom: { amount: zoomSim.amountAt(tick), crop: FULL_FRAME_UV },
+    //
+    // `enabled` short-circuits to a flat zero rather than skipping the sim,
+    // so "off" and "on at intensity 0" are one code path to one visible
+    // result — the cheaper of two paths to the same answer is the one that
+    // never gets exercised.
+    zoom: {
+      amount: zoom.enabled ? zoomSim.amountAt(tick) * zoom.intensity : 0,
+      crop: FULL_FRAME_UV,
+    },
   };
 }
