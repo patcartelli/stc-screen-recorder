@@ -211,6 +211,43 @@ describe("legibility at embed width (STC-318)", () => {
       .toEqual({ width: 1232, height: 694 });
   }, 60_000);
 
+  test("THE PIN DIES WITH THE PLAYER — a close and re-open clears it", async () => {
+    // The display fix pins the stage's CSS width to the embed width while the
+    // viewer's eye is on. That pin is justified by ONE player, and nothing was
+    // clearing it when that player went away: the next take opened with a
+    // fresh player whose `viewSize` is null and a checkbox reading OFF, on a
+    // canvas still displayed at the old embed width.
+    //
+    // Measured before the fix on this exact take: 1232 CSS px in a 465 px
+    // column, so the picture overflowed the player and scrolled — the toggle's
+    // effect with the toggle off, which is the same class of lie the pin was
+    // added to remove.
+    //
+    // A canvas-SIZE assertion cannot see it, for the third time in this file:
+    // the re-opened player renders at the export size perfectly correctly. It
+    // is only what the element is DISPLAYED at that is wrong.
+    const { dir } = takeWithDisplay(1728);
+    const win = await openTake(dir);
+    const before = await stageCssWidth(win);
+
+    await win.check("#vieweye");
+    await expect.poll(() => stageCssWidth(win), { timeout: 20_000 }).toBe(1232);
+
+    // Closed with the toggle ON, which is the whole point — closing it with
+    // the toggle off passes with no fix at all.
+    await win.click("#closepreview");
+    await expect.poll(() => win.isVisible("#player"), { timeout: 20_000 }).toBe(false);
+    await win.click("#takes >> text=Preview");
+    await expect.poll(() => win.isVisible("#player"), { timeout: 30_000 }).toBe(true);
+
+    // The checkbox was always right; it is the canvas that disagreed with it.
+    expect(await win.isChecked("#vieweye")).toBe(false);
+    expect(await stageCssWidth(win)).toBe(before);
+    // Not merely "it changed": 1232 is what it was wrongly stuck at, so a fix
+    // that cleared the pin to some third width would pass a weaker check.
+    expect(before).not.toBe(1232);
+  }, 90_000);
+
   test("THE VIEWER'S EYE MOVES THE WHOLE RENDER, not just the canvas", async () => {
     // The load-bearing half, and the one a canvas-size assertion CANNOT make.
     // Resizing the canvas while still calling render() with the export's

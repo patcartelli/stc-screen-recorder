@@ -1674,6 +1674,20 @@ reachable via KVC (`setValue(3, forKey: "captureResolution")`, verified in phase
   three sizes** — what it is rendered at, what it is displayed at, and what is read back out of
   it — and a test naming only the first cannot see a fault in the other two.
 
+- **And then the FIX for that display bug outlived the thing that justified it (STC-318, #123).**
+  The CSS pin above is scoped to one player, and nothing cleared it when that player went away:
+  close the preview with the toggle on and open any take, and the new player has `viewSize` null
+  and a checkbox reading OFF on a canvas still displayed at the old embed width. Measured on a
+  1728-point take — 1232 CSS px in a 465 px column, so the picture overflowed the player and
+  scrolled, with nothing on screen saying why. The toggle's effect with the toggle off, which is
+  the same lie the pin was added to remove.
+  Cleared in `closePreview`, because `openPreviewOrThrow` begins with it and it is therefore the
+  single choke point every new player passes through — one owner beats two that must agree.
+  The lesson is not a fourth thing about canvases, it is about LIFETIMES: **when a fix pins global
+  state on behalf of one object, ask what clears it when that object dies**, and put the clear on
+  the path everything takes rather than on the paths that happen to set it. Watched failing before
+  the fix and mutation-proven after — removing the one line fails exactly one test of eleven.
+
 - **A native control can be a SECOND AUTHOR of the state your module owns, and the pure test
   cannot see it (STC-338).** `decideKey` correctly refuses a modifier chord — ⌘→ is the app's,
   not the scrubber's — and the playhead moved anyway, because `#scrub` is an `<input type=range>`
