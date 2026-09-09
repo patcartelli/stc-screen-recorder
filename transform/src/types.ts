@@ -1,3 +1,13 @@
+/**
+ * `ZoomPreset` is derived from `ZOOM_PRESETS` in zoom.ts (`keyof typeof`), so
+ * the preset NAMES have one source — the table itself. That makes this a
+ * cycle on paper (zoom.ts imports this file for `SessionEvent`), and an
+ * `import type` is erased entirely at build, so there is no cycle at runtime
+ * and none for tsc to resolve. Worth it: the alternative is restating the
+ * three names here and letting them drift from the table that defines them.
+ */
+import type { ZoomPreset } from "./zoom.js";
+
 /** Mirrors schema/events-1.schema.json and events-2.schema.json. All times are session-relative integer ns. */
 export interface MoveEvent {
   t: number;
@@ -89,9 +99,24 @@ export interface Trim {
   endNs: number;
 }
 
+/**
+ * Auto-zoom's user settings (project-4, STC-325).
+ *
+ * SETTINGS only. The windows are derived from the take's events every time
+ * (`zoomWindows`), never stored — which is what STC-324 means by "a re-take
+ * regenerates the derivation and keeps the overrides", and it costs nothing to
+ * honour now.
+ */
+export interface Zoom {
+  enabled: boolean;
+  /** Scales the eased amount; 0 is indistinguishable from off. */
+  intensity: number;
+  preset: ZoomPreset;
+}
+
 /** Mirrors schema/project-1.schema.json and schema/project-2.schema.json. */
 export interface Project {
-  version: 1 | 2 | 3;
+  version: 1 | 2 | 3 | 4;
   output: { fps: 60; width: number; height: number };
   /**
    * Which transform this edit was authored against (project-3, STC-308).
@@ -108,6 +133,12 @@ export interface Project {
   pip?: Pip;
   /** Absent means the full take. */
   trim?: Trim;
+  /**
+   * Absent on documents written before project-4. `parseProject` fills it, so
+   * nothing downstream has to tell "off" from "older than zoom" — a question
+   * the render does not care about.
+   */
+  zoom?: Zoom;
 }
 
 /**
