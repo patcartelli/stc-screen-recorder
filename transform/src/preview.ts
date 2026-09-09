@@ -72,6 +72,27 @@ export class PreviewPlayer {
     };
   }
 
+  /**
+   * Re-read `project.output` onto the canvas and repaint (STC-335).
+   *
+   * The canvas is sized once in the constructor, but `composite` reads
+   * `project.output` on EVERY draw — so a caller that changes the export size
+   * on the project this player was given would otherwise draw at the new size
+   * onto a canvas still at the old one, which is a scaled, offset picture
+   * rather than an error. This is the one call that keeps the two in step.
+   *
+   * The preview genuinely rendering at the export's resolution is the point,
+   * not a side effect: `#stage` is `width: 100%`, so nothing on screen moves,
+   * and what changes is how much detail is actually there — which is the
+   * question STC-318 is about and the reason to look before exporting.
+   */
+  async outputResized(): Promise<void> {
+    this.canvas.width = this.project.output.width;
+    this.canvas.height = this.project.output.height;
+    // Resizing a canvas clears it, so a repaint is required rather than tidy.
+    await this.seek(this.tNs);
+  }
+
   async seek(tNs: number): Promise<void> {
     this.tNs = Math.max(0, Math.min(tNs, this.durationNs));
     if (this.playing) {
