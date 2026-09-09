@@ -79,6 +79,7 @@ events → deterministic transform → CFR MP4 with cursor overlay.
 | `fixtures/` | hand-authored 5 s fixture session + deterministic display.mp4 generator |
 | `harness/` | vite-served browser harness hosting both sinks |
 | `scripts/gate.mjs` | increment-0 determinism gate (Playwright + real Chrome) |
+| `scripts/ticket-check.mjs` | `npm run ticket -- STC-NNN` — open PRs, merged commits and branches naming a ticket. Run it BEFORE starting one; two agents built STC-325 in parallel because nobody did |
 | `scripts/gate-skip-rate.mjs` | how often each gate actually RAN on CI — run it before trusting a green tick |
 | `docs/STC-259-GATE-SKIP-RATE.md` | the 100%-skip finding, its evidence, and what to do |
 | `tools/test-host/` | signed bundle that spawns the helper for capture tests; `--probe` reports TCC state. **CFBundleIdentifier is load-bearing** — the grant is keyed to it |
@@ -112,6 +113,39 @@ fingerprint in prose. `fixtures/shot-window/frame.png` was LOOKED AT and is a sy
 real window. Two items are open and neither is a secret: `fixtures/pip/camera.mp4` is a real camera
 track of a real person (112 KB — a synthetic one needs macOS, ffmpeg and a matching
 `camera-frames.json` PTS table), and the README's demo slot still needs the phase-3 recording.
+
+### Claim a ticket before you write any of it
+
+**Two agents built STC-325 in parallel on 2026-09-09 and a whole session's work
+was thrown away.** #108 merged at 14:49:58 UTC; the other agent's first commit
+was at 14:42:48 — so when the second started, #108 was an OPEN PR in plain
+sight, and nobody looked. The better implementation won by luck rather than by
+anyone comparing them.
+
+```
+npm run ticket -- STC-325     # BEFORE writing anything. Exits 1 if work exists.
+```
+
+Then **claim it in Linear**: set the status to In Progress and comment with the
+branch you will use. That is the courtesy half.
+
+**The check is the load-bearing half, and the reason is worth keeping.** Linear
+would not have caught this one: the ticket read `Backlog`, `startedAt: null` —
+the FIRST agent had not claimed it either. A claim convention only works once
+everybody follows it, so it cannot be the thing you rely on; the check protects
+you unilaterally, and it is the step that was actually missing. It belongs in
+the RECOMMENDATION too, not only at implementation time — the collision here
+began with a ticket being proposed as "the logical next one" without anybody
+looking at the open PRs.
+
+`scripts/ticket-check.mjs` reports open PRs, merged commits and remote branches
+naming the ticket, and deliberately does not decide whether they collide:
+"#108 is stage 1 and mine is stage 2" is a judgement, and a script that guessed
+would be ignored the first time it guessed wrong. Its exit codes are **0**
+nothing found, **1** something found, **3 the check could not run** — three and
+not one, because an exception falling through Node's default exit is the same
+code as a real finding, and a broken check that reads as a finding is the same
+family as a pass that means nothing.
 
 ### Workflow — master is protected
 
