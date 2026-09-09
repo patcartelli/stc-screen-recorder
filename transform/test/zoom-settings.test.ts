@@ -97,6 +97,25 @@ describe("parseProject", () => {
     expect(parseProject(raw("nonsense"), 640, 360, duration).zoom).toEqual(DEFAULT_ZOOM);
   });
 
+  test("a nonsense `enabled` takes the DEFAULT, and never falls to false", () => {
+    // The one field where the three answers are not interchangeable. `=== true`
+    // is the obvious spelling and gives a THIRD answer to a malformed value:
+    // neither what the document said nor the default the other two fields fall
+    // back to — and the only one of the three that silently turns a feature
+    // off. `false` itself is still honoured, which is what makes this a fix
+    // rather than a widening.
+    const raw = (enabled: unknown) => ({
+      version: 4, output: { fps: 60, width: 640, height: 360 },
+      cursor: { style: "default", scale: 1 }, transform: { version: 3 }, zoom: { enabled },
+    });
+    for (const bad of [undefined, "yes", "false", 1, 0, null, {}]) {
+      expect(parseProject(raw(bad), 640, 360, duration).zoom!.enabled,
+        `enabled: ${JSON.stringify(bad)}`).toBe(DEFAULT_ZOOM.enabled);
+    }
+    expect(parseProject(raw(false), 640, 360, duration).zoom!.enabled).toBe(false);
+    expect(parseProject(raw(true), 640, 360, duration).zoom!.enabled).toBe(true);
+  });
+
   test("intensity 0 is a real, kept choice — not read as absent", () => {
     const doc = {
       version: 4, output: { fps: 60, width: 640, height: 360 },

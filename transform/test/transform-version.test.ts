@@ -13,11 +13,18 @@ const load = (p: string) => JSON.parse(readFileSync(join(root, p), "utf8"));
  * The value below is a promise about the code: every constant that reaches
  * the pixels, hashed. If this test fails you changed one of them — OMEGA, the
  * checkpoint interval, the sim or export rate, the pointer artwork, the
- * outline or click-highlight sizes. That is allowed, and it is a new
- * transform: bump TRANSFORM_VERSION, add a TRANSFORM_HISTORY entry saying what
- * changed, then update this fingerprint. Never update the fingerprint alone.
+ * outline or click-highlight sizes, or auto-zoom's lead, hold, merge gap or
+ * easing presets. That is allowed, and it is a new transform: bump
+ * TRANSFORM_VERSION, add a TRANSFORM_HISTORY entry saying what changed, then
+ * update this fingerprint. Never update the fingerprint alone.
+ *
+ * It last moved at version 3, and NOT because a constant changed: the
+ * fingerprint gained four inputs it never had. Auto-zoom's constants are
+ * declared to it while the crop is still the whole frame, because the stubbed
+ * window is precisely the one in which someone could retune the presets,
+ * change what every export's zoom does, and have nothing notice.
  */
-const PINNED_FINGERPRINT = "795d7fb8";
+const PINNED_FINGERPRINT = "ff15c883";
 
 describe("the transform version is honest about what it renders", () => {
   test("the fingerprint of every pixel-deciding constant is pinned to this version", () => {

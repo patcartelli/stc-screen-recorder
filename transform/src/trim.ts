@@ -170,7 +170,11 @@ function cleanZoom(v: unknown): Zoom {
   const preset = ZOOM_PRESET_NAMES.includes(d.preset as never)
     ? d.preset as Zoom["preset"] : DEFAULT_ZOOM.preset;
   return {
-    enabled: d.enabled === undefined ? DEFAULT_ZOOM.enabled : d.enabled === true,
+    // `typeof === "boolean"`, and NOT `=== true`: the latter turns a nonsense
+    // `enabled: "yes"` into FALSE, which is a third answer — neither what the
+    // document said nor the default every other field here falls back to, and
+    // the only one of the three that silently disables a feature.
+    enabled: typeof d.enabled === "boolean" ? d.enabled : DEFAULT_ZOOM.enabled,
     intensity, preset,
   };
 }
