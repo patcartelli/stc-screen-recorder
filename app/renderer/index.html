@@ -99,6 +99,9 @@
     .trimbar { display: flex; align-items: center; gap: 8px; margin-top: 6px; font-size: 12px; }
     .trimbar button { padding: 3px 10px; font-size: 12px; }
     #triminfo { opacity: .7; font-variant-numeric: tabular-nums; }
+    .sizebar { display: flex; align-items: center; gap: 8px; margin-top: 6px; font-size: 12px; }
+    .sizebar select { font-size: 12px; }
+    #outsizenote { opacity: .7; }
     #exportbar { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
     .sharebar { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
     #sharestatus { font-size: 12px; opacity: .75; }
@@ -210,6 +213,17 @@
       <button id="markout">Out</button>
       <button id="resettrim">Full take</button>
       <span id="triminfo"></span>
+    </div>
+    <!--
+      Export size (STC-335). Its own row rather than a field beside Export:
+      it is a property of the take that persists, like the trim, not a
+      parameter of one export run — and the preview redraws at the chosen
+      size, so it is something you look at before pressing the button.
+    -->
+    <div class="sizebar">
+      <label for="outsize">Export size</label>
+      <select id="outsize"></select>
+      <span id="outsizenote"></span>
     </div>
     <div id="exportbar" hidden>
       <progress id="exportprogress" max="1000" value="0"></progress>

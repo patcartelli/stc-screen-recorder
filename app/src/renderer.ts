@@ -102,6 +102,10 @@ import {
   parseProject, projectForWrite, exportWindow, estimateExportMs,
   clampTrim, isFullTake, minTrimNs,
 } from "@transform/trim";
+import {
+  outputOptions, selectedOption, type OutputOption,
+} from "@transform/output-size";
+import type { Size } from "@transform/spaces";
 import { TRANSFORM_VERSION } from "@transform/transform-version";
 import { renderLibrary, type LibraryCallbacks } from "./library-view.js";
 import type { LibraryItem, LibraryList } from "./library-items.js";
@@ -507,6 +511,15 @@ let openProject: Project | undefined;
 let openTakeName = "";
 /** The open take's directory, so a saved frame can land beside its recording. */
 let openTakeDir = "";
+/**
+ * The take's capture size — the aspect ratio every export size is derived from,
+ * and the ceiling above which an option would be inventing pixels.
+ *
+ * Held apart from `openProject.output`, which is the CHOSEN size and moves.
+ * Reading the aspect back off the output once it had been changed would let a
+ * second change compound the first's rounding.
+ */
+let openCapture: Size | undefined;
 let exportAbort: AbortController | undefined;
 
 const fmtClock = (ns: number) => {
@@ -555,6 +568,75 @@ function setTrim(startNs: number, endNs: number, persist: boolean): void {
   updateTrimUI();
   if (persist) void persistProject().catch((e: any) => alertUser(String(e?.message ?? e)));
 }
+
+/**
+ * The export-size row (STC-335).
+ *
+ * A size the options do not offer — every take hand-edited under the old
+ * `project.json` workaround carries one — is shown as its own entry and
+ * SELECTED, so opening such a take neither misreports its setting nor loses it
+ * on the next save. Picking something else is the user discarding it, which is
+ * a different thing from the app discarding it for them.
+ */
+function updateOutputSizeUI(): void {
+  if (!openProject || !openCapture) return;
+  const sel = $("outsize") as HTMLSelectElement;
+  const out = openProject.output;
+  const opts = outputOptions(openCapture);
+  const known = selectedOption(openCapture, out);
+
+  sel.replaceChildren();
+  if (!known) {
+    const o = document.createElement("option");
+    o.value = "custom";
+    o.textContent = `Custom · ${out.width}×${out.height}`;
+    sel.append(o);
+  }
+  for (const opt of opts) {
+    const o = document.createElement("option");
+    o.value = opt.id;
+    o.textContent = opt.label;
+    // Offered and refused, rather than absent: a preset that vanished on a
+    // small capture reads as a bug in the list rather than a fact about the
+    // take.
+    o.disabled = opt.upscales;
+    if (opt.upscales) o.textContent += " — larger than the capture";
+    sel.append(o);
+  }
+  sel.value = known ? known.id : "custom";
+
+  const note = $("outsizenote");
+  note.textContent = known?.id === "capture" || (!known && sameAsCapture(out))
+    ? "No rescale."
+    : `Capture is ${openCapture.width}×${openCapture.height}.`;
+}
+
+const sameAsCapture = (out: Size) =>
+  !!openCapture && out.width === openCapture.width && out.height === openCapture.height;
+
+async function setOutputSize(opt: OutputOption): Promise<void> {
+  if (!openProject || !player) return;
+  // `output.fps` is untouched: 60 is the settled export rate and this control
+  // is about size only. Rebuilding the object would be the quiet way to drop it.
+  openProject.output.width = opt.size.width;
+  openProject.output.height = opt.size.height;
+  updateOutputSizeUI();
+  // The canvas is sized in the player's constructor and `composite` reads the
+  // project every draw, so the player has to be told or it draws the new size
+  // onto the old canvas.
+  await player.outputResized();
+  await persistProject();
+}
+
+$("outsize").addEventListener("change", () => {
+  if (!openProject || !openCapture) return;
+  const id = ($("outsize") as HTMLSelectElement).value;
+  const opt = outputOptions(openCapture).find((o) => o.id === id);
+  // "custom" has no option to apply — re-selecting it is a no-op, not a reset
+  // to the capture size.
+  if (!opt || opt.upscales) { updateOutputSizeUI(); return; }
+  void setOutputSize(opt).catch((e: any) => alertUser(String(e?.message ?? e)));
+});
 
 async function openPreview(take: Openable): Promise<void> {
   try {
@@ -625,6 +707,7 @@ async function openPreviewOrThrow(take: Openable): Promise<void> {
   openProject = project;
   openTakeName = take.name;
   openTakeDir = take.dir;
+  openCapture = { width: anchors.capture.width, height: anchors.capture.height };
   player = new PreviewPlayer($("stage") as HTMLCanvasElement, session, project);
   const scrub = $("scrub") as HTMLInputElement;
   player.onTime = (tNs, playing) => {
@@ -640,6 +723,7 @@ async function openPreviewOrThrow(take: Openable): Promise<void> {
   // and shows the user a black rectangle that looks like a broken player.
   await player.seek(player.firstRenderableNs);
   updateTrimUI();
+  updateOutputSizeUI();
   $("player").removeAttribute("hidden");
 }
 
@@ -650,6 +734,7 @@ async function closePreview(): Promise<void> {
   player = undefined;
   openSession = undefined;
   openProject = undefined;
+  openCapture = undefined;
   $("player").setAttribute("hidden", "");
   await recorder.closePreview();
 }

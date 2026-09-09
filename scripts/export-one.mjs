@@ -65,8 +65,19 @@ try {
 
   const frames = Math.round(seconds * 60);
   const fromFrame = Math.round(fromSeconds * 60);
+  // The OUTPUT size, not the capture's. These are the same until someone
+  // chooses otherwise (STC-335), and printing the capture regardless is a log
+  // that reports one number while the encoder correctly uses another — it
+  // briefly convinced the person who filed that ticket the export ignored the
+  // setting. `?? capture` because the page applies the same default when
+  // there is no project.json.
+  const outW = projectRaw?.output?.width ?? anchors.capture.width;
+  const outH = projectRaw?.output?.height ?? anchors.capture.height;
   console.log(`exporting ${seconds}s from t=${fromSeconds}s (${frames} frames) ` +
-              `at ${anchors.capture.width}x${anchors.capture.height}…`);
+              `at ${outW}x${outH}` +
+              (outW === anchors.capture.width && outH === anchors.capture.height
+                ? "…"
+                : ` (capture is ${anchors.capture.width}x${anchors.capture.height})…`));
   const r = await page.evaluate(([p, f, ff]) =>
     window.exportSession("/session", p, { maxFrames: f, fromFrame: ff, encode: true, returnFile: true }),
     [project, frames, fromFrame]);
