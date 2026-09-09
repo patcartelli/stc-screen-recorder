@@ -103,6 +103,7 @@ import {
   clampTrim, isFullTake, minTrimNs,
 } from "@transform/trim";
 import {
+  outputSizeFor,
   outputOptions, selectedOption, type OutputOption,
 } from "@transform/output-size";
 import type { Size } from "@transform/spaces";
@@ -727,11 +728,33 @@ function updateLegibilityUI(): void {
 
 /** The embed width as a view size for the preview, at the capture's aspect. */
 function viewSizeForEmbed(): Size | null {
-  if (!openCapture) return null;
-  return {
-    width: embedWidthPx,
-    height: Math.max(1, Math.round(embedWidthPx * openCapture.height / openCapture.width)),
-  };
+  if (!openProject) return null;
+  // `outputSizeFor` owns the width -> height rule, including the evening H.264
+  // needs; re-deriving it here gave 693 against its 694 for the same 1232.
+  // Its aspect comes from `project.output` rather than the capture, because
+  // what gets embedded is the EXPORT — on a take whose output was hand-edited
+  // off the capture's aspect, previewing the capture's shape would preview the
+  // one thing this toggle exists to check.
+  return outputSizeFor(openProject.output, embedWidthPx);
+}
+
+/**
+ * Show the canvas at the embed width in CSS pixels while the view size is set.
+ *
+ * Rendering at 1232 and displaying at the column's width is a lower-resolution
+ * picture at the ORIGINAL size, which flatters small text instead of testing
+ * it. The CSS width is the half that makes the toggle mean what it says.
+ */
+function applyStageDisplay(): void {
+  const stage = $("stage") as HTMLCanvasElement;
+  const view = player?.viewSize ?? null;
+  if (view) {
+    stage.style.setProperty("--vieweye-w", `${embedWidthPx}px`);
+    stage.dataset.vieweye = "";
+  } else {
+    stage.style.removeProperty("--vieweye-w");
+    delete stage.dataset.vieweye;
+  }
 }
 
 async function setEmbedWidth(px: number): Promise<void> {
@@ -740,6 +763,7 @@ async function setEmbedWidth(px: number): Promise<void> {
   // Keep the viewer's eye honest: it is showing THIS width, so changing the
   // width while it is on must move the canvas with it.
   if (player?.viewSize) await player.setViewSize(viewSizeForEmbed());
+  applyStageDisplay();
 }
 
 $("embedtarget").addEventListener("change", () => {
@@ -747,12 +771,13 @@ $("embedtarget").addEventListener("change", () => {
   const t = EMBED_TARGETS.find((x) => x.id === id);
   // "Custom" selects nothing — the number field is the control, and snapping
   // the width on selecting it would discard what the user just typed.
-  if (t) void setEmbedWidth(t.widthPx).catch(() => {});
+  if (t) void setEmbedWidth(t.widthPx).catch((e: any) => alertUser(String(e?.message ?? e)));
   else updateLegibilityUI();
 });
 
 $("embedwidth").addEventListener("change", () => {
-  void setEmbedWidth(Number(($("embedwidth") as HTMLInputElement).value)).catch(() => {});
+  void setEmbedWidth(Number(($("embedwidth") as HTMLInputElement).value))
+    .catch((e: any) => alertUser(String(e?.message ?? e)));
 });
 
 $("textpt").addEventListener("change", () => {
@@ -769,7 +794,7 @@ $("vieweye").addEventListener("change", () => {
   if (!player) return;
   const on = ($("vieweye") as HTMLInputElement).checked;
   void player.setViewSize(on ? viewSizeForEmbed() : null)
-    .then(() => updateLegibilityUI())
+    .then(() => { applyStageDisplay(); updateLegibilityUI(); })
     .catch((e: any) => alertUser(String(e?.message ?? e)));
 });
 

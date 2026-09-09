@@ -32,10 +32,10 @@ function takeWithDisplay(pointWidth: number, project?: unknown) {
   return { dir, takeDir };
 }
 
-async function openTake(dir: string) {
+async function openTake(dir: string, extraEnv: Record<string, string> = {}) {
   app = await electron.launch({
     args: [root], cwd: root,
-    env: { ...process.env, STC_RECORDINGS_DIR: dir },
+    env: { ...process.env, STC_RECORDINGS_DIR: dir, ...extraEnv },
   });
   const win = await app.firstWindow();
   await win.waitForLoadState("domcontentloaded");
@@ -52,6 +52,13 @@ const stageSize = (win: any) => win.evaluate(() => {
   const c = document.getElementById("stage") as HTMLCanvasElement;
   return { width: c.width, height: c.height };
 });
+
+/**
+ * What the canvas is DISPLAYED at, which is a different question from what it
+ * is rendered at — and the one a canvas-size assertion cannot ask.
+ */
+const stageCssWidth = (win: any) => win.evaluate(() =>
+  Math.round(document.getElementById("stage")!.getBoundingClientRect().width));
 const readProject = (takeDir: string) =>
   JSON.parse(readFileSync(join(takeDir, "project.json"), "utf8"));
 
@@ -142,7 +149,7 @@ describe("legibility at embed width (STC-318)", () => {
 
     await win.check("#vieweye");
     await expect.poll(() => stageSize(win), { timeout: 20_000 })
-      .toEqual({ width: 1232, height: 693 });
+      .toEqual({ width: 1232, height: 694 });
     // The strongest form of "a way of looking does not edit the take": the
     // take never had a project.json and still does not. Reading `output` back
     // would have been weaker AND would have thrown on a file that is not there.
@@ -150,6 +157,58 @@ describe("legibility at embed width (STC-318)", () => {
 
     await win.uncheck("#vieweye");
     await expect.poll(() => stageSize(win), { timeout: 20_000 }).toEqual(exportSize);
+  }, 60_000);
+
+  test("THE VIEWER'S EYE IS DISPLAYED AT THE EMBED WIDTH, not stretched back", async () => {
+    // The half a canvas-size assertion cannot make, and the one that decides
+    // whether the toggle means anything. `#stage { width: 100% }` stretches a
+    // 1232-wide render back to the player column, so the picture appears at
+    // the ORIGINAL size with fewer pixels — which flatters small text instead
+    // of testing it, the exact inversion of what STC-318 is for.
+    const { dir } = takeWithDisplay(1728);
+    const win = await openTake(dir);
+    const before = await stageCssWidth(win);
+
+    await win.check("#vieweye");
+    await expect.poll(() => stageCssWidth(win), { timeout: 20_000 }).toBe(1232);
+    // Not merely "it changed": the column width is what it was stretched TO,
+    // so a fix that resized it to anything else would pass a weaker check.
+    expect(before).not.toBe(1232);
+
+    await win.uncheck("#vieweye");
+    await expect.poll(() => stageCssWidth(win), { timeout: 20_000 }).toBe(before);
+  }, 60_000);
+
+  test("SAVE FRAME IS THE EXPORT SIZE even with the viewer's eye on", async () => {
+    // A way of LOOKING must not change what comes out. `captureFrame` reads
+    // the canvas, and the viewer's eye shrinks the canvas, so with the toggle
+    // on a Save frame silently wrote a 1232-wide still for a 1728-wide take —
+    // no warning, and a file that looks plausible until measured.
+    const { dir } = takeWithDisplay(1728);
+    const log = join(dir, "still-log.jsonl");
+    const win = await openTake(dir, {
+      STC_HELPER_BIN: join(root, "app", "test", "_fake-helper.mjs"),
+      STC_FAKE_STILL_LOG: log,
+    });
+
+    await win.check("#vieweye");
+    await expect.poll(() => stageSize(win), { timeout: 20_000 })
+      .toEqual({ width: 1232, height: 694 });
+
+    await win.click("#saveframe");
+    await expect.poll(() => existsSync(log) ? readFileSync(log, "utf8") : "",
+                      { timeout: 20_000 }).toContain("export-still");
+
+    const cmd = JSON.parse(readFileSync(log, "utf8").trim().split("\n").pop()!);
+    // 1728, the take's own output — NOT 1232, which is what the preview was
+    // drawing at the moment the button was pressed.
+    expect(cmd.width).toBe(1728);
+    expect(cmd.width).not.toBe(1232);
+
+    // And the toggle survives the capture: dropping the view to take the still
+    // must be invisible, or Copy frame silently turns the viewer's eye off.
+    await expect.poll(() => stageSize(win), { timeout: 20_000 })
+      .toEqual({ width: 1232, height: 694 });
   }, 60_000);
 
   test("THE VIEWER'S EYE MOVES THE WHOLE RENDER, not just the canvas", async () => {
@@ -199,7 +258,7 @@ describe("legibility at embed width (STC-318)", () => {
 
     await win.check("#vieweye");
     await expect.poll(() => stageSize(win), { timeout: 20_000 })
-      .toEqual({ width: 1232, height: 693 });
+      .toEqual({ width: 1232, height: 694 });
     await new Promise((r) => setTimeout(r, 1000));
 
     const atView = await cursorCentroid();
@@ -229,11 +288,11 @@ describe("legibility at embed width (STC-318)", () => {
     const win = await openTake(dir);
     await win.check("#vieweye");
     await expect.poll(() => stageSize(win), { timeout: 20_000 })
-      .toEqual({ width: 1232, height: 693 });
+      .toEqual({ width: 1232, height: 694 });
 
     await win.fill("#embedwidth", "720");
     await win.dispatchEvent("#embedwidth", "change");
     await expect.poll(() => stageSize(win), { timeout: 20_000 })
-      .toEqual({ width: 720, height: 405 });
+      .toEqual({ width: 720, height: 406 });
   }, 60_000);
 });

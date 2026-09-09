@@ -269,16 +269,29 @@ export class PreviewPlayer {
     if (this.closed) throw new Error("preview is closed");
     const wasPlaying = this.playing;
     if (wasPlaying) this.pause();
-    const { frame, tNs } = exportFrameOf(this.tNs);
-    await this.seek(tNs);
-    const { width, height } = this.canvas;
-    const data = this.ctx.getImageData(0, 0, width, height).data;
-    // Sliced to the exact bytes: a Uint8ClampedArray view may sit inside a
-    // larger buffer, and sending the whole one would ship the slack to the
-    // main process and fail the encoder's size check on arrival.
-    const rgba = data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength);
-    if (wasPlaying) this.play();
-    return { frame, tNs, rgba: rgba as ArrayBuffer, width, height };
+    // A still is what the EXPORT would produce, never what the preview happens
+    // to be drawing. `setViewSize` (the viewer's eye) shrinks the canvas and
+    // this function reads the canvas, so with the toggle on Copy/Save frame
+    // silently wrote a 1232-wide still for a 3840-wide take — a way of LOOKING
+    // changing what comes out. Dropped for the capture and restored after.
+    const view = this.viewOutput;
+    try {
+      if (view) await this.setViewSize(null);
+      const { frame, tNs } = exportFrameOf(this.tNs);
+      await this.seek(tNs);
+      const { width, height } = this.canvas;
+      const data = this.ctx.getImageData(0, 0, width, height).data;
+      // Sliced to the exact bytes: a Uint8ClampedArray view may sit inside a
+      // larger buffer, and sending the whole one would ship the slack to the
+      // main process and fail the encoder's size check on arrival.
+      const rgba = data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength);
+      return { frame, tNs, rgba: rgba as ArrayBuffer, width, height };
+    } finally {
+      // Restored even if the capture threw: leaving the view dropped would
+      // silently turn the toggle off after a failed Copy.
+      if (view) await this.setViewSize(view);
+      if (wasPlaying) this.play();
+    }
   }
 
   close(): void {

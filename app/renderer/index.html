@@ -77,6 +77,13 @@
     .take button.delete { border-color: rgba(200,80,60,.45); }
     #player[hidden] { display: none; }
     #stage { width: 100%; height: auto; background: #000; border-radius: 6px; display: block; }
+    /* Viewer's eye: the canvas is DISPLAYED at the embed width, not merely
+       rendered at it. `width: 100%` stretches a smaller render back to the
+       player column, so small text is shown larger than a real viewer gets —
+       which is the opposite of what STC-318 is for. The player scrolls rather
+       than shrinking it, because shrinking it is the original lie. */
+    #stage[data-vieweye] { width: var(--vieweye-w); max-width: none; }
+    #player { overflow-x: auto; }
     .transport { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
     .timeline { position: relative; flex: 1; height: 28px; }
     .timeline .bar { position: absolute; left: 0; right: 0; top: 12px; height: 4px;
