@@ -46,44 +46,68 @@ old one back.
 
 ## Where to point it
 
-The slug and the folder together decide both the file and the URL, and the app
-assumes the folder is served at `/lab/<slug>/`:
+The slug and the folder together decide both the file and the URL:
 
 | slug | destination folder | the page then embeds |
 |---|---|---|
-| `network` | `<site>/public/lab/network` | `/lab/network/network.mp4` |
+| `network` | `<site>/public/lab/videos` | `/lab/videos/network.mp4` |
 
-That assumption lives in exactly one function (`publicSrc` in
-`app/src/share.ts`) and takes an override, so a different layout changes one
-line rather than being spread through the app.
+**This table was wrong until STC-313 checked it against the real site**, and
+the way it was wrong is worth keeping. `publicSrc` assumed the destination was
+served at `/lab/<slug>/` and produced `/lab/network/network.mp4` — the slug
+twice, and a `public/lab/network/` directory sharing a name with `/lab/network`,
+which is a live SSR route on that site. This document had already named it as
+the most likely thing to be wrong and predicted the symptom exactly: a snippet
+whose `src` 404s while the file sits in precisely the folder you chose.
 
-**If your site serves videos from somewhere else, this is the number to
-change** — and the snippet is what will be wrong first, since the copy itself
-lands wherever you pointed the picker regardless.
+Nothing found it for six days because **the copy and the snippet are decided
+apart**. The copy lands wherever the picker points, so it was always correct;
+only the path the page would ask for was wrong, and nothing in this repo can
+see the page. The check that settles it is loading the URL.
 
-## The snippet is provisional, and says so
+The assumption still lives in exactly one function (`publicSrc` in
+`app/src/share.ts`) and still takes an override, so a different layout changes
+one line. **If your site serves videos from somewhere else, this is the number
+to change** — and the snippet is what will be wrong first.
 
-The ticket makes the embed snippet the optional half, gated on *"once the
-site's video component shape is settled"*. It is not settled, and it could not
-be settled from this work: the site is a different repository that this one has
-no sight of. So the default is a plain `<video>` element —
+## The snippet is settled now, and it is not an HTML tag
 
-```html
-<video src="{src}" width="{width}" height="{height}" autoplay loop muted playsinline></video>
+The ticket made the embed snippet the optional half, gated on *"once the site's
+video component shape is settled"*. STC-313 settled it by reading the site, and
+the answer is not the shape this document expected.
+
+The site renders lab demos from a **data module** (`src/data/lab-demos.ts`)
+that a component reads. A page says `<LabVideo demo={labDemos.network} />` and
+nothing else, so there is no `<video>` tag anywhere to paste one next to —
+and pasting one would be a second way to put a video on that page, bypassing
+the site's own build check that a published demo's file exists. What there is
+actually a blank for is the data entry:
+
+```jsonc
+  network: {
+    src: '/lab/videos/network.mp4',
+    poster: '{poster}',
+    width: 2464,
+    height: 1386,
+    label: '{label}',
+    caption: '{caption}',
+    published: true,
+  },
 ```
 
-— which is correct HTML whatever Astro component eventually wraps it, and it is
-a **preference**: the moment the component exists, its shape goes in settings
-and no code changes.
+`{poster}`, `{label}` and `{caption}` come through unsubstituted on purpose.
+The first is a file the app does not produce; the other two are prose about
+what the viewer is looking at, and a template that invented them would paste
+plausible-looking wrong copy onto a portfolio page. That is the same failure as
+`width="0"` one layer up: a wrong answer in a right answer's clothes.
 
-Writing a `<Video …>` call here and presenting it as the answer would have been
-inventing an API for a repo I cannot read, and it would have looked settled to
-whoever came next.
+It is still a **preference**, so a site that grows a different shape later
+needs no code change here.
 
 An unknown token is left unsubstituted rather than blanked, and so is a known
 one whose value isn't available — an export with no readable manifest pastes
-`width="{width}"`, not `width="0"`. A zero renders as a real attribute and a
-collapsed video; a visible `{width}` is obviously a blank to fill in.
+`width: {width}`, not `width: 0`. A zero reserves a collapsed box on the page;
+a visible `{width}` is obviously a blank to fill in.
 
 ---
 

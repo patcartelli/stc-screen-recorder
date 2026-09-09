@@ -161,23 +161,39 @@ function joinPath(dir: string, leaf: string): string {
 }
 
 /**
- * The embed snippet — and an honest statement of what is not known here.
+ * The embed snippet, SETTLED against the real site (STC-313).
  *
- * The ticket makes this the OPTIONAL half, gated on "once the site's video
- * component shape is settled". It is not settled, and it could not be settled
- * from here: the site lives in another repository that this work has no sight
- * of. So the default is a plain `<video>` element, which is correct HTML
- * whatever Astro component eventually wraps it, and the template is a
- * PREFERENCE — the moment the component exists, its shape goes in settings
- * without touching this code.
+ * STC-242 left this provisional and said why: the ticket gates it on "once the
+ * site's video component shape is settled", and it could not be settled from a
+ * repo with no sight of the site. It has been settled now by reading
+ * `patcartelli/studio-cartelli`, and the answer is not the shape anyone
+ * expected — **what a viewer pastes is not an HTML tag at all.**
  *
- * Writing a `<Video …>` component call here and presenting it as the answer
- * would be inventing an API for a repo I cannot read, and it would look
- * settled to the next person.
+ * The site renders lab demos from a DATA MODULE (`src/data/lab-demos.ts`) that
+ * a component reads; a page says `<LabVideo demo={labDemos.network} />` and
+ * nothing else. So a `<video …>` tag pasted into `network.astro` would be a
+ * second way to put a video on that page, bypassing the build check that
+ * refuses a published demo whose file is missing. The snippet is the data
+ * entry instead, which is the thing there is actually a blank for.
+ *
+ * `{poster}` is deliberately a token `embedSnippet` does not know, so it comes
+ * through unsubstituted — as do `label` and `caption`, which are prose only a
+ * person can write. An obviously unfilled blank is the point: this snippet is
+ * a starting point for an edit, not a finished line to drop in.
+ *
+ * Still a PREFERENCE, so a site that later grows a real component needs no
+ * code change here.
  */
 export const DEFAULT_EMBED_TEMPLATE =
-  '<video src="{src}" width="{width}" height="{height}" ' +
-  "autoplay loop muted playsinline></video>";
+  "  {slug}: {\n" +
+  "    src: '{src}',\n" +
+  "    poster: '{poster}',\n" +
+  "    width: {width},\n" +
+  "    height: {height},\n" +
+  "    label: '{label}',\n" +
+  "    caption: '{caption}',\n" +
+  "    published: true,\n" +
+  "  },";
 
 export interface EmbedTokens {
   /** The public path the site will serve the file from. */
@@ -212,14 +228,26 @@ export function embedSnippet(template: string, tokens: EmbedTokens): string {
 }
 
 /**
- * What the page will ask for, derived from the slug the file was published
- * under, so the snippet cannot name a path the copy did not write.
+ * Where the site will serve the published file from, derived from the slug it
+ * was published under, so the snippet cannot name a path the copy did not
+ * write.
  *
- * Assumes the destination folder is served at `/<slug>/` — true for an Astro
- * `public/` subfolder and stated here rather than hidden, since it is the one
- * thing about the site this module presumes. `srcBase` overrides it.
+ * **This was wrong until STC-313 checked it against the real site.** The
+ * original assumed the destination was served at `/<slug>/` and produced
+ * `/lab/network/network.mp4` — the slug twice, and a `public/lab/network/`
+ * directory sharing a name with `/lab/network`, which is a live SSR route on
+ * that site. STC-242's runbook named this as the most likely thing to be
+ * wrong, and its predicted symptom exactly: a snippet whose `src` 404s while
+ * the file sits in the folder the user chose.
+ *
+ * The destination folder is `<site>/public/lab/videos` and Astro serves
+ * `public/` at the root, so the file is at `/lab/videos/<slug>.mp4`. Verified
+ * against a dev server: 200, `video/mp4`.
+ *
+ * `srcBase` is still the override, because the folder is picked by hand and
+ * nothing here can check that the user picked the one this names.
  */
-export function publicSrc(slug: string, srcBase = "/lab"): string {
+export function publicSrc(slug: string, srcBase = "/lab/videos"): string {
   const base = srcBase.endsWith("/") ? srcBase.slice(0, -1) : srcBase;
-  return `${base}/${slug}/${slug}.mp4`;
+  return `${base}/${slug}.mp4`;
 }
