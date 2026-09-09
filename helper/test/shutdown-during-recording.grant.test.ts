@@ -21,6 +21,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Readable } from "node:stream";
 import AjvImport from "ajv";
+import { explainFailedStart, type StartOutcome } from "./_start-outcome.js";
 
 const Ajv = (AjvImport as any).default ?? AjvImport;
 const root = join(__dirname, "..", "..");
@@ -104,12 +105,8 @@ async function startRecording() {
   return { granted: true, dir, started, h } as const;
 }
 
-const skipGrant = (started: unknown) =>
-  new Error(
-    "SKIP-GRANT: this environment has no Screen Recording grant, so STC-304's " +
-    "shutdown-during-recording fix is unverified. Run from a terminal that holds " +
-    `the grant. start said: ${JSON.stringify(started)}`,
-  );
+const skipGrant = (started: StartOutcome) =>
+  explainFailedStart(started, "STC-304's shutdown-during-recording fix");
 
 describe("helper shutdown while recording (STC-304)", () => {
   test("SIGTERM mid-take still produces a schema-valid anchors.json naming the signal", async () => {

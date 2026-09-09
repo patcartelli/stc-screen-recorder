@@ -22,6 +22,7 @@ import { mkdtempSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Readable } from "node:stream";
+import { explainFailedStart, type StartOutcome } from "./_start-outcome.js";
 
 const root = join(__dirname, "..", "..");
 const BIN = join(root, "helper", "build", "stc-helper");
@@ -134,11 +135,7 @@ describe("lossy stats ring under real capture (STC-249)", () => {
     // answer to a question never asked.
     let stalled = await record({ drainStdout: false, ms: START_MS });
     if (!stalled.granted) {
-      throw new Error(
-        "SKIP-GRANT: this environment has no Screen Recording grant, so the lossy " +
-        "ring under real capture load is unverified. Run from a bundle that holds " +
-        `the grant (tools/test-host). start said: ${JSON.stringify(stalled.started)}`,
-      );
+      throw explainFailedStart(stalled.started, "the lossy ring under real capture load");
     }
     for (let i = 0; i < ESCALATIONS && stalled.drops === 0; i++) {
       const longer = stalled.ms * 2;

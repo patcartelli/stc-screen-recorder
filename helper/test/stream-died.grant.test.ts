@@ -28,6 +28,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Readable } from "node:stream";
 import AjvImport from "ajv";
+import { explainFailedStart, type StartOutcome } from "./_start-outcome.js";
 
 const Ajv = (AjvImport as any).default ?? AjvImport;
 const root = join(__dirname, "..", "..");
@@ -85,12 +86,8 @@ function hasMoov(path: string): boolean {
   return b.includes(Buffer.from("moov", "ascii"));
 }
 
-const skipGrant = (started: unknown) =>
-  new Error(
-    "SKIP-GRANT: this environment has no Screen Recording grant, so STC-306's " +
-    "stream-death stop is unverified. Run from a terminal that holds the grant. " +
-    `start said: ${JSON.stringify(started)}`,
-  );
+const skipGrant = (started: StartOutcome) =>
+  explainFailedStart(started, "STC-306's stream-death stop");
 
 describe("a display stream that dies mid-take (STC-306)", () => {
   test("the helper warns, stops itself with reason stream-stopped, finalises the take, and is idle after", async () => {

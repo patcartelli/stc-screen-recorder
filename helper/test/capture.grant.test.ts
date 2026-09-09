@@ -15,6 +15,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Readable } from "node:stream";
 import AjvImport from "ajv";
+import { explainFailedStart, type StartOutcome } from "./_start-outcome.js";
 
 const Ajv = (AjvImport as any).default ?? AjvImport;
 const root = join(__dirname, "..", "..");
@@ -67,7 +68,16 @@ const find = (ls: Line[], ev: string) => ls.find((l) => l.ev === ev);
 const session = () => mkdtempSync(join(tmpdir(), "stc-cap-"));
 
 /** Did this environment's TCC identity get a Screen Recording grant? */
-async function probeGranted(): Promise<boolean> {
+/**
+ * Try one recording and report what the helper said about it.
+ *
+ * It was called `probeGranted` and returned a boolean, which is what made the
+ * old message wrong: it never probed TCC, it only asked whether `start` came
+ * back `started`, and every other refusal was then reported as a missing
+ * grant. Returning the OUTCOME instead of a verdict is what lets the caller
+ * name the real cause (`_start-outcome.ts`).
+ */
+async function tryOneRecording(): Promise<StartOutcome> {
   const h = spawnHelper();
   await waitFor(() => find(h.fd3, "ready"), 10_000, "ready");
   h.send({ cmd: "start", dir: session(), seq: 1 });
@@ -75,18 +85,13 @@ async function probeGranted(): Promise<boolean> {
   if (r.ev === "started") h.send({ cmd: "stop", seq: 2 });
   await sleep(200);
   h.kill();
-  return r.ev === "started";
+  return r as StartOutcome;
 }
 
 describe("capture — a real recording (requires Screen Recording)", () => {
   test("produces schema-valid display.mp4, events.json and anchors.json", async () => {
-    if (!(await probeGranted())) {
-      throw new Error(
-        "SKIP-GRANT: this environment has no Screen Recording grant, so the real " +
-        "capture path is unverified. Grant it to the process that runs the tests, " +
-        "or run this suite from a bundle that has it.",
-      );
-    }
+    const probe = await tryOneRecording();
+    if (probe.ev !== "started") throw explainFailedStart(probe, "the real capture path");
     const dir = session();
     const h = spawnHelper();
     await waitFor(() => find(h.fd3, "ready"));

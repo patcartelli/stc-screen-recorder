@@ -96,9 +96,20 @@ async function probe(): Promise<{ ok: true } | { ok: false; why: string }> {
 
 function skipUnless(p: { ok: true } | { ok: false; why: string }): void {
   if (!p.ok) {
+    // Deliberately NOT "SKIP-GRANT" unless it is one. capture-still takes no
+    // stream, so it has its own failure shapes and a timeout has at least
+    // three causes — a missing grant, macOS < 14 (SCScreenshotManager does not
+    // exist), or another SCStream of this project's holding the display, which
+    // reports -3805 on the recording path and simply never answers here. The
+    // 2026-09-09 run hit seven of these at once with a leftover app running,
+    // and a message naming only the grant sends the reader to the wrong place.
     throw new Error(
-      `SKIP-GRANT: capture-still answered ${p.why}. Without a Screen Recording grant ` +
-      "for the process running the tests (and macOS 14+), the one-frame path is unverified.",
+      `STILL-REFUSED: capture-still answered ${p.why}, so the one-frame path is ` +
+      "unverified. Three things produce this and they are not the same fix:\n" +
+      "  1. another app of this project's is holding the display — check FIRST, it is free:\n" +
+      "       ps -Ao pid,command | grep -i '[s]tc-screen-recorder\\|[E]lectron'\n" +
+      "  2. no Screen Recording grant for the process running the tests\n" +
+      "  3. macOS < 14, where SCScreenshotManager does not exist (expect still-unsupported)",
     );
   }
 }
