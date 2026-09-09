@@ -477,6 +477,19 @@ reachable via KVC (`setValue(3, forKey: "captureResolution")`, verified in phase
   new capture fails this way. It reads like a permission or entitlement problem and is not one:
   with the stray app gone, the same helper immediately reports the honest `no-displays` instead.
   Check `ps -Ao pid,command | grep stc-screen-recorder` before debugging anything else.
+  **STC-292 made this much easier to hit, and this note predates it.** The app is menu-bar-FIRST
+  now: `window-all-closed` no longer quits on macOS, the Dock icon goes with the last window and
+  the menu-bar item stays. So ⌘W leaves a live `Electron` + `stc-helper` holding the display with
+  **no window and no Dock icon** to remind you it is there — the app is working exactly as
+  designed and is invisible in both of the places you would look. Hit for real on 2026-09-09: a
+  bare `start` from the terminal failed `-3805` twice in a row while `ps` showed pid 65217
+  (`Electron … /stc-screen-recorder`) and its child helper. Quit it from the MENU BAR rather than
+  `kill`, unless you are sure it is idle — `ps` cannot tell you whether a take is live, and
+  killing mid-recording loses it.
+  NB the grep matches other apps' Electron crashpad helpers (Linear, Discord, Claude, Wispr Flow
+  all shipped Electron); scope on the absolute path `stc-screen-recorder/node_modules/electron`,
+  which is the same "the shell running the check matched itself" lesson the saturation note
+  already records one screen down.
 - **`SCStream` can fail through `didStopWithError` INSTEAD of `startCapture`'s completion** — seen
   as `-3805 "application connection being interrupted"`. Wiring only the completion left `start`
   permanently unanswered. Every request path must resolve exactly once: the delegate answers a
