@@ -1646,3 +1646,19 @@ reachable via KVC (`setValue(3, forKey: "captureResolution")`, verified in phase
   near-white pixels locates it in one `getImageData`. The mutation shifts it 2.7x the tolerance;
   a second assertion on the cursor's ink as a fraction of canvas AREA catches the same fault by
   (1728/1232)^2, which is the louder half. Both were watched failing.
+  **`canvas.width` has now been the wrong instrument THREE times on this one feature, and the
+  third was mine to have caught.** #120 reviewed #117 after it merged and found two live bugs my
+  tests could not see, both because the intrinsic size was CORRECT in each: `captureFrame` sizes
+  its buffer from `this.canvas`, so with the toggle on Save frame silently wrote a 1232-wide
+  still for a 1728-wide take — a way of LOOKING changing what comes out; and `#stage { width:
+  100% }` stretched the smaller render back to the player column, so the picture appeared at the
+  ORIGINAL size with fewer pixels, which flatters small text instead of testing it. The
+  discriminators are `getBoundingClientRect().width` and the size the helper is actually asked to
+  encode. **Then the fix for the second introduced a third of the same shape**: the CSS pin is
+  justified by ONE player and nothing cleared it when that player went away, so the next take
+  opened with `viewSize` null and the checkbox reading OFF on a canvas still displayed at the old
+  embed width — measured at 1232 CSS px in a 465 px column, overflowing the player. Cleared in
+  `closePreview`, which every new player passes through, so there is one owner rather than two
+  that must agree.
+  The rule the three share: **when a feature has an intrinsic size and a displayed size, assert
+  both, and ask what else was scoped to the object you just gave a lifetime to.**
