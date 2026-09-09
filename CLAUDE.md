@@ -24,7 +24,10 @@ events → deterministic transform → CFR MP4 with cursor overlay.
 | `transform/src/` | the pure transform + shared sink modules (TS; render, time, cursor, demux, decode, compositor) |
 | `transform/src/spaces.ts` | **every coordinate space, and who owns each conversion (STC-314)**. The vocabulary doc is its header — read it BEFORE writing a conversion anywhere, in either language. Time stays in `time.ts` and is named here; the four Swift conversions are named here and point back |
 | `transform/src/zoom.ts` | auto-zoom stage 1 (STC-325) — `events → windows` and the easing spring. WHEN only; STC-326 decides where. Clicks and drags trigger; a plain move does not, and that one rule is the whole feature. Its header records the ONE open decision (a long drag: one window or two) and why no test here can settle it. The user's settings live on the document — `trim.ts`'s `DEFAULT_ZOOM` and `project-4` |
+| `transform/src/legibility.ts` | will the viewer be able to read it (STC-318) — `textPt * embedWidth / display.pointWidth`, the 9 px threshold, and the sentence the UI shows. **The output width CANCELS**: exporting smaller does not make text bigger, and the ticket's own formula was wrong on any retina display |
+| `transform/src/project-version.ts` | every project version this build can read, in ONE place, importable from the Electron main process. Four lines in a file of its own because `trim.ts` reaches DOM-typed code and `tsconfig.node.json` correctly refuses it |
 | `transform/src/output-size.ts` | what size a take EXPORTS at (STC-335) — the aspect rule, the even-dimensions rule H.264 needs, and the embed presets derived from the site's own container width. The one place those three are enforced; a caller computing `width / aspect` gets an odd height about half the time |
+| `schema/project-5.schema.json` | project-4 plus `textPt` — the recorded app's base text size in POINTS, the one legibility input that cannot be derived from the recording (STC-318) |
 | `schema/project-4.schema.json` | project-3 plus `zoom` — auto-zoom's user SETTINGS (on/off, intensity, preset) and nothing derived. `projectForWrite` emits the MINIMUM version that can express the document, so an untouched zoom stays v3 |
 | `transform/test/spaces-seam.test.ts` | the ticket's "one place to get it", as a grep over `transform/src/`, with controls proving the patterns fire on real pre-STC-314 code |
 | `schema/` | versioned session schemas (anchors-1/2, events-1/2, project-1/2) |
@@ -1604,3 +1607,42 @@ reachable via KVC (`setValue(3, forKey: "captureResolution")`, verified in phase
   NB the same trip found the snippet's SHAPE was wrong too, in a way no amount of care here would
   have caught: the site renders lab demos from a data module, so the "obviously correct HTML
   whatever wraps it later" default was a tag that must not be pasted onto that page at all.
+
+- **PROJECT-4 WAS UNWRITABLE ON MASTER FOR A DAY, and the comment above the bug had predicted
+  it (STC-318).** `main.ts`'s `preview:writeProject` gate hand-listed versions 1-3 while
+  `parseProject` accepted 1-4, so a take with a non-default zoom could not be SAVED at all —
+  the renderer wrote, main threw, and the setting vanished. Found by accident, from a probe in
+  an unrelated debugging session.
+  The gate's own comment said it *"cannot share a constant with the transform's"* and recorded
+  that the pair had **already drifted once**, when project-2 was minted: main rejected every
+  document the renderer wrote and `project.json` silently never appeared. That claim was simply
+  untrue — `main.ts` imports from `@transform/*` on three other lines — and documenting a trap
+  is again not immunity to it.
+  **Nothing could have caught it as it stood.** The unit tests never cross that process line;
+  every document the E2E tests happened to write was a v3, because the minimum-version rule
+  means only a NON-default setting promotes a document. So the version that could not be saved
+  was exactly the version no test produced.
+  One list now: `transform/src/project-version.ts`, four lines with no imports. It is its own
+  module rather than an export on `trim.ts` because importing `trim.ts` into main drags
+  `transform-version.ts` → `cursor-art.ts` and fails `tsconfig.node.json` with `Cannot find name
+  'CanvasGradient'` — the no-DOM guard working exactly as designed, and worth recording as the
+  reason the file looks over-small.
+  `project-version-seam.test.ts` refuses a third copy, and is DELIBERATELY not a repo-wide grep:
+  its first draft cried wolf on `session.ts` and `shot.ts`, which chain on ANCHORS and SHOT
+  versions — different documents, different lists, both legitimate. It names the two files that
+  gate a project document instead, and says so.
+  It also asserts `PROJECT_VERSIONS` equals the `schema/project-N.schema.json` files on disk, so
+  minting a schema without wiring it fails immediately rather than a day later.
+
+- **A canvas-size assertion cannot tell "the render moved" from "the canvas moved" (STC-318).**
+  The viewer's-eye toggle renders the preview at the embed width. The plausible half-fix is to
+  resize the canvas and keep calling `render()` with the export's output: the video still fills
+  the frame, so it LOOKS right, and only the cursor is wrong — drawn at the export's coordinates
+  and the export's `pxPerPoint` into a smaller canvas. **The first version of the E2E passed with
+  exactly that mutation in place**, because it only compared `canvas.width`.
+  The discriminator is the cursor's position as a FRACTION of the canvas, which is a property of
+  the take and must not move with the view size. `fixtures/basic` makes it cheap: the video is a
+  flat colour and the cursor is the only near-white thing in the frame, so a centroid over
+  near-white pixels locates it in one `getImageData`. The mutation shifts it 2.7x the tolerance;
+  a second assertion on the cursor's ink as a fraction of canvas AREA catches the same fault by
+  (1728/1232)^2, which is the louder half. Both were watched failing.

@@ -17,6 +17,7 @@ import {
 } from "./still-io.js";
 import { colorSpaceFor, type ExportOptions } from "@transform/still-export.js";
 import { parseShot, shotForWrite } from "@transform/shot.js";
+import { isProjectVersion } from "@transform/project-version.js";
 import {
   DEFAULT_EMBED_TEMPLATE, embedSnippet, exportManifestName, exportMediaName, planPublish,
   publicSrc, type PublishPlan,
@@ -689,11 +690,15 @@ ipcMain.handle("preview:writeProject", async (_e, bytes: ArrayBuffer) => {
   let doc: any;
   try { doc = JSON.parse(text); }
   catch { throw new Error("project.json is not JSON"); }
-  // v1 and v2 both accepted. This gate is in the main process and cannot share a
-  // constant with the transform's; it was missed when project-2 was minted and
-  // rejected every document the renderer wrote, so project.json silently never
-  // appeared. Same shape as STC-262's anchors gate in takes.ts.
-  if (doc?.version !== 1 && doc?.version !== 2 && doc?.version !== 3) {
+  // ONE list, imported (STC-318). This used to be a hand-rolled chain, and its
+  // own comment claimed it "cannot share a constant with the transform's" —
+  // untrue, this file already imports from @transform. The comment also
+  // recorded that the pair had drifted once, when project-2 was minted; it
+  // then drifted again when project-4 shipped, and for a day a take with a
+  // non-default zoom could not be saved at all, silently. No test could see
+  // it: the unit tests never cross this process line, and every document the
+  // E2E tests wrote happened to be a v3.
+  if (!isProjectVersion(doc?.version)) {
     throw new Error(`project.json version ${doc?.version} is not supported`);
   }
   await writeFile(join(openTake, "project.json"), text);

@@ -116,7 +116,7 @@ export interface Zoom {
 
 /** Mirrors schema/project-1.schema.json and schema/project-2.schema.json. */
 export interface Project {
-  version: 1 | 2 | 3 | 4;
+  version: 1 | 2 | 3 | 4 | 5;
   output: { fps: 60; width: number; height: number };
   /**
    * Which transform this edit was authored against (project-3, STC-308).
@@ -131,6 +131,15 @@ export interface Project {
    */
   cursor: { style: CursorStyle; scale: number };
   pip?: Pip;
+  /**
+   * The recorded app's base text size in POINTS (project-5, STC-318).
+   *
+   * The one input to the legibility figure that cannot be derived from the
+   * recording: a web app at 14-16 CSS px and a native app at 13 pt produce
+   * identical pixels, and only the person who recorded it knows which. Always
+   * present after a parse, defaulted to `DEFAULT_TEXT_PT`.
+   */
+  textPt?: number;
   /** Absent means the full take. */
   trim?: Trim;
   /**

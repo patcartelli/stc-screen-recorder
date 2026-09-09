@@ -106,6 +106,10 @@ import {
   outputOptions, selectedOption, type OutputOption,
 } from "@transform/output-size";
 import type { Size } from "@transform/spaces";
+import { render } from "@transform/render";
+import {
+  DEFAULT_TEXT_PT, EMBED_TARGETS, legibility, legibilitySentence, zoomFactorForCrop,
+} from "@transform/legibility";
 import { TRANSFORM_VERSION } from "@transform/transform-version";
 import { renderLibrary, type LibraryCallbacks } from "./library-view.js";
 import type { LibraryItem, LibraryList } from "./library-items.js";
@@ -552,6 +556,10 @@ let openTakeDir = "";
  * second change compound the first's rounding.
  */
 let openCapture: Size | undefined;
+/** The take's display geometry — legibility needs its width in POINTS (STC-318). */
+let openDisplay: { pointWidth: number } | undefined;
+/** The width the demo is shown at, in CSS px. A view setting, never stored on the take. */
+let embedWidthPx = EMBED_TARGETS[0]!.widthPx;
 let exportAbort: AbortController | undefined;
 
 const fmtClock = (ns: number) => {
@@ -657,6 +665,9 @@ async function setOutputSize(opt: OutputOption): Promise<void> {
   // project every draw, so the player has to be told or it draws the new size
   // onto the old canvas.
   await player.outputResized();
+  // The sentence does NOT change — the output width cancels out of it — and
+  // refreshing anyway is how that stays visibly true rather than asserted.
+  updateLegibilityUI();
   await persistProject();
 }
 
@@ -668,6 +679,98 @@ $("outsize").addEventListener("change", () => {
   // to the capture size.
   if (!opt || opt.upscales) { updateOutputSizeUI(); return; }
   void setOutputSize(opt).catch((e: any) => alertUser(String(e?.message ?? e)));
+});
+
+/**
+ * The legibility row (STC-318).
+ *
+ * `embedWidthPx` is deliberately NOT persisted on the take: where a demo is
+ * shown is a property of the page it lands on, and two people looking at the
+ * same recording can reasonably ask about different columns. The base text
+ * size IS persisted, because it is a fact about what was recorded.
+ */
+function updateLegibilityUI(): void {
+  if (!openProject || !openDisplay || !player) return;
+  const sel = $("embedtarget") as HTMLSelectElement;
+  if (sel.options.length === 0) {
+    for (const t of EMBED_TARGETS) {
+      const o = document.createElement("option");
+      o.value = t.id;
+      o.textContent = `${t.label} · ${t.widthPx}px`;
+      sel.append(o);
+    }
+    // Two of the ticket's three targets need someone who can see the site's
+    // layout, so the free width is how every other case is asked for rather
+    // than a fallback — see EMBED_TARGETS' own comment.
+    const custom = document.createElement("option");
+    custom.value = "custom";
+    custom.textContent = "Custom width";
+    sel.append(custom);
+  }
+  const known = EMBED_TARGETS.find((t) => t.widthPx === embedWidthPx);
+  sel.value = known?.id ?? "custom";
+  ($("embedwidth") as HTMLInputElement).value = String(embedWidthPx);
+  ($("textpt") as HTMLInputElement).value = String(openProject.textPt ?? DEFAULT_TEXT_PT);
+
+  // The zoom the viewer will actually experience. Stage 1 leaves the crop at
+  // the full frame, so this is 1 today and becomes real with STC-326 — read
+  // from render()'s own answer rather than assumed, so it needs no revisit.
+  const fs = render(openProject, openSession!, player.currentNs);
+  const l = legibility(openDisplay, openProject.textPt ?? DEFAULT_TEXT_PT,
+                       embedWidthPx, zoomFactorForCrop(fs.zoom.crop.width));
+  const out = $("legibility");
+  out.textContent = legibilitySentence(l);
+  out.classList.toggle("warn", l.verdict === "warn");
+
+  ($("vieweye") as HTMLInputElement).checked = player.viewSize !== null;
+}
+
+/** The embed width as a view size for the preview, at the capture's aspect. */
+function viewSizeForEmbed(): Size | null {
+  if (!openCapture) return null;
+  return {
+    width: embedWidthPx,
+    height: Math.max(1, Math.round(embedWidthPx * openCapture.height / openCapture.width)),
+  };
+}
+
+async function setEmbedWidth(px: number): Promise<void> {
+  embedWidthPx = Math.max(80, Math.min(4096, Math.round(px)));
+  updateLegibilityUI();
+  // Keep the viewer's eye honest: it is showing THIS width, so changing the
+  // width while it is on must move the canvas with it.
+  if (player?.viewSize) await player.setViewSize(viewSizeForEmbed());
+}
+
+$("embedtarget").addEventListener("change", () => {
+  const id = ($("embedtarget") as HTMLSelectElement).value;
+  const t = EMBED_TARGETS.find((x) => x.id === id);
+  // "Custom" selects nothing — the number field is the control, and snapping
+  // the width on selecting it would discard what the user just typed.
+  if (t) void setEmbedWidth(t.widthPx).catch(() => {});
+  else updateLegibilityUI();
+});
+
+$("embedwidth").addEventListener("change", () => {
+  void setEmbedWidth(Number(($("embedwidth") as HTMLInputElement).value)).catch(() => {});
+});
+
+$("textpt").addEventListener("change", () => {
+  if (!openProject) return;
+  const v = Number(($("textpt") as HTMLInputElement).value);
+  // Out of range is a no-op that puts the old value back, not a silent clamp:
+  // a field that quietly rewrites what you typed is how you stop trusting it.
+  if (Number.isFinite(v) && v > 0 && v <= 144) openProject.textPt = v;
+  updateLegibilityUI();
+  void persistProject().catch((e: any) => alertUser(String(e?.message ?? e)));
+});
+
+$("vieweye").addEventListener("change", () => {
+  if (!player) return;
+  const on = ($("vieweye") as HTMLInputElement).checked;
+  void player.setViewSize(on ? viewSizeForEmbed() : null)
+    .then(() => updateLegibilityUI())
+    .catch((e: any) => alertUser(String(e?.message ?? e)));
 });
 
 async function openPreview(take: Openable): Promise<void> {
@@ -740,6 +843,9 @@ async function openPreviewOrThrow(take: Openable): Promise<void> {
   openTakeName = take.name;
   openTakeDir = take.dir;
   openCapture = { width: anchors.capture.width, height: anchors.capture.height };
+  // The width in POINTS, not pixels — the legibility figure is in points and
+  // backingScale cancels out of it (see legibility.ts).
+  openDisplay = { pointWidth: anchors.display.pointWidth };
   player = new PreviewPlayer($("stage") as HTMLCanvasElement, session, project);
   const scrub = $("scrub") as HTMLInputElement;
   player.onTime = (tNs, playing) => {
@@ -756,6 +862,7 @@ async function openPreviewOrThrow(take: Openable): Promise<void> {
   await player.seek(player.firstRenderableNs);
   updateTrimUI();
   updateOutputSizeUI();
+  updateLegibilityUI();
   $("player").removeAttribute("hidden");
 }
 
@@ -767,6 +874,7 @@ async function closePreview(): Promise<void> {
   openSession = undefined;
   openProject = undefined;
   openCapture = undefined;
+  openDisplay = undefined;
   $("player").setAttribute("hidden", "");
   await recorder.closePreview();
 }
@@ -893,6 +1001,14 @@ async function runExport(): Promise<void> {
       encodedBytes: result.encodedBytes,
       output: openProject.output,
       trim: projectForWrite(openProject, lastNs).trim ?? null,
+      // Checkable after the fact (STC-318). `embedWidthPx` is what someone
+      // asked about at export time — a view setting, not a property of the
+      // take — so it is recorded here BESIDE the figure rather than left
+      // implicit: "4.2px" means nothing without the width it was computed at.
+      legibility: openDisplay ? (() => {
+        const l = legibility(openDisplay!, openProject!.textPt ?? DEFAULT_TEXT_PT, embedWidthPx);
+        return { textPt: l.textPt, embedWidthPx: l.embedWidthPx, textPx: l.textPx, verdict: l.verdict };
+      })() : null,
       exportDurationMs: result.durationMs,
     }, null, 2)).buffer as ArrayBuffer);
 

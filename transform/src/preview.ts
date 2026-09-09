@@ -26,6 +26,8 @@ export class PreviewPlayer {
   private inFlight: Promise<void> | null = null;
   private closed = false;
   private lateFrames = 0;
+  /** STC-318's viewer's eye: draw at this size instead of the export's. */
+  private viewOutput: { width: number; height: number } | null = null;
   private renderedFrames = 0;
   private cameraRenderedFrames = 0;
 
@@ -87,10 +89,53 @@ export class PreviewPlayer {
    * question STC-318 is about and the reason to look before exporting.
    */
   async outputResized(): Promise<void> {
-    this.canvas.width = this.project.output.width;
-    this.canvas.height = this.project.output.height;
+    await this.applyOutput();
+  }
+
+  /**
+   * The viewer's eye (STC-318): render at the width the demo is EMBEDDED at,
+   * 1:1, instead of at the export's size. `null` returns to the export's.
+   *
+   * Not a CSS shrink of the canvas, which would show the browser's downscale
+   * of a 4K picture rather than what a viewer gets — and not a change to
+   * `project.output` either, because that is a document setting the user chose
+   * and this is a way of looking. The whole render moves: `render()` is handed
+   * a project whose output IS the view size, so the cursor, the PiP and the
+   * zoom crop all land where they would at that size. Passing a different size
+   * to `composite()` alone would draw the frame small and the cursor at the
+   * export's coordinates, which is a plausible half-fix and visibly wrong.
+   */
+  async setViewSize(size: { width: number; height: number } | null): Promise<void> {
+    this.viewOutput = size;
+    await this.applyOutput();
+  }
+
+  get viewSize(): { width: number; height: number } | null { return this.viewOutput; }
+
+  private async applyOutput(): Promise<void> {
+    const o = this.effectiveOutput;
+    this.canvas.width = o.width;
+    this.canvas.height = o.height;
     // Resizing a canvas clears it, so a repaint is required rather than tidy.
     await this.seek(this.tNs);
+  }
+
+  /** What this player is drawing at: the view override, else the document's. */
+  private get effectiveOutput(): Project["output"] {
+    return this.viewOutput
+      ? { ...this.project.output, ...this.viewOutput }
+      : this.project.output;
+  }
+
+  /**
+   * The project as this player is currently DRAWING it.
+   *
+   * Identical to the document unless a view size is set, in which case only
+   * `output` differs — everything else (trim, cursor, pip, zoom) is the take's
+   * own, because a way of looking must not change what is being looked at.
+   */
+  private get renderProject(): Project {
+    return this.viewOutput ? { ...this.project, output: this.effectiveOutput } : this.project;
   }
 
   async seek(tNs: number): Promise<void> {
@@ -164,7 +209,7 @@ export class PreviewPlayer {
     try {
       const tick = tickOf(this.tNs);
       const t = tickTimeNs(tick);
-      const fs = render(this.project, this.session, t);
+      const fs = render(this.renderProject, this.session, t);
       // render()'s answer, not re-derived here — see export.ts.
       const idx = fs.frameIndex;
       // Both decoders are driven concurrently. They are independent decoders
@@ -179,7 +224,7 @@ export class PreviewPlayer {
       composite(this.ctx as unknown as OffscreenCanvasRenderingContext2D,
                 frame as unknown as ImageBitmap | null,
                 cameraFrame as unknown as ImageBitmap | null, fs,
-                this.project.output.width, this.project.output.height);
+                this.effectiveOutput.width, this.effectiveOutput.height);
       this.renderedFrames++;
       if (cameraFrame) this.cameraRenderedFrames++;
     } finally {

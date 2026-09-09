@@ -1,5 +1,7 @@
 import type { Pip, Project, Trim, Zoom } from "./types.js";
 import { DEFAULT_ZOOM_PRESET, ZOOM_PRESET_NAMES } from "./zoom.js";
+import { DEFAULT_TEXT_PT } from "./legibility.js";
+import { isProjectVersion } from "./project-version.js";
 import { TRANSFORM_VERSION } from "./transform-version.js";
 
 const NS_PER_S = 1_000_000_000;
@@ -81,6 +83,7 @@ export function defaultProject(
     // file returns the same shape — `parseProject(null)` takes an early return
     // that a field added in the parse body would never reach.
     zoom: { ...DEFAULT_ZOOM },
+    textPt: DEFAULT_TEXT_PT,
   };
   // A recorded camera track is part of the take, so a take that has one shows
   // its PiP without needing an edit document to say so.
@@ -110,7 +113,7 @@ export function parseProject(
   // neither; v2 predates the transform stamp. Refusing an older version here
   // would discard every project written before the change and silently
   // replace it with a default.
-  if (doc.version !== 1 && doc.version !== 2 && doc.version !== 3 && doc.version !== 4) return fallback;
+  if (!isProjectVersion(doc.version)) return fallback;
 
   const outW = Number.isInteger(doc.output?.width) ? doc.output.width : width;
   const outH = Number.isInteger(doc.output?.height) ? doc.output.height : height;
@@ -137,6 +140,10 @@ export function parseProject(
     project.trim = clampTrim(t.startNs, t.endNs, durationNs, 60);
   }
   project.zoom = cleanZoom(doc.zoom);
+  // A stored size out of range is a document with no opinion, not a crash —
+  // the rule every field in this parser follows.
+  project.textPt = typeof doc.textPt === "number" && doc.textPt > 0 && doc.textPt <= 144
+    ? doc.textPt : DEFAULT_TEXT_PT;
   return project;
 }
 
@@ -187,11 +194,17 @@ function cleanZoom(v: unknown): Zoom {
  * so it stays v3 and a build without project-4 still reads it. Change any zoom
  * field and it becomes v4; change it back and it returns.
  */
-function versionFor(project: Project): 3 | 4 {
+function isDefaultZoom(z: Zoom): boolean {
+  return z.enabled === DEFAULT_ZOOM.enabled && z.intensity === DEFAULT_ZOOM.intensity
+    && z.preset === DEFAULT_ZOOM.preset;
+}
+
+function versionFor(project: Project): 3 | 4 | 5 {
+  // Highest first: a document needing v5 needs it whatever its zoom says.
+  if (project.textPt !== undefined && project.textPt !== DEFAULT_TEXT_PT) return 5;
   const z = project.zoom;
   if (!z) return 3;
-  return z.enabled === DEFAULT_ZOOM.enabled && z.intensity === DEFAULT_ZOOM.intensity
-    && z.preset === DEFAULT_ZOOM.preset ? 3 : 4;
+  return isDefaultZoom(z) ? 3 : 4;
 }
 
 export function projectForWrite(project: Project, durationNs: number): Project {
@@ -211,6 +224,10 @@ export function projectForWrite(project: Project, durationNs: number): Project {
   if (!isFullTake(project, durationNs) && project.trim) out.trim = project.trim;
   // Only when it says something v3 cannot: writing the default block into
   // every document would push every take to v4 for a setting nobody touched.
-  if (version === 4 && project.zoom) out.zoom = project.zoom;
+  // v5 is a superset of v4: a document that needs v5 for its text size must
+  // still carry a non-default zoom if it has one, or the setting is silently
+  // dropped by the very write that promoted the version.
+  if (version >= 4 && project.zoom && !isDefaultZoom(project.zoom)) out.zoom = project.zoom;
+  if (version === 5) out.textPt = project.textPt;
   return out;
 }
