@@ -39,6 +39,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Readable } from "node:stream";
+import { explainFailedStart, type StartOutcome } from "./_start-outcome.js";
 
 const root = join(__dirname, "..", "..");
 const BIN = join(root, "helper", "build", "stc-helper");
@@ -102,7 +103,7 @@ const session = () => mkdtempSync(join(tmpdir(), "stc-stopstart-"));
  * "stream already real, teardown still in flight" window, not a source of
  * intermittent failure.
  */
-async function attemptRace(n: number): Promise<{ granted: boolean; startEv: string }> {
+async function attemptRace(n: number): Promise<{ granted: boolean; started: StartOutcome }> {
   const h = spawnHelper();
   await waitFor(() => find(h.fd3, "ready"), 10_000, `ready (attempt ${n})`);
 
@@ -117,7 +118,7 @@ async function attemptRace(n: number): Promise<{ granted: boolean; startEv: stri
   const stopOutcome = await waitFor(() => h.fd3.find((l) => l.seq === 2), 5_000, `seq 2 (stop) outcome (attempt ${n})`);
 
   if (startOutcome.ev === "error" && startOutcome.code === "no-displays") {
-    return { granted: false, startEv: startOutcome.ev };
+    return { granted: false, started: startOutcome as StartOutcome };
   }
 
   process.stderr.write(
@@ -150,18 +151,19 @@ async function attemptRace(n: number): Promise<{ granted: boolean; startEv: stri
 
   h.send({ cmd: "quit", seq: 6 });
   await waitFor(() => find(h.fd3, "bye"), 30_000, `bye (attempt ${n})`);
-  return { granted: true, startEv: startOutcome.ev };
+  return { granted: true, started: startOutcome as StartOutcome };
 }
 
 describe("stop arriving during start (STC-305)", () => {
   test("both requests are answered, no leaked stream, no crash, helper reusable afterward", async () => {
     const first = await attemptRace(1);
     if (!first.granted) {
-      throw new Error(
-        "SKIP-GRANT: this environment has no Screen Recording grant, so the race " +
-        "this test exists to exercise (a stop landing after a REAL capture already " +
-        "started) cannot be reached — without a grant start always fails before " +
-        `that point, which is already handled correctly. start said: ${first.startEv}`,
+      // The race needs a start that gets far enough to have a real stream to
+      // tear down. ANY refusal blocks it, and which refusal it was decides
+      // what the reader should go and do.
+      throw explainFailedStart(
+        first.started,
+        "the stop-during-start race (a stop landing after a REAL capture began)",
       );
     }
     // 7 more: cheap against real hardware, and each is an independent roll
