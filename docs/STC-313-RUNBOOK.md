@@ -89,10 +89,16 @@ Keep the take. It is also STC-319's fixture — record it once, well.
 
 ## Export size — read this before exporting
 
-**The app cannot set export resolution.** `project.output.width/height` always
-equals the capture size, and nothing in the UI writes them; the only thing the
-edit UI puts in `project.json` is the trim. This is a gap, not a decision —
-worth its own ticket.
+**The app cannot set export resolution — STC-335.** `project.output.width/height`
+always equals the capture size, and nothing in the UI writes them; the only
+thing the edit UI puts in `project.json` is the trim. The transform itself is
+fine: `exportSession` sizes the canvas, the muxer and the encoder from
+`project.output`, so the machinery is complete and merely unreachable.
+
+**Edit `project.json` BEFORE opening the take in the app.** If the take is
+already open, the next trim persists the in-memory project and overwrites the
+edit. That hazard is why STC-335 exists rather than this staying a documented
+workaround.
 
 The container on `/lab/network` is `max-width: 1280px` with `24px` padding
 either side at ≥840px viewports, so the video is **1232 CSS px** wide at its
