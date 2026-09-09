@@ -17,7 +17,11 @@ import {
 } from "./still-io.js";
 import { colorSpaceFor, type ExportOptions } from "@transform/still-export.js";
 import { parseShot, shotForWrite } from "@transform/shot.js";
-import { join, dirname } from "node:path";
+import {
+  DEFAULT_EMBED_TEMPLATE, embedSnippet, exportManifestName, exportMediaName, planPublish,
+  publicSrc, type PublishPlan,
+} from "./share.js";
+import { join, dirname, basename } from "node:path";
 import { fileURLToPath } from "node:url";
 import { existsSync, readdirSync } from "node:fs";
 import { readFile, writeFile, stat, open, mkdir, readdir, copyFile, rm } from "node:fs/promises";
@@ -231,6 +235,16 @@ ipcMain.handle("recorder:setSettings", async (_e, patch: Partial<Settings>): Pro
     // `writeSettings` merges `still` one level deep, so an absent destination
     // keeps the stored one rather than clearing it.
     clean.still = rest as Partial<Settings>["still"];
+  }
+  if (clean.share) {
+    // Same rule, same reason (STC-242): `share.destination` is a folder in the
+    // user's own site repo, and a renderer that could name it could make this
+    // process copy a file anywhere it liked. `share:chooseDestination` sets it
+    // from a native picker — a person choosing — and the slug and template,
+    // which decide only what the file is CALLED and what text is offered for
+    // pasting, stay settable from the preferences UI like any other field.
+    const { destination: _mainsAlone, ...rest } = clean.share;
+    clean.share = rest as Partial<Settings>["share"];
   }
   return writeSettings(app.getPath("userData"), clean);
 });
@@ -1057,6 +1071,119 @@ ipcMain.handle("preview:chunk", async (_e, name: string, offset: number, length:
   } finally {
     await fh.close();
   }
+});
+
+/**
+ * Share (STC-242) — the last step of the loop, and the smallest.
+ *
+ * Three handlers, and between them they are the whole feature: choose the
+ * folder in the site repo once, copy the exported MP4 into it under a stable
+ * name, and reveal it so the person can see what landed. No upload, no auth,
+ * no third-party service — the ticket cut all of that once the destination was
+ * decided, and what is left is a file copy that a `git push` in the other repo
+ * turns into a published video.
+ *
+ * Every decision is in `share.ts`; these do the I/O and decide nothing.
+ */
+ipcMain.handle("share:chooseDestination", async () => {
+  if (!win) throw new Error("no window");
+  const current = readSettings(app.getPath("userData")).share.destination;
+  const { canceled, filePaths } = await dialog.showOpenDialog(win, {
+    title: "Which folder in the site repo holds the video?",
+    properties: ["openDirectory", "createDirectory"],
+    ...(current ? { defaultPath: current } : {}),
+    buttonLabel: "Choose",
+  });
+  if (canceled || !filePaths[0]) return { destination: current };
+  const destination = filePaths[0];
+  const stored = readSettings(app.getPath("userData"));
+  writeSettings(app.getPath("userData"), { share: { ...stored.share, destination } });
+  return { destination };
+});
+
+/**
+ * Copy the open take's export into the site folder.
+ *
+ * **It replaces what is there, and that is the point rather than a hazard
+ * overlooked.** The published name comes from the slug, not the take, so the
+ * page can embed a fixed path and a re-recorded demo re-publishes over itself
+ * — see `DEFAULT_SLUG`. What is owed in exchange is honesty about it: the
+ * result says `replaced` when a file was already there, so the UI reports
+ * "Replaced" rather than "Wrote" and nobody discovers afterwards that a
+ * previous video is gone. It is checked BEFORE the copy, because after it the
+ * answer is always yes.
+ *
+ * No modal confirmation. The destination was chosen by hand, the name comes
+ * from a slug the user typed, and replacing that exact file is the entire
+ * intended operation — a dialog on every republish would be friction charged
+ * for doing what was asked.
+ */
+ipcMain.handle("share:publish", async (): Promise<{
+  ok: boolean; plan: PublishPlan["kind"]; message?: string;
+  file?: string; name?: string; replaced?: boolean; snippet?: string;
+}> => {
+  if (!openTake) throw new Error("no take is open");
+  const { share } = readSettings(app.getPath("userData"));
+  const takeName = basename(openTake);
+  const plan = planPublish({
+    takeName,
+    takeDir: openTake,
+    exportExists: existsSync(join(openTake, exportMediaName(takeName))),
+    destination: share.destination,
+    slug: share.slug,
+  });
+  if (plan.kind !== "ready") {
+    return { ok: false, plan: plan.kind, message: plan.message };
+  }
+  // Read before the write, or the answer is always "yes, it exists".
+  const replaced = existsSync(plan.to);
+  await copyFile(plan.from, plan.to);
+  // The snippet's dimensions come from the MANIFEST the export wrote beside
+  // the video (STC-308), not from the project as it stands now: the project is
+  // editable after an export, so reading it here could describe the video as
+  // whatever the user has since changed the output to. The manifest records
+  // what was actually encoded. Absent or unreadable, the snippet keeps
+  // `{width}` unsubstituted rather than inventing a number — a `width="0"`
+  // pasted into someone's page is a wrong answer dressed as a real one.
+  const size = await exportedSize(openTake, takeName);
+  return {
+    ok: true, plan: "ready", file: plan.to, name: plan.name, replaced,
+    snippet: embedSnippet(share.embedTemplate ?? DEFAULT_EMBED_TEMPLATE, {
+      src: publicSrc(share.slug), slug: share.slug, ...size,
+    }),
+  };
+});
+
+/** What the export actually encoded, from its own manifest, or nothing. */
+async function exportedSize(dir: string, takeName: string):
+    Promise<{ width?: number; height?: number }> {
+  try {
+    const doc = JSON.parse(await readFile(join(dir, exportManifestName(takeName)), "utf8"));
+    const o = doc?.output;
+    if (typeof o?.width === "number" && typeof o?.height === "number") {
+      return { width: o.width, height: o.height };
+    }
+  } catch { /* no manifest, or not readable — fall through */ }
+  return {};
+}
+
+/**
+ * Reveal the published file, selected in Finder.
+ *
+ * `recorder:reveal` shows a take DIRECTORY and refuses anything outside the
+ * recordings root, which is right for a take and wrong here: the published
+ * file is deliberately outside that root, in the user's own site repo. So this
+ * is its own handler with its own rule — it reveals only the exact path the
+ * stored destination and slug produce, never a path the renderer names, which
+ * is what keeps "open anything you like" from being one IPC call away.
+ */
+ipcMain.handle("share:reveal", async () => {
+  const { share } = readSettings(app.getPath("userData"));
+  if (!share.destination) return { ok: false, message: "No site folder chosen yet." };
+  const file = join(share.destination, `${share.slug}.mp4`);
+  if (!existsSync(file)) return { ok: false, message: "Nothing published yet." };
+  shell.showItemInFolder(file);
+  return { ok: true, file };
 });
 
 ipcMain.handle("recorder:reveal", async (_e, dir: string) => {
