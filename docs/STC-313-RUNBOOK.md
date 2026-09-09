@@ -85,38 +85,65 @@ Keep the take. It is also STC-319's fixture — record it once, well.
   if more than one is connected.
 - Camera off.
 
+### Which display you record on is the one thing you cannot fix afterwards
+
+**Exporting smaller does not make the text bigger.** The output width cancels:
+text of `T` points ends up at `T x embedWidth / display.pointWidth` CSS pixels,
+so the export size decides file weight and how much survives resampling, and
+nothing else (STC-318).
+
+What that means for this take:
+
+| recorded display | 13 pt text in the `/lab` column |
+|---|---|
+| full 4K desktop, 3840 points | **4.2 px** — unreadable, and no export setting rescues it |
+| retina display at 1728 points | **9.3 px** — clears the threshold |
+
+Same export either way; only how many POINTS of screen were recorded differs.
+So if the Music Network piece is on a large desktop, either record a smaller
+logical display or accept that the text is texture rather than content — and
+decide that before pressing record, because it cannot be repaired in the edit.
+
+The app shows the figure live beside the size picker, and warns when it is
+below the threshold. Worth a glance at it on the first take rather than the
+third.
+
 ---
 
-## Export size — read this before exporting
+## Export size
 
-**The app cannot set export resolution — STC-335.** `project.output.width/height`
-always equals the capture size, and nothing in the UI writes them; the only
-thing the edit UI puts in `project.json` is the trim. The transform itself is
-fine: `exportSession` sizes the canvas, the muxer and the encoder from
-`project.output`, so the machinery is complete and merely unreachable.
+Pick it in the app — **Export size**, the select under the preview. On a
+3840×2160 capture it offers:
 
-**Edit `project.json` BEFORE opening the take in the app.** If the take is
-already open, the next trim persists the in-memory project and overwrites the
-edit. That hazard is why STC-335 exists rather than this staying a documented
-workaround.
+| option | what it means |
+|---|---|
+| `Capture size · 3840×2160` | no rescale, the default |
+| `Embed 1× · 1232×694` | the `/lab` column exactly |
+| **`Embed 2× · 2464×1386`** | **use this** — crisp on a retina display, never upscaled |
 
-The container on `/lab/network` is `max-width: 1280px` with `24px` padding
-either side at ≥840px viewports, so the video is **1232 CSS px** wide at its
-widest. Twice that is **2464** for a retina display.
+The presets come from the site's real measurement rather than a round number:
+`/lab`'s container is `max-width: 1280px` with `24px` padding either side above
+840 px, so a demo is **1232 CSS px** at its widest.
 
-A full-display 4K capture exported at native size is both heavier than a
-portfolio page wants and larger than anything will ever show. So, before
-exporting, hand-edit the take's `project.json`:
+Height follows the capture's aspect and both dimensions are evened, because
+H.264's 4:2:0 cannot express an odd one. An option wider than the capture is
+shown disabled with "— larger than the capture" rather than hidden.
 
-```jsonc
-"output": { "fps": 60, "width": 2464, "height": 1386 }
-```
+A full 4K export is both heavier than a portfolio page wants and larger than
+anything will ever display, which is the whole reason to choose.
 
-`1386` assumes a 16:9 capture — **use the capture's own aspect ratio**, and
-keep both numbers even (H.264 cannot express an odd dimension). `parseProject`
-reads the pair straight back, so re-opening the take picks it up.
+### Then look at it at that size
 
-Then check it **at that size**, not full screen (STC-318).
+**Shown at** + the **Viewer's eye** checkbox, in the row below. That draws the
+preview at the embed width for real — 1232 CSS pixels on screen, not a smaller
+render stretched back to the player column. It is the only way to judge STC-318
+before exporting rather than after.
+
+> **This used to be a hand edit of `project.json`, and it no longer is.**
+> STC-335 shipped the picker on 2026-09-09 (#116). The old instruction carried
+> a hazard worth remembering if you ever meet a document the UI cannot express:
+> editing `project.json` while the take is OPEN loses the edit, because the next
+> trim persists the in-memory project straight over it.
 
 ---
 
