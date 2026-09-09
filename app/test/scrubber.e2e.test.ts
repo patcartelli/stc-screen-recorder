@@ -16,6 +16,7 @@ import { _electron as electron, type ElectronApplication } from "playwright";
 import { join } from "node:path";
 import { readFileSync, existsSync } from "node:fs";
 import { makeTakeFolder } from "./_take-fixture.js";
+import { MIN_TRIM_FRAMES, formatTimecode } from "../src/scrubber.js";
 
 const root = join(__dirname, "..", "..");
 let app: ElectronApplication | undefined;
@@ -51,10 +52,23 @@ const frameOf = (win: any): Promise<number> =>
 const focusScrub = (win: any) =>
   win.evaluate(() => (document.getElementById("scrub") as HTMLInputElement).focus());
 
+/**
+ * `frameOf` alone is not a sync gate: `fill()` sets the scrub's DOM value
+ * SYNCHRONOUSLY, so polling it trivially matches before `player.currentNs`
+ * has actually caught up — `seek()` decodes and draws before it settles.
+ * Every OTHER seekTo in this file happens to seek FORWARD-only, where the
+ * gap is too small to matter; a backward seek (slower — see
+ * SeekingFrameSource) exposed it: `press("i")` fired while the player was
+ * still near the PREVIOUS position, collapsing the trim. `#clock` is set
+ * only inside `onTime`, after the seek's `draw()` has resolved, so it is
+ * the real signal that `player.currentNs` is where the test expects.
+ */
 const seekTo = async (win: any, frame: number) => {
   await win.fill("#scrub", String(frame));
   await win.dispatchEvent("#scrub", "input");
   await expect.poll(() => frameOf(win), { timeout: 20_000 }).toBe(frame);
+  await expect.poll(() => win.textContent("#clock"), { timeout: 20_000 })
+    .toMatch(new RegExp(`^${formatTimecode(frame).replace(/[:.]/g, "\\$&")} /`));
 };
 
 describe("the scrubber's domain is export frames (rule 1)", () => {
@@ -256,6 +270,113 @@ describe("the trim is drawn, not fenced (rule 4)", () => {
   }, 60_000);
 });
 
+describe("rule 5's rubber band, dragged with a real pointer", () => {
+  // Neither the pure test (clampTrimFrame/rubberBandPx in isolation) nor the
+  // keyboard E2E above reaches this: onHandleMove's PIXEL math — where the
+  // clamp sits on screen, and which way the excess is measured — is wiring
+  // that only a real drag exercises. Found by hand on a real take (STC-338
+  // runbook review): both directions were pinned dead at the clamp with no
+  // creep, because `excess`'s sign was inverted in BOTH branches, so
+  // `rubberBandPx` always saw a negative number and returned 0. Only the
+  // red/wide `.held` styling ever showed — which read as "correct" at a
+  // small overshoot and "all red" (frozen, exaggerated) at a large one, the
+  // same zero-band bug looking different depending on how far you dragged.
+  //
+  // The trim used here holds the two handles FAR apart (frame 20 and 280 of
+  // 299) rather than close together. On a narrow window the two 10px-wide
+  // handle BUTTONS visually overlap almost entirely when they sit only a few
+  // frames apart, and whichever is later in the DOM wins a hit-test tie —
+  // the first draft of this test put them 10 frames apart and every click
+  // meant for #trim-in silently landed on #trim-out instead. Pointer capture
+  // (set at mousedown) is what makes the drag itself safe to run PAST the
+  // other handle's position once it is under way; it is only the INITIAL
+  // click that needs the two apart.
+  const IN_START = 20;
+  const OUT_START = 280;
+
+  async function setWideTrim(win: any) {
+    await seekTo(win, IN_START);
+    await win.keyboard.press("i");
+    await seekTo(win, OUT_START);
+    await win.keyboard.press("o");
+    await expect.poll(() => win.textContent("#triminfo"), { timeout: 10_000 }).toMatch(/–/);
+  }
+
+  async function dragHandleTo(win: any, handleId: string, clientX: number) {
+    const box = await win.locator(`#${handleId}`).boundingBox();
+    const y = box.y + box.height / 2;
+    await win.mouse.move(box.x + box.width / 2, y);
+    await win.mouse.down();
+    await win.mouse.move(clientX, y, { steps: 4 });
+  }
+
+  test("dragging the IN handle past its clamp creeps RIGHTWARD, growing with distance", async () => {
+    const { win } = await openPreview();
+    await setWideTrim(win);
+
+    const track = (await win.locator("#timeline").boundingBox())!;
+    const clampedX = track.x + ((OUT_START - MIN_TRIM_FRAMES) / LAST_FRAME) * track.width;
+
+    await dragHandleTo(win, "trim-in", clampedX + 40); // well past the clamp
+    await expect.poll(
+      () => win.evaluate(() => document.getElementById("trim-in")!.classList.contains("held")),
+      { timeout: 10_000 },
+    ).toBe(true);
+    const marginPx = await win.evaluate(() =>
+      parseFloat(getComputedStyle(document.getElementById("trim-in")!).marginLeft));
+    // -5 is the CSS default with no creep at all — this is the bug's exact
+    // signature (pinned dead at the clamp). A working rubber band must have
+    // moved the margin toward the pointer, i.e. more positive than -5.
+    expect(marginPx).toBeGreaterThan(-5);
+    await win.mouse.up();
+  }, 60_000);
+
+  test("dragging the OUT handle past its clamp creeps LEFTWARD, growing with distance", async () => {
+    const { win } = await openPreview();
+    await setWideTrim(win);
+
+    const track = (await win.locator("#timeline").boundingBox())!;
+    const clampedX = track.x + ((IN_START + MIN_TRIM_FRAMES) / LAST_FRAME) * track.width;
+
+    await dragHandleTo(win, "trim-out", clampedX - 40); // well past the clamp, toward the start
+    await expect.poll(
+      () => win.evaluate(() => document.getElementById("trim-out")!.classList.contains("held")),
+      { timeout: 10_000 },
+    ).toBe(true);
+    const marginPx = await win.evaluate(() =>
+      parseFloat(getComputedStyle(document.getElementById("trim-out")!).marginLeft));
+    // Same signature, opposite side: -5 with no creep is the bug; a working
+    // band must have moved the margin the OTHER way, more negative than -5.
+    expect(marginPx).toBeLessThan(-5);
+    await win.mouse.up();
+  }, 60_000);
+
+  test("the creep GROWS with how far past the clamp the pointer goes", async () => {
+    // The asymptotic shape (rule 5) is the whole point of a rubber band over
+    // a hard stop — this is what a fixed offset (a partial fix that pins the
+    // handle at some constant distance regardless of drag distance) would
+    // still fail to catch.
+    const { win } = await openPreview();
+    await setWideTrim(win);
+
+    const track = (await win.locator("#timeline").boundingBox())!;
+    const clampedX = track.x + ((OUT_START - MIN_TRIM_FRAMES) / LAST_FRAME) * track.width;
+    const marginAt = async (px: number) => {
+      await dragHandleTo(win, "trim-in", clampedX + px);
+      await new Promise((r) => setTimeout(r, 50));
+      const m = await win.evaluate(() =>
+        parseFloat(getComputedStyle(document.getElementById("trim-in")!).marginLeft));
+      await win.mouse.up();
+      return m;
+    };
+    const near = await marginAt(10);
+    await seekTo(win, IN_START); // reset the drag state cleanly between measurements
+    await win.keyboard.press("i");
+    const far = await marginAt(500);
+    expect(far).toBeGreaterThan(near);
+    expect(far).toBeLessThan(-5 + 24); // never exceeds RUBBER_BAND_PX
+  }, 60_000);
+});
 describe("the export grid on the track (rule 9)", () => {
   test("ticks are drawn at a stride wide enough to read", async () => {
     const { win } = await openPreview();

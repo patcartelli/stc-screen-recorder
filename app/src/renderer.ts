@@ -1137,8 +1137,20 @@ function onHandleMove(e: PointerEvent): void {
   if (held) {
     const r = $("timeline").getBoundingClientRect();
     const clampedX = r.left + fractionOfFrame(clamped, durationNs) * r.width;
-    const excess = dragging === "in" ? clampedX - e.clientX : e.clientX - clampedX;
-    const band = rubberBandPx(excess) * (dragging === "in" ? -1 : 1);
+    // POSITIVE excess means the pointer has gone PAST the clamp in the
+    // direction that triggered it: rightward for "in" (which clamps on
+    // overshoot-right), leftward for "out" (which clamps on overshoot-left).
+    // The two prior sign choices here were both backwards, which is why
+    // rubberBandPx always saw a negative number and returned 0 — the handle
+    // pinned dead at the clamp with no creep in EITHER direction; only the
+    // red/wide `.held` styling ever showed. Found from a real drag (STC-338
+    // runbook review): "in past end" looked fine at a small overshoot and
+    // "out past beginning" looked broken at a large one, but it was the same
+    // zero-band bug both times, just more visible the farther you dragged.
+    const excess = dragging === "in" ? e.clientX - clampedX : clampedX - e.clientX;
+    // The handle creeps toward the pointer's pull: rightward (positive
+    // marginLeft) for "in", leftward (negative) for "out".
+    const band = rubberBandPx(excess) * (dragging === "in" ? 1 : -1);
     handle.classList.add("held");
     handle.style.marginLeft = `${-5 + band}px`;
   } else {
