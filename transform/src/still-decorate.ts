@@ -2,6 +2,10 @@ import type {
   Background, Decoration, DecorationMode, Rect, Shadow, Shot,
 } from "./shot.js";
 import type { CursorShape } from "./types.js";
+import type { Size } from "./spaces.js";
+import {
+  pxPerPoint as pxPerPointFrom, regionPointToPixels, uvRectToPixels, uvToPixels,
+} from "./spaces.js";
 import {
   ANNOTATION_TEXT_SIZES, ANNOTATION_WEIGHTS, arrowGeometry,
   type Annotation, type ArrowGeometry, type BoxShape,
@@ -37,7 +41,7 @@ import {
  * way not to have one is not to resample.
  */
 
-export interface Size { width: number; height: number }
+export type { Size } from "./spaces.js";
 
 /** A resolved shadow, in OUTPUT PIXELS rather than the document's points. */
 export interface ShadowLayout {
@@ -232,14 +236,16 @@ export function canvasSize(content: Size, padding: number, preset: string): Size
     : { width: base.width, height: Math.round(base.width / aspect) };
 }
 
-/** A normalised (0..1) rectangle over the capture, in output pixels. */
+/**
+ * A normalised (0..1) rectangle over the capture, in output pixels.
+ *
+ * The reference rect is the CONTENT rect — the capture as drawn — which is
+ * what makes "a fill moves with the picture, not the canvas" structural:
+ * change the padding or the canvas preset and `content` moves, so the fill
+ * moves with it and nothing here has to know that happened.
+ */
 function redactionToPixels(r: Rect, content: Rect): Rect {
-  return {
-    x: content.x + r.x * content.width,
-    y: content.y + r.y * content.height,
-    width: r.width * content.width,
-    height: r.height * content.height,
-  };
+  return uvRectToPixels(r, content);
 }
 
 /**
@@ -262,8 +268,7 @@ export function cursorLayout(shot: Shot, content: Rect,
   const origin = shot.kind === "window"
     ? { x: shot.window?.bounds.x ?? 0, y: shot.window?.bounds.y ?? 0 }
     : { x: shot.crop?.x ?? 0, y: shot.crop?.y ?? 0 };
-  const x = content.x + (c.x - origin.x) * pxPerPoint;
-  const y = content.y + (c.y - origin.y) * pxPerPoint;
+  const { x, y } = regionPointToPixels(c, origin, pxPerPoint, content);
   if (x < content.x || y < content.y
       || x >= content.x + content.width || y >= content.y + content.height) {
     return undefined;
@@ -287,14 +292,16 @@ export function pxPerPointOf(shot: Shot): number {
   const sourcePoints = shot.kind === "window"
     ? shot.window?.bounds.width
     : shot.crop?.width;
-  return sourcePoints && sourcePoints > 0
-    ? shot.frame.width / sourcePoints
-    : shot.display.backingScale;
+  // The fallback is the DOCUMENT's business, not the conversion's: spaces.ts
+  // returns undefined rather than a silent 1 when there is no region to read
+  // the ratio from, and a shot with no crop is a whole-display capture whose
+  // backing scale is the right answer.
+  return pxPerPointFrom(shot.frame.width, sourcePoints ?? 0) ?? shot.display.backingScale;
 }
 
 /** A normalised point over the capture, in output pixels. */
 function pointToPixels(p: { x: number; y: number }, content: Rect): { x: number; y: number } {
-  return { x: content.x + p.x * content.width, y: content.y + p.y * content.height };
+  return uvToPixels(p, content);
 }
 
 /**
@@ -318,12 +325,10 @@ export function annotationLayouts(annotations: readonly Annotation[], content: R
       };
     }
     if (a.kind === "box") {
-      const origin = pointToPixels({ x: a.rect.x, y: a.rect.y }, content);
       return {
         kind: "box" as const, shape: a.shape,
         strokePx: ANNOTATION_WEIGHTS[a.weight] * pxPerPoint,
-        rect: { x: origin.x, y: origin.y,
-                width: a.rect.width * content.width, height: a.rect.height * content.height },
+        rect: uvRectToPixels(a.rect, content),
       };
     }
     const at = pointToPixels(a.at, content);

@@ -203,6 +203,11 @@ func framePixelSize(points: StillRect, backingScale: Double) -> (width: Int, hei
 /// Where the pointer is on the SOURCE display, in that display's own
 /// top-left-origin points — or nil when it is on another display.
 ///
+/// SPACE: Cocoa global (bottom-left origin, y up) → global points (top-left
+/// origin, y down) → display-local points. The ONE flip in the system, which
+/// is why everything downstream of `events.json` and `shot.json` can assume a
+/// top-left origin. Vocabulary: `transform/src/spaces.ts`.
+///
 /// `NSEvent.mouseLocation` is a Cocoa global point: origin at the bottom-left
 /// of the MAIN display, y up. Display bounds (`CGDisplayBounds`) are CoreGraphics
 /// global: origin at the top-left of the main display, y down. The flip is

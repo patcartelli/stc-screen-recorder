@@ -106,6 +106,32 @@ describe("exportFrameOf — the output frame containing t, on the export's own g
     const startNs = 1_234_567_890;
     expect(exportFrameOf(startNs).frame).toBe(Math.floor((startNs * EXPORT_FPS) / 1e9));
   });
+  test("inverse pair over a sweep: floor(ceil(k*1e9/60)*60/1e9) === k", () => {
+    // The property STC-314 names, written as the arithmetic rather than as
+    // three example frames: it is what makes a still grabbed off the playhead
+    // land on the same instant the video export renders, and it has to hold at
+    // every k rather than at the ones someone thought to list. 108_000 frames
+    // is a 30-minute take.
+    for (let k = 0; k <= 108_000; k += 7) {
+      expect(exportFrameOf(exportFrameTimeNs(k)).frame).toBe(k);
+    }
+    for (const k of [0, 1, 2, 3, 59, 60, 61, 107_999, 108_000]) {
+      expect(exportFrameOf(exportFrameTimeNs(k)).frame).toBe(k);
+      // and the ns it maps back to is the same one it was rendered at
+      expect(exportFrameOf(exportFrameTimeNs(k)).tNs).toBe(exportFrameTimeNs(k));
+    }
+  });
+
+  test("one ns before frame k's render time is frame k-1 — the grid has no gaps", () => {
+    for (const k of [1, 2, 60, 12_345]) {
+      expect(exportFrameOf(exportFrameTimeNs(k) - 1).frame).toBe(k - 1);
+    }
+  });
+
+  test("the sim-tick inverse pair holds over the same sweep", () => {
+    for (let n = 0; n <= 216_000; n += 13) expect(tickOf(tickTimeNs(n))).toBe(n);
+  });
+
   test("negative or zero time is frame 0", () => {
     expect(exportFrameOf(-5)).toEqual({ frame: 0, tNs: 0 });
     expect(exportFrameOf(0)).toEqual({ frame: 0, tNs: 0 });

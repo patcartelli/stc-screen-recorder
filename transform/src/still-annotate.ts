@@ -1,3 +1,5 @@
+import type { Point, Rect, Size } from "./spaces.js";
+import { pixelsToUv } from "./spaces.js";
 /**
  * Annotation — arrow, box, text (STC-295). The decisions, with no canvas.
  *
@@ -37,8 +39,9 @@
  * something to test for and patch.
  */
 
-export interface Point { x: number; y: number }
-export interface NormRect { x: number; y: number; width: number; height: number }
+export type { Point } from "./spaces.js";
+/** A UV rectangle over the capture. `Rect` under a name that says which space. */
+export type NormRect = Rect;
 
 /** A few weights, not a slider. Points at the capture's scale. */
 export type AnnotationWeight = "thin" | "regular" | "bold";
@@ -155,8 +158,10 @@ export const ARROW_HEAD_WIDTH_RATIO = 3.2;
 export const MIN_ARROW_PX = 12;
 
 const clamp01 = (v: number) => (v < 0 ? 0 : v > 1 ? 1 : v);
+const clampPoint01 = (p: Point): Point => ({ x: clamp01(p.x), y: clamp01(p.y) });
 
-export interface PixelSize { width: number; height: number }
+/** A size in capture pixels. `Size` under a name that says which space. */
+export type PixelSize = Size;
 
 export function normaliseArrow(from: Point, to: Point, frame: PixelSize,
                                minPx = MIN_ARROW_PX): ArrowAnnotation | undefined {
@@ -164,10 +169,11 @@ export function normaliseArrow(from: Point, to: Point, frame: PixelSize,
   const dx = to.x - from.x;
   const dy = to.y - from.y;
   if (Math.hypot(dx, dy) < minPx) return undefined;
+  const ref = { x: 0, y: 0, width: frame.width, height: frame.height };
   return {
     kind: "arrow",
-    from: { x: clamp01(from.x / frame.width), y: clamp01(from.y / frame.height) },
-    to: { x: clamp01(to.x / frame.width), y: clamp01(to.y / frame.height) },
+    from: clampPoint01(pixelsToUv(from, ref)),
+    to: clampPoint01(pixelsToUv(to, ref)),
     weight: "regular",
   };
 }
@@ -181,15 +187,14 @@ export function normaliseBox(a: Point, b: Point, frame: PixelSize, shape: BoxSha
   const x0 = Math.min(a.x, b.x), x1 = Math.max(a.x, b.x);
   const y0 = Math.min(a.y, b.y), y1 = Math.max(a.y, b.y);
   if (x1 - x0 < minPx || y1 - y0 < minPx) return undefined;
-  const x = clamp01(x0 / frame.width);
-  const y = clamp01(y0 / frame.height);
+  // Both CORNERS are clamped and then subtracted, rather than the size being
+  // clamped: a box dragged half off the capture keeps the edge it has.
+  const ref = { x: 0, y: 0, width: frame.width, height: frame.height };
+  const tl = clampPoint01(pixelsToUv({ x: x0, y: y0 }, ref));
+  const br = clampPoint01(pixelsToUv({ x: x1, y: y1 }, ref));
   return {
     kind: "box", shape, weight: "regular",
-    rect: {
-      x, y,
-      width: clamp01(x1 / frame.width) - x,
-      height: clamp01(y1 / frame.height) - y,
-    },
+    rect: { x: tl.x, y: tl.y, width: br.x - tl.x, height: br.y - tl.y },
   };
 }
 
@@ -210,7 +215,7 @@ export function makeText(at: Point, text: string, frame: PixelSize,
   if (!trimmed || !(frame.width > 0) || !(frame.height > 0)) return undefined;
   return {
     kind: "text",
-    at: { x: clamp01(at.x / frame.width), y: clamp01(at.y / frame.height) },
+    at: clampPoint01(pixelsToUv(at, { x: 0, y: 0, width: frame.width, height: frame.height })),
     text: trimmed.slice(0, MAX_ANNOTATION_TEXT),
     size,
   };

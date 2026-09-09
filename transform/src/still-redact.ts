@@ -1,4 +1,6 @@
 import type { Redaction } from "./shot.js";
+import type { Point, Size } from "./spaces.js";
+import { pixelsToUvRect } from "./spaces.js";
 
 /**
  * Redaction's decisions (STC-297): what colour a fill is, and what a drag means.
@@ -52,8 +54,7 @@ export const REDACTION_LUMINANCE_THRESHOLD = 0.5;
  */
 export const MIN_REDACTION_PX = 4;
 
-export interface Point { x: number; y: number }
-export interface Size { width: number; height: number }
+export type { Point, Size } from "./spaces.js";
 
 /**
  * Mean relative luminance of an RGBA buffer, 0..1, weighted by alpha.
@@ -118,12 +119,13 @@ export function normaliseRegion(a: Point, b: Point, frame: Size,
   const y0 = clamp(Math.min(a.y, b.y), 0, frame.height);
   const y1 = clamp(Math.max(a.y, b.y), 0, frame.height);
   if (x1 - x0 < minPx || y1 - y0 < minPx) return undefined;
-  return {
-    x: x0 / frame.width,
-    y: y0 / frame.height,
-    width: (x1 - x0) / frame.width,
-    height: (y1 - y0) / frame.height,
-  };
+  // Capture pixels -> UV over the capture. The clamp above is policy; the
+  // division is spaces.ts's (STC-314), so this cannot drift from the
+  // conversion that reads the region back out.
+  return pixelsToUvRect(
+    { x: x0, y: y0, width: x1 - x0, height: y1 - y0 },
+    { x: 0, y: 0, width: frame.width, height: frame.height },
+  );
 }
 
 /**

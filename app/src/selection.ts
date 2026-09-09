@@ -1,3 +1,5 @@
+import { rectToDisplayLocal, snapRectEdges } from "@transform/spaces.js";
+
 /**
  * The selection overlay's decisions (STC-290), with no DOM and no Electron.
  *
@@ -154,15 +156,16 @@ export function intersect(r: Rect, bounds: Rect): Rect | undefined {
   return { x, y, width: right - x, height: bottom - y };
 }
 
-/** Integer points. The nudge step is one point, so the rect lives on that grid. */
-export function roundRect(r: Rect): Rect {
-  const x = Math.round(r.x), y = Math.round(r.y);
-  return {
-    x, y,
-    width: Math.round(r.x + r.width) - x,
-    height: Math.round(r.y + r.height) - y,
-  };
-}
+/**
+ * Integer points. The nudge step is one point, so the rect lives on that grid.
+ *
+ * Re-exported rather than implemented: this used to be a local `roundRect`
+ * with a DIFFERENT rule from the `roundRect` in the transform (edges snapped
+ * here, size rounded there), which is the "one value, two copies" defect with
+ * the names agreeing and the answers not. spaces.ts owns both and names them
+ * apart (STC-314).
+ */
+export { snapRectEdges } from "@transform/spaces.js";
 
 /**
  * The marquee a fresh drag describes.
@@ -272,7 +275,7 @@ export function displayContaining(p: Point, displays: DisplayInfo[]): DisplayInf
 
 /** GLOBAL → that display's own points. Assumes `r` overlaps `d`. */
 export function toDisplayLocal(r: Rect, d: DisplayInfo): Rect {
-  return { x: r.x - d.bounds.x, y: r.y - d.bounds.y, width: r.width, height: r.height };
+  return rectToDisplayLocal(r, d.bounds);
 }
 
 /**
@@ -317,9 +320,9 @@ export function confirm(state: SelectionState, ctx: SelectionContext): Selection
   if (!display) return undefined;
   const clipped = intersect(r, display.bounds);
   if (!clipped) return undefined;
-  const crop = roundRect(toDisplayLocal(clipped, display));
+  const crop = snapRectEdges(toDisplayLocal(clipped, display));
   if (crop.width < 1 || crop.height < 1) return undefined;
-  return { kind: "region", displayId: display.id, crop, global: roundRect(clipped) };
+  return { kind: "region", displayId: display.id, crop, global: snapRectEdges(clipped) };
 }
 
 // ── the state machine ───────────────────────────────────────────────────────

@@ -11,6 +11,11 @@ import CoreGraphics
 
 /// mach ticks → nanoseconds.
 ///
+/// SPACE: mach ticks → session ns. The vocabulary and the rest of the
+/// conversions are in `transform/src/spaces.ts`; this one lives here because
+/// only the helper ever sees a mach tick. A Swift mirror of that module was
+/// considered and refused (two implementations of one formula).
+///
 /// `SCStreamFrameInfo.displayTime` is mach ticks (41.667 ns each on Apple
 /// Silicon, 1 ns on Intel) and MUST be converted. `CGEvent.timestamp` is
 /// already nanoseconds on the same epoch and must NOT be. Mixing them up is a
