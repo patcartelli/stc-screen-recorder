@@ -11,6 +11,9 @@ import {
   DEFAULT_CORNER, DEFAULT_THUMBNAIL_TIMEOUT_MS, clampTimeoutMs, parseCorner, parseSettleAction,
   type Corner, type SettleAction,
 } from "./thumbnail.js";
+import {
+  DEFAULT_EMBED_TEMPLATE, DEFAULT_SLUG, slugIsValid,
+} from "./share.js";
 
 /**
  * User preferences, owned by the main process.
@@ -70,7 +73,36 @@ export interface Settings {
    * everywhere else, never duplicated by it.
    */
   thumbnail: ThumbnailSettings;
+  /**
+   * Where an exported take goes when it is shared (STC-242) — the folder in
+   * the site repo, the slug it lands under, and the snippet to paste.
+   *
+   * Its own block rather than folded into an export setting, for the same
+   * reason `thumbnail` is separate from `still`: these answer "where does this
+   * video go when it leaves", not "what does the encode look like".
+   */
+  share: ShareSettings;
 }
+
+export interface ShareSettings {
+  /**
+   * The folder in the site repo that holds the video, or null until the user
+   * picks one.
+   *
+   * Null rather than a guessed path: this app cannot know where someone keeps
+   * their site checkout, and a wrong default would write a file into a
+   * directory nobody asked about. `planPublish` refuses rather than defaulting.
+   */
+  destination: string | null;
+  /** The stable published name — see `DEFAULT_SLUG` for why it is not the take's. */
+  slug: string;
+  /** The paste-able embed, as a template. Provisional; see `DEFAULT_EMBED_TEMPLATE`. */
+  embedTemplate: string;
+}
+
+export const DEFAULT_SHARE_SETTINGS: ShareSettings = {
+  destination: null, slug: DEFAULT_SLUG, embedTemplate: DEFAULT_EMBED_TEMPLATE,
+};
 
 export interface ThumbnailSettings {
   corner: Corner;
@@ -113,6 +145,7 @@ export const DEFAULT_SETTINGS: Settings = {
   shutterSound: true,
   still: { ...DEFAULT_STILL_SETTINGS },
   thumbnail: { ...DEFAULT_THUMBNAIL_SETTINGS },
+  share: { ...DEFAULT_SHARE_SETTINGS },
 };
 
 /**
@@ -154,6 +187,25 @@ function cleanThumbnail(v: unknown): ThumbnailSettings {
     settleAction: parseSettleAction(d.settleAction),
     skip: d.skip === true,
   };
+}
+
+/**
+ * Same rule again — and the slug is validated rather than sanitised.
+ *
+ * A stored slug that no longer passes `slugIsValid` falls back to the default
+ * instead of being repaired into something adjacent: silently turning
+ * "My Demo" into "my-demo" would publish to a path the user never chose and
+ * never saw, and the page embedding the old one would break without saying so.
+ * Refuse and show the default; the user retypes it once.
+ */
+function cleanShare(v: unknown): ShareSettings {
+  const d = (v && typeof v === "object" && !Array.isArray(v) ? v : {}) as Record<string, unknown>;
+  const destination = typeof d.destination === "string" && d.destination.startsWith("/")
+    ? d.destination : null;
+  const slug = typeof d.slug === "string" && slugIsValid(d.slug) ? d.slug : DEFAULT_SLUG;
+  const embedTemplate = typeof d.embedTemplate === "string" && d.embedTemplate.trim()
+    ? d.embedTemplate : DEFAULT_EMBED_TEMPLATE;
+  return { destination, slug, embedTemplate };
 }
 
 /** A display id is a positive integer; anything else is "automatic". */
@@ -213,6 +265,7 @@ export function readSettings(dir: string): Settings {
       ? doc.shutterSound : DEFAULT_SETTINGS.shutterSound,
     still: cleanStill(doc.still),
     thumbnail: cleanThumbnail(doc.thumbnail),
+    share: cleanShare(doc.share),
   };
 }
 
@@ -234,6 +287,7 @@ export function writeSettings(dir: string, patch: Partial<Settings>): Settings {
     ...current, ...patch,
     still: { ...current.still, ...(patch.still ?? {}) },
     thumbnail: { ...current.thumbnail, ...(patch.thumbnail ?? {}) },
+    share: { ...current.share, ...(patch.share ?? {}) },
   };
   const clean: Settings = {
     camera: merged.camera === true,
@@ -241,6 +295,7 @@ export function writeSettings(dir: string, patch: Partial<Settings>): Settings {
     shortcuts: cleanShortcuts(merged.shortcuts),
     still: cleanStill(merged.still),
     thumbnail: cleanThumbnail(merged.thumbnail),
+    share: cleanShare(merged.share),
     // Not `=== true`: the default is ON, so an absent or malformed value must
     // fall back to on rather than to silence. The camera's `=== true` is the
     // opposite case for the opposite reason — it defaults off because it turns
