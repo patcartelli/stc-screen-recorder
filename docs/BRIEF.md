@@ -59,7 +59,7 @@ started, and must never let a take that is missing something look like a take th
 
 | decision | status | evidence |
 |---|---|---|
-| Rule 2: the cursor is **never only in the video**. Telemetry is always captured, with no toggle | **holds in code; confirm the policy** | no code path or setting disables the tap. The one thing that does is a missing Input Monitoring grant (`tapCreate` returns nil): the helper warns, records video only, and since #64 the app says so loudly. **Open:** should a take without a tap refuse to start instead of warning? The brief's wording says telemetry is not optional |
+| Rule 2: the cursor is **never only in the video**. Telemetry is always captured, with no toggle | **holds; a take without telemetry does not start** | no code path or setting disables the tap, and since STC-315 a missing Input Monitoring grant (`tapCreate` returns nil) is an ERROR on `start` (`event-tap-unavailable`, `Capture.swift`'s `makeEventTap`/`begin`) rather than a warning over a video-only take. The refusal precedes `setupWriter()`, so no take directory is created at all. **Still open, and it is a different question:** a tap DISABLED mid-take (`tapDisabledByTimeout`) is re-enabled and counted (`stats().tapDisabled`), so a starved run loop costs a gap in the track rather than the take. Nothing in the suite can starve a run loop on demand, which is why it was not settled here |
 | Pixel exclusion (`showsCursor = false`) is the default | **holds** | `Capture.swift` |
 | Baking in the system cursor is an opt-in that disables cursor styling for that take | **not yet built** | no setting, no field in `project`, no branch in the compositor |
 | The cursor is drawn from events by the transform; artwork is a placeholder circle | **holds** | `compositor.ts`; real pointer artwork is listed as a known limit |
@@ -127,7 +127,7 @@ decision against, only a decision about order.
 ## Open questions for the author
 
 1. **Xcode and the macOS 26 floor.** The helper builds against the 13.3 SDK because there is no Xcode. Is the floor a target for when Xcode lands, or a requirement now?
-2. **Cursor telemetry as a hard requirement.** A missing Input Monitoring grant currently warns and records video only. Refuse to start instead?
+2. ~~**Cursor telemetry as a hard requirement.** A missing Input Monitoring grant currently warns and records video only. Refuse to start instead?~~ **Answered: refuse to start** (STC-315). The successor question is narrower and still open — a tap that dies *mid-take* is re-enabled rather than ending the take; see the Cursor row above.
 3. **`recording.json` vs `project-3`.** Is `recording.json` a new file beside `anchors`/`events`/`project`, or the successor to `project.json`? The segments array needs an owner.
 4. **WebGPU and SolidJS timing.** Both are decided; neither has a phase. Review §7 orders them after the segments schema and auto-zoom. Agree?
 5. **Transform versioning.** Should easing constants live in `project` (editable per take) or as a stamped transform version (global, recorded)?
