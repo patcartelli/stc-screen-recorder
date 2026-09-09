@@ -293,6 +293,40 @@ stillBtn.addEventListener("click", async () => {
 // keeps an open window from showing a stale take list and no explanation.
 recorder.on("still:captured", (r: StillResult) => { void reportStill(r); });
 
+/**
+ * Why a take did not start, said in terms of what it costs and what to do.
+ *
+ * A map rather than the ternary chain this replaced: there are two permission
+ * refusals now, they read almost identically to a user ("something about
+ * privacy settings"), and they send you to DIFFERENT panes. A chain that grows
+ * one arm per grant is how the second one ends up phrased as an afterthought
+ * of the first.
+ *
+ * Neither says "try again" without saying what to change first — a start that
+ * refused for a missing grant will refuse identically until the grant exists,
+ * and inviting a retry is how someone presses Record four times and concludes
+ * the app is broken.
+ */
+const START_FAULTS: Record<string, string> = {
+  "no-displays":
+    "Screen Recording permission is required.\nGrant it in System Settings › " +
+    "Privacy & Security › Screen & System Audio Recording, then try again.",
+  // STC-315. This used to be a WARNING, arriving after the take was already
+  // running: the recording went ahead with no cursor track at all, and since
+  // the pixels never carry a pointer (the transform draws it from events.json)
+  // the resulting file looked like every other take and had no cursor
+  // anywhere. It is a refusal now — nothing was recorded — so the sentence has
+  // to say that first, before the fix, or a user reads "grant this" and
+  // assumes the take they just made is fine.
+  "event-tap-unavailable":
+    "Nothing was recorded — the take did not start.\n\nThe recorder could not " +
+    "watch your mouse, and the cursor is never captured in the video itself: it " +
+    "is drawn afterwards from what the tap records. A take without it would have " +
+    "no cursor at all, so it is refused rather than made.\n\nGrant Input " +
+    "Monitoring in System Settings › Privacy & Security › Input Monitoring, then " +
+    "press Record again.",
+};
+
 recordBtn.addEventListener("click", async () => {
   recordBtn.disabled = true;
   clearAlert();
@@ -300,9 +334,7 @@ recordBtn.addEventListener("click", async () => {
     if (!recording) {
       const r = await recorder.start();
       if (!r.ok) {
-        alertUser(r.code === "no-displays"
-          ? "Screen Recording permission is required.\nGrant it in System Settings › Privacy & Security › Screen & System Audio Recording, then try again."
-          : `Could not start: ${r.code}\n${r.detail ?? ""}`);
+        alertUser(START_FAULTS[String(r.code)] ?? `Could not start: ${r.code}\n${r.detail ?? ""}`);
         setState("idle");
       } else {
         recording = true;
@@ -435,21 +467,21 @@ const CAMERA_FAULTS: Record<string, string> = {
  * Warnings that are not about the camera but still decide whether a take is
  * what the user thinks it is.
  *
- * `event-tap-unavailable` is the one that matters most: the captured pixels
- * carry no cursor by design (showsCursor is false, the transform draws it from
- * events.json), so a take recorded without the tap has NO cursor anywhere and
- * looked identical to a good one — the rule that the cursor is never only in
- * the video was being broken silently, and the library's "0 events" was the
- * only trace. `stream-stopped` is a display stream that died mid-take. It used
- * to leave the helper in "recording" with frames simply stopping until Stop
- * was pressed; since STC-306 the helper ends the take itself, so this warning
- * is followed by a `recording-ended` with the same reason.
+ * `event-tap-unavailable` used to be the entry that mattered most here and is
+ * deliberately NOT one any more: since STC-315 a take that cannot record the
+ * cursor does not start, so the helper answers the `start` request with that
+ * code instead of warning about a recording already underway. Its wording
+ * lives in START_FAULTS, where it can say "nothing was recorded" — which is
+ * the fact a warning phrased for a live take could not state. Leaving a copy
+ * here would be a message that can no longer fire, describing a take that can
+ * no longer exist.
+ *
+ * `stream-stopped` is a display stream that died mid-take. It used to leave the
+ * helper in "recording" with frames simply stopping until Stop was pressed;
+ * since STC-306 the helper ends the take itself, so this warning is followed
+ * by a `recording-ended` with the same reason.
  */
 const RECORDING_FAULTS: Record<string, string> = {
-  "event-tap-unavailable":
-    "Cursor input is NOT being recorded: the recorder could not install its input tap, " +
-    "so this take will have no cursor at all. Grant Input Monitoring in System Settings › " +
-    "Privacy & Security, then record again.",
   "stream-stopped":
     "The display capture stopped unexpectedly, so the recording is being stopped. " +
     "What was captured up to this point is kept.",

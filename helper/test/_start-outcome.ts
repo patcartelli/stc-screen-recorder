@@ -41,11 +41,20 @@ export type StartRefusal =
    * permissions, and the honest no-grant signal is `no-displays` instead.
    */
   | { kind: "display-busy" }
+  /**
+   * STC-315: `CGEvent.tapCreate` returned nil, so the helper refused to make a
+   * take with no cursor track. A SECOND grant — Input Monitoring — and it is
+   * emphatically not the same one as `no-displays`: a machine can hold Screen
+   * Recording and still land here, which before this ticket recorded a
+   * cursorless take instead of saying anything a test could read.
+   */
+  | { kind: "no-input-monitoring" }
   /** Something else. Say so; do not reach for the familiar answer. */
   | { kind: "unclassified" };
 
 export function classifyStartRefusal(started: StartOutcome): StartRefusal {
   if (started.code === "no-displays") return { kind: "no-grant" };
+  if (started.code === "event-tap-unavailable") return { kind: "no-input-monitoring" };
   const detail = typeof started.detail === "string" ? started.detail : "";
   if (detail.includes("-3805") || detail.includes("connection being interrupted")) {
     return { kind: "display-busy" };
@@ -73,6 +82,20 @@ export function explainFailedStart(started: StartOutcome, what: string): Error {
         `SKIP-GRANT: this environment has no Screen Recording grant, so ${what} is ` +
         "unverified. Grant it to the process that runs the tests, or run from a " +
         `bundle that holds it (tools/test-host). ${said}`,
+      );
+    case "no-input-monitoring":
+      // SKIP-GRANT, like the Screen Recording case: the runner and any
+      // log-scraping key on that string, and this IS a missing grant — just
+      // not the one everybody reaches for. Naming WHICH one is the whole
+      // reason this module exists.
+      return new Error(
+        `SKIP-GRANT: this environment has no Input Monitoring grant, so ${what} is ` +
+        "unverified. Since STC-315 the helper refuses to start a take it cannot record " +
+        "the cursor for, so this blocks every capture test, not only cursor ones. Grant " +
+        "Input Monitoring to the process that runs the tests (System Settings › Privacy " +
+        "& Security › Input Monitoring) — for `npm run test:capture` that is the TERMINAL, " +
+        "the same identity Screen Recording is keyed to, because the helper is " +
+        `spawned directly and inherits the launching process's grants. ${said}`,
       );
     case "display-busy":
       return new Error(

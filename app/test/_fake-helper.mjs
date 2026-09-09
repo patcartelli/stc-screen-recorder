@@ -54,15 +54,43 @@ process.stdin.on("data", (chunk) => {
         send("status", { seq, state, session });
         break;
       case "start":
-        state = "recording";
-        session = cmd.dir ?? null;
         // The start payload, when a test asks for it. Whether `camera` actually
         // reaches the helper is the whole of the app-toggle feature, and
-        // nothing else in the suite can see it.
+        // nothing else in the suite can see it. Logged BEFORE the refusal
+        // below, so a test can still see what was asked for on a start that
+        // was turned down.
         if (process.env.STC_FAKE_START_LOG) {
           try { writeFileSync(process.env.STC_FAKE_START_LOG, JSON.stringify(cmd) + "\n", { flag: "a" }); }
           catch { /* a test seam is not worth killing the stand-in */ }
         }
+        // STC-315. The real helper refuses a take it cannot record the cursor
+        // for: `CGEvent.tapCreate` returns nil without Input Monitoring, and
+        // since the pixels never carry a pointer, the alternative was a take
+        // with no cursor anywhere that looked like every other one.
+        //
+        // It is an ERROR on the request — not a warning after `started` — and
+        // that ordering is the whole subject, exactly as it is for the camera
+        // above: a stand-in that answered `started` and then warned could not
+        // reproduce the thing that matters, which is that no take happens.
+        //
+        // `state` and `session` are left alone, and the assignments moved
+        // BELOW this block to make that true. Not because a test caught it —
+        // one was written that mutated it back, and it passed, because the app
+        // takes its recording state from the `start` REPLY and not from the
+        // heartbeat. It is so the stand-in stays in a world the real helper
+        // can be in: a helper that refused a start is idle, and a stand-in
+        // claiming `recording` in its heartbeat while answering `error` is a
+        // seam contradicting its subject, which is how supervisor.test.ts's
+        // crash test used to race the supervisor's own self-healing.
+        if (process.env.STC_FAKE_START_ERROR) {
+          send("error", {
+            seq, code: process.env.STC_FAKE_START_ERROR,
+            detail: "fake: the stand-in refused to start",
+          });
+          break;
+        }
+        state = "recording";
+        session = cmd.dir ?? null;
         send("started", { seq, session });
         // STC-287. The real helper opens the camera OFF the critical path, so
         // `started` goes out first and the camera reports separately, a beat

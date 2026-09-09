@@ -31,6 +31,8 @@ events → deterministic transform → CFR MP4 with cursor overlay.
 | `transform/src/cursor-art.ts` | the macOS pointer set as vector paths (STC-239); the events-2 `shape` enum must equal its list |
 | `helper/src/CursorShape.swift` | the AppKit side of STC-309: pointer → `CursorSignature`, the 30 Hz `CursorSampler`, and the `cursor-probe` spike. Decisions are in `CaptureDecisions.swift` |
 | `docs/STC-309-RUNBOOK.md` | what to run on the Mac for STC-309, in order, and what each run must show |
+| `docs/STC-315-RUNBOOK.md` | what to run on the Mac now that a take with no cursor telemetry is REFUSED. **§0 first: every capture test needs Input Monitoring now, not just the cursor ones.** §3 is the only thing the fault injector cannot replace, and it answers the one open question — whether macOS prompts on the first `tapCreate` |
+| `helper/test/event-tap-required.grant.test.ts` | STC-315's refusal, driven by `STC_CAPTURE_FAULT=no-event-tap`, plus the CONTROL that says the fault is what made the difference |
 | `docs/HANDOFF-2026-09-04-STC-309.md` | STC-309 closed: what moved, what was got wrong, and what is left (events-3 shapes) |
 | `docs/STC-247-RUNBOOK.md` | what to run with a second display for STC-247, and what each result must show |
 | `helper/test/multi-display.grant.test.ts` | records a NON-main display by id and pins its anchors; refuses (not skips) on a one-display machine |
@@ -137,6 +139,7 @@ belonging to a different commit).
 
 | ticket | what | needs |
 |---|---|---|
+| STC-315 | **cursor telemetry is a hard requirement — written 2026-09-09 on Linux, so THE TCC PATH IS UNOBSERVED.** `CGEvent.tapCreate` returning nil is an ERROR on `start` (`event-tap-unavailable`) instead of a warning over a video-only take. The pixels never carry a pointer (`showsCursor` is false; the transform draws it from events.json), so the old behaviour produced a take with no cursor ANYWHERE that looked like every other take — rule 2 broken silently, and the `when` signal auto-zoom (STC-324) needs. **The whole change is an ORDERING one:** `makeEventTap()` is split out of the tap's thread and called from `begin()`, because `tapCreate` fails SYNCHRONOUSLY and the old arrangement learned that inside a `Thread` the start had already been answered without. Nothing about a tap needs its creating thread — the run loop the source is added to decides where the callback lands, and that is still the dedicated thread. Placed after `SCShareableContent` and **before `setupWriter()`**, which is load-bearing in both directions: after it there is a display.mp4 with frames and `removeIfNothingWorthKeeping` correctly KEEPS the directory, so "no take directory can exist without a cursor track" would be false; before the enumeration it would displace `no-displays` as the first answer on every ungranted machine and quietly make several existing tests vacuous. Cost, stated rather than buried: **every capture grant test now needs Input Monitoring too**, so `_start-outcome.ts` gained a third classification (`no-input-monitoring`) that says SKIP-GRANT and names the RIGHT pane — a machine can hold Screen Recording and still land here. Mid-take tap loss is deliberately NOT in scope and is recorded in BRIEF.md's Cursor row | a Mac: `docs/STC-315-RUNBOOK.md`. §3 (`tccutil reset ListenEvent`) is the only real revocation, and it answers the open question — **whether macOS raises its own Input Monitoring prompt on the first `tapCreate`**, which decides whether the app's message needs a line about answering a dialog |
 | STC-232 | **PHASE 3 COMPLETE 2026-08-30** — increments 1-5 done. Recorded from the app with the camera toggle on, previewed with no hand-written project.json, sync measured at 65 ms | nothing |
 | STC-232 4b | **done and VISUALLY CONFIRMED 2026-08-28** — both sinks draw the PiP, gate proves it, app opens camera takes, and a human watched a real 4K take. Increment 5 is unblocked | nothing; increment 5 is next |
 | STC-259 | **DONE** — steps 1-3, plus Mode B diagnosed. Both encoder queries bounded at 15 s, the harness's first append bounded behind a deadline watchdog, and the product answered: it does not need one. `ATTEMPTS = 1` (measured useless). The wedge is the decoder's synchronous `configure()`. **`prefer-software` did NOT fix it, CONFIRMED on CI** — run 33576888543 wedged all four gates with `decoder preference: prefer-software` in every trail | nothing. What the decoder is blocked ON is the open question, and it is no longer answerable by choosing a different decoder |
@@ -1536,6 +1539,54 @@ reachable via KVC (`setValue(3, forKey: "captureResolution")`, verified in phase
   It also produced one genuine design disagreement rather than a merge conflict — whether a long
   drag is one window or two — recorded in `zoom.ts` as an open question for STC-313's take, because
   a race between two branches is not a way to decide it.
+
+- **A failure that must be ANSWERED cannot be discovered on a thread the answer has already left
+  (STC-315).** `CGEvent.tapCreate` was called inside the tap's own `Thread`, which is the right
+  place to RUN a tap and the wrong place to learn it could not be made: by the time that thread
+  ran, `begin()` had gone on to start the stream and `finishStart(.success)` had answered. The
+  only report left was a warning about a take already underway — which is exactly the shape the
+  old behaviour had, and why "warn and record video only" was not a policy anybody chose so much
+  as the only thing that arrangement could do. The fix is not a semaphore or a bound: `tapCreate`
+  fails SYNCHRONOUSLY, and nothing about a tap depends on which thread created it — the run loop
+  the source is added to is what decides where the callback lands. So creation moved to the
+  caller and the thread kept only the running. **Before adding a wait to hear back from a
+  thread, check whether the failing call needed that thread at all.**
+
+- **The refusal's PLACEMENT is load-bearing in both directions, and each direction breaks a
+  different thing (STC-315).** Too late — after `setupWriter()` — and the take directory holds a
+  display.mp4 with frames in it, at which point `App.removeIfNothingWorthKeeping` correctly
+  declines to delete it and the acceptance criterion ("no take directory can exist without a
+  cursor track") is false while every test still passes. Too early — before
+  `SCShareableContent` — and it displaces `no-displays` as the first answer on every machine
+  without a Screen Recording grant, which is every CI run: `capture.test.ts`'s display-not-found
+  test, `ipc.test.ts`'s camera-flag test and the whole no-grant suite would then stop at the tap
+  and go on passing while exercising nothing they were written for. The window is one statement
+  wide, and the cost of the placement that survives is that the refusal is unreachable on CI —
+  paid deliberately, with `STC_CAPTURE_FAULT=no-event-tap` and a grant test as the substitute.
+
+- **A second grant needs a second diagnosis, or the first one's message becomes a lie
+  (STC-315).** Every capture grant test now needs Input Monitoring as well as Screen Recording,
+  because the helper refuses any take it cannot record the cursor for — so a machine whose
+  Screen Recording grant is perfect can now fail every one of them. `_start-outcome.ts` existed
+  because that file's own predecessor said "no Screen Recording grant" for ANY refusal and was
+  wrong on a real Mac; folding `event-tap-unavailable` into `no-grant` would have reproduced
+  that defect one grant later, sending someone to a pane they had already ticked. Three
+  refusals, three answers, and the test asserts they are told APART rather than only that each
+  is recognised.
+
+- **An E2E asserting "the take carries on" was the OLD contract, and the tempting repair was to
+  keep it green (STC-315).** `warnings.e2e.test.ts` asserted that a tap warning left the button
+  saying Stop — a correct statement of what the app did, and the exact behaviour this ticket
+  removes. Relaxing it to "an alert appeared" would have passed and said nothing about the only
+  thing that changed. It states the new contract instead (no take, button says Record, the
+  recordings root is empty) and was mutation-proven three ways: dropping the renderer's message
+  entry, dropping the stand-in's refusal, and setting `recording = true` on the failure path each
+  fail exactly that one test of the four. **A fourth mutation deliberately did NOT fail and is
+  the more useful finding:** making the stand-in claim `state = "recording"` while still refusing
+  changed nothing, because the app takes its recording state from the `start` REPLY and the real
+  helper can never be in that state after a refusal. That is CLAUDE.md's own "a test seam that
+  fakes state the subject contradicts" from the other side — the mutation was unfalsifiable, not
+  the assertion weak.
 
 - **Two halves of one answer, decided in different places, and only one half checkable from here
   (STC-313).** STC-242 splits publishing into a COPY (the file goes wherever the native picker
