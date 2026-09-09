@@ -61,9 +61,9 @@ async function pngMatchesStage(win: any, pngBase64: string): Promise<{ same: boo
 describe("the current preview frame as a PNG", () => {
   test("Save frame writes a PNG beside the take that is pixel-identical to the stage", async () => {
     const { win, takeDir } = await openTake();
-    await win.fill("#scrub", "437");
+    await win.fill("#scrub", "131");
     await win.dispatchEvent("#scrub", "input");
-    await expect.poll(() => win.textContent("#clock"), { timeout: 20_000 }).not.toMatch(/^0:00 /);
+    await expect.poll(() => win.textContent("#clock"), { timeout: 20_000 }).not.toMatch(/^0:00:00 /);
 
     await win.click("#saveframe");
     await expect.poll(() => win.textContent("#framestatus"), { timeout: 20_000 }).toMatch(/^Saved frame at/);

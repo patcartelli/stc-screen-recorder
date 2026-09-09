@@ -112,6 +112,10 @@ import {
   DEFAULT_TEXT_PT, EMBED_TARGETS, legibility, legibilitySentence, zoomFactorForCrop,
 } from "@transform/legibility";
 import { TRANSFORM_VERSION } from "@transform/transform-version";
+import {
+  clampTrimFrame, decideKey, formatReadout, formatShuttle, frameAtFraction, frameToNs,
+  fractionOfFrame, lastFrame, nsToFrame, rubberBandPx, tickStrideFrames, type ScrubAction,
+} from "./scrubber.js";
 import { renderLibrary, type LibraryCallbacks } from "./library-view.js";
 import type { LibraryItem, LibraryList } from "./library-items.js";
 import { exportManifestName, exportMediaName, type PublishPlan } from "./share.js";
@@ -618,12 +622,48 @@ function updateTrimUI(): void {
   kept.style.left = `${inPct}%`;
   kept.style.width = `${Math.max(0, outPct - inPct)}%`;
 
+  // Rule 4: what was cut is DIMMED, not fenced off. The playhead still goes
+  // there, because you have to be able to look at what you removed.
+  const head = $("cut-head") as HTMLElement;
+  head.style.left = "0%";
+  head.style.width = `${Math.max(0, inPct)}%`;
+  const tail = $("cut-tail") as HTMLElement;
+  tail.style.left = `${outPct}%`;
+  tail.style.width = `${Math.max(0, 100 - outPct)}%`;
+  updateTicks();
+
   const w = exportWindow(openProject, player.durationNs);
   const est = fmtEstimate(estimateExportMs(w.maxFrames));
   $("triminfo").textContent = isFullTake(openProject, player.durationNs)
     ? `Full take · ${fmtClock(player.durationNs)} · ${est}`
     : `${fmtClock(w.startNs)}–${fmtClock(w.endNs)} · ${fmtClock(w.endNs - w.startNs)} · ${est}`;
 }
+
+/**
+ * The export grid on the track (STC-338 rule 9).
+ *
+ * `tickStrideFrames` returns null when no stride on the ladder clears the
+ * legibility floor, and the answer then is to draw NOTHING — sub-pixel
+ * hatching reads as a texture, not as frames. Drawn as a repeating gradient
+ * rather than a node per tick: a minute-long take is 3600 frames, and that is
+ * one line of paint either way.
+ */
+function updateTicks(): void {
+  const ticks = $("ticks") as HTMLElement;
+  const width = $("timeline").getBoundingClientRect().width;
+  const stride = player ? tickStrideFrames(player.durationNs, width) : null;
+  if (!player || stride === null || width <= 0) {
+    ticks.setAttribute("hidden", "");
+    return;
+  }
+  ticks.removeAttribute("hidden");
+  ticks.style.setProperty("--tick-px", `${(width / lastFrame(player.durationNs)) * stride}px`);
+}
+
+// The stride is a function of the track's WIDTH, so it has to be recomputed
+// when the window is resized — a take that showed per-frame ticks in a wide
+// window must coarsen rather than keep a stride that no longer fits.
+window.addEventListener("resize", () => { if (player) updateTicks(); });
 
 async function persistProject(): Promise<void> {
   if (!openProject || !player) return;
@@ -905,10 +945,20 @@ async function openPreviewOrThrow(take: Openable): Promise<void> {
   openDisplay = { pointWidth: anchors.display.pointWidth };
   player = new PreviewPlayer($("stage") as HTMLCanvasElement, session, project);
   const scrub = $("scrub") as HTMLInputElement;
+  // Rule 1: the control's domain is frames, so it cannot express a position
+  // between two of them. Set before the first seek, or the opening frame
+  // would be clamped against a stale max.
+  scrub.max = String(lastFrame(player.durationNs));
+  scrub.value = "0";
   player.onTime = (tNs, playing) => {
-    $("clock").textContent = `${fmtClock(tNs)} / ${fmtClock(player!.durationNs)}`;
+    // Rule 10: frame-accurate, on every tick the canvas draws — seconds alone
+    // cannot tell two adjacent frames apart, which is the whole distinction a
+    // nudge exists to make.
+    const frame = nsToFrame(tNs, player!.durationNs);
+    $("clock").textContent = formatReadout(frame, player!.durationNs);
     ($("playpause") as HTMLButtonElement).textContent = playing ? "Pause" : "Play";
-    if (!scrubbing) scrub.value = String(Math.round((tNs / (player!.durationNs || 1)) * 1000));
+    $("shuttle").textContent = formatShuttle(player!.rate);
+    if (!scrubbing) scrub.value = String(frame);
   };
   // Revealed only once a frame has actually been drawn, so a failure part-way
   // through never leaves a half-open player on screen.
@@ -921,6 +971,11 @@ async function openPreviewOrThrow(take: Openable): Promise<void> {
   updateOutputSizeUI();
   updateLegibilityUI();
   $("player").removeAttribute("hidden");
+  // AFTER the reveal, not before: `tickStrideFrames` is a function of the
+  // track's WIDTH, and a hidden element measures zero — which resolves to
+  // "no stride is legible" and draws nothing. updateTrimUI ran while #player
+  // was still hidden, so the grid never appeared on open.
+  updateTicks();
 }
 
 async function closePreview(): Promise<void> {
@@ -950,18 +1005,120 @@ async function closePreview(): Promise<void> {
 
 $("playpause").addEventListener("click", () => {
   if (!player) return;
-  player.isPlaying ? player.pause() : player.play();
-  ($("playpause") as HTMLButtonElement).textContent = player.isPlaying ? "Pause" : "Play";
+  // Always back to 1x: the button says Play, not "resume at 8x".
+  player.isPlaying ? player.pause() : player.play(1);
+  updateShuttleUI();
 });
 $("closepreview").addEventListener("click", () => void closePreview());
 $("scrub").addEventListener("pointerdown", () => { scrubbing = true; });
+// Rule 3: a release SETTLES, it does not travel. There is deliberately no
+// momentum here — the playhead stays on the frame the pointer left it on, and
+// the only thing `pointerup` does is hand the value back to `onTime`.
 $("scrub").addEventListener("pointerup", () => { scrubbing = false; });
+$("scrub").addEventListener("pointercancel", () => { scrubbing = false; });
 $("scrub").addEventListener("input", () => {
   if (!player) return;
+  // The value IS a frame index (rule 1), so there is nothing to snap: the
+  // control cannot hold a position between two frames.
+  //
   // Fire and forget: the source supersedes stale requests, so a drag does not
   // queue up dozens of decodes.
-  void player.seek((Number(($("scrub") as HTMLInputElement).value) / 1000) * player.durationNs);
+  void player.seek(frameToNs(Number(($("scrub") as HTMLInputElement).value), player.durationNs));
 });
+
+/**
+ * The scrubber's keyboard grammar (STC-338 rule 8).
+ *
+ * Bound on the WINDOW rather than on the timeline, because an editor's
+ * transport keys work wherever you are looking as long as you are not typing
+ * — and `decideKey` is what decides "not typing", not this listener.
+ *
+ * `preventDefault` runs only for a chord `decideKey` CLAIMED. The scrubber is
+ * a range input with native arrow handling, so an arrow that was handled and
+ * not prevented would move two frames; and a key that was prevented without
+ * being handled would break typing in the fields on this same page.
+ */
+function isTextField(el: Element | null): boolean {
+  if (!el) return false;
+  const tag = el.tagName;
+  if (tag === "TEXTAREA" || tag === "SELECT") return true;
+  if ((el as HTMLElement).isContentEditable) return true;
+  if (tag !== "INPUT") return false;
+  // The scrubber is itself an <input>, and a range is not somewhere you type.
+  const type = (el as HTMLInputElement).type;
+  return type !== "range" && type !== "checkbox" && type !== "button";
+}
+
+/**
+ * The keys a focused `<input type=range>` acts on by ITSELF.
+ *
+ * Rule 1 says the playhead's position is the scrubber's to decide, and a
+ * native step is a second author of it that `decideKey` never sees. Two ways
+ * that shows: ⌘→ is correctly declined as "not the scrubber's" and the range
+ * steps anyway, and PageUp moves the playhead by a chunk with no rule behind
+ * it at all. Both are cancelled here — `preventDefault` removes the CONTROL's
+ * default action without stopping the event, so a modifier chord still
+ * reaches the app's own accelerators.
+ */
+const RANGE_NATIVE_KEYS = new Set([
+  "ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown",
+  "PageUp", "PageDown", "Home", "End",
+]);
+
+window.addEventListener("keydown", (e) => {
+  if (!player || !openProject) return;
+  if ($("player").hasAttribute("hidden")) return;
+  if (e.target === $("scrub") && RANGE_NATIVE_KEYS.has(e.key)) e.preventDefault();
+  const action = decideKey(
+    {
+      key: e.key, shiftKey: e.shiftKey, metaKey: e.metaKey,
+      ctrlKey: e.ctrlKey, altKey: e.altKey,
+      inTextField: isTextField(document.activeElement),
+    },
+    { frame: currentFrame(), durationNs: player.durationNs, rate: player.rate },
+  );
+  if (!action) return;
+  e.preventDefault();
+  applyScrubAction(action);
+});
+
+function currentFrame(): number {
+  return player ? nsToFrame(player.currentNs, player.durationNs) : 0;
+}
+
+function applyScrubAction(action: ScrubAction): void {
+  if (!player || !openProject) return;
+  switch (action.kind) {
+    case "seek":
+      // A nudge is an absolute move, so it stops any shuttle: an editor
+      // stepping frame by frame while the take is still running away
+      // underneath is not stepping at all.
+      if (player.rate !== 0) player.pause();
+      void player.seek(frameToNs(action.frame, player.durationNs));
+      break;
+    case "shuttle":
+      action.rate === 0 ? player.pause() : player.play(action.rate);
+      updateShuttleUI();
+      break;
+    case "mark": {
+      const t = player.currentNs;
+      const min = minTrimNs(openProject.output.fps);
+      if (action.which === "in") {
+        const end = openProject.trim?.endNs ?? player.durationNs;
+        setTrim(t, t + min > end ? player.durationNs : end, true);
+      } else {
+        const start = openProject.trim?.startNs ?? 0;
+        setTrim(t < start + min ? 0 : start, t, true);
+      }
+      break;
+    }
+  }
+}
+
+function updateShuttleUI(): void {
+  $("shuttle").textContent = formatShuttle(player?.rate ?? 0);
+  ($("playpause") as HTMLButtonElement).textContent = player?.isPlaying ? "Pause" : "Play";
+}
 
 $("markin").addEventListener("click", () => {
   if (!player || !openProject) return;
@@ -982,10 +1139,11 @@ $("resettrim").addEventListener("click", () => {
   setTrim(0, player.durationNs, true);
 });
 
-function nsAtClientX(clientX: number): number {
+/** The frame under a pointer at `clientX`, on the export grid (rules 1 and 2). */
+function frameAtClientX(clientX: number): number {
   const r = $("timeline").getBoundingClientRect();
   const t = r.width <= 0 ? 0 : (clientX - r.left) / r.width;
-  return Math.round(Math.max(0, Math.min(1, t)) * (player?.durationNs ?? 0));
+  return frameAtFraction(t, player?.durationNs ?? 0);
 }
 
 let dragging: "in" | "out" | undefined;
@@ -995,16 +1153,68 @@ function onHandleDown(which: "in" | "out", e: PointerEvent): void {
   dragging = which;
   (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
 }
+
+/**
+ * A trim handle's drag (STC-338 rule 5).
+ *
+ * The handle is clamped to `MIN_TRIM_FRAMES` from its opposite, and when the
+ * pointer goes past that the handle is DRAWN past it too — by
+ * `rubberBandPx(excess)`, which decays to a bound rather than tracking. So
+ * the pointer visibly pulls away from the handle and the limit is something
+ * you feel arrive. The trim itself is set from the CLAMPED frame throughout:
+ * the rubber band is presentation, never a value anything can be saved at.
+ */
 function onHandleMove(e: PointerEvent): void {
   if (!dragging || !player || !openProject) return;
-  const t = nsAtClientX(e.clientX);
-  const start = openProject.trim?.startNs ?? 0;
-  const end = openProject.trim?.endNs ?? player.durationNs;
-  if (dragging === "in") setTrim(t, end, false);
-  else setTrim(start, t, false);
+  const durationNs = player.durationNs;
+  const startFrame = nsToFrame(openProject.trim?.startNs ?? 0, durationNs);
+  const endFrame = nsToFrame(openProject.trim?.endNs ?? durationNs, durationNs);
+  const wanted = frameAtClientX(e.clientX);
+  const opposite = dragging === "in" ? endFrame : startFrame;
+  const { clamped, held } = clampTrimFrame(dragging, wanted, opposite, durationNs);
+
+  if (dragging === "in") setTrim(frameToNs(clamped, durationNs), frameToNs(endFrame, durationNs), false);
+  else setTrim(frameToNs(startFrame, durationNs), frameToNs(clamped, durationNs), false);
+
+  // Drawn AFTER setTrim, which repositions the handle from the clamped value.
+  const handle = $(dragging === "in" ? "trim-in" : "trim-out");
+  if (held) {
+    const r = $("timeline").getBoundingClientRect();
+    const clampedX = r.left + fractionOfFrame(clamped, durationNs) * r.width;
+    // POSITIVE excess means the pointer has gone PAST the clamp in the
+    // direction that triggered it: rightward for "in" (which clamps on
+    // overshoot-right), leftward for "out" (which clamps on overshoot-left).
+    // The two prior sign choices here were both backwards, which is why
+    // rubberBandPx always saw a negative number and returned 0 — the handle
+    // pinned dead at the clamp with no creep in EITHER direction; only the
+    // red/wide `.held` styling ever showed. Found from a real drag (STC-338
+    // runbook review): "in past end" looked fine at a small overshoot and
+    // "out past beginning" looked broken at a large one, but it was the same
+    // zero-band bug both times, just more visible the farther you dragged.
+    const excess = dragging === "in" ? e.clientX - clampedX : clampedX - e.clientX;
+    // The handle creeps toward the pointer's pull: rightward (positive
+    // marginLeft) for "in", leftward (negative) for "out".
+    const band = rubberBandPx(excess) * (dragging === "in" ? 1 : -1);
+    handle.classList.add("held");
+    handle.style.marginLeft = `${-5 + band}px`;
+  } else {
+    handle.classList.remove("held");
+    handle.style.marginLeft = "";
+  }
 }
+
+/**
+ * Release settles (rule 3): the band relaxes to zero and the handle lands
+ * exactly on the clamp it was already committed to. Nothing moves that the
+ * pointer did not already move — the settle is the band unwinding, not the
+ * trim changing.
+ */
 function onHandleUp(): void {
   if (!dragging) return;
+  for (const id of ["trim-in", "trim-out"]) {
+    $(id).classList.remove("held");
+    $(id).style.marginLeft = "";
+  }
   dragging = undefined;
   void persistProject().catch((e: any) => alertUser(String(e?.message ?? e)));
 }

@@ -19,6 +19,7 @@ export class PreviewPlayer {
   private tNs = 0;
   private playAnchorWallMs = 0;
   private playAnchorTNs = 0;
+  private playRate = 0;
   private rendering = false;
   /** A draw asked for while one was in flight; served once that one lands. */
   private redrawWanted = false;
@@ -148,9 +149,40 @@ export class PreviewPlayer {
     this.onTime?.(this.tNs, this.playing);
   }
 
-  play(): void {
-    if (this.playing || this.closed) return;
-    if (this.tNs >= this.durationNs) this.tNs = 0;
+  /**
+   * The signed multiple of real time playback advances at (STC-338's shuttle).
+   * 1 is ordinary playback; 8 is eight times forward; -2 is twice backwards.
+   * Zero is not a rate — it is `pause()`.
+   */
+  get rate(): number { return this.playRate; }
+
+  /**
+   * Change speed WITHOUT restarting playback.
+   *
+   * The anchor is re-taken at the current position, which is the whole point:
+   * wall-clock playback measures elapsed time from an anchor, so changing the
+   * rate without moving the anchor would retroactively re-time everything
+   * since the last one and the playhead would jump. Pressing L four times in
+   * a second must accelerate smoothly, not teleport three times.
+   */
+  setRate(rate: number): void {
+    this.playRate = rate;
+    if (this.playing) {
+      this.playAnchorWallMs = performance.now();
+      this.playAnchorTNs = this.tNs;
+    }
+  }
+
+  play(rate: number = 1): void {
+    if (rate === 0) { this.pause(); return; }
+    if (this.playing) { this.setRate(rate); return; }
+    if (this.closed) return;
+    // Restarting from an end only makes sense toward the material: forward
+    // from the last frame has nowhere to go, and neither does backward from
+    // the first. Wrapping to the other end would be a seek nobody asked for.
+    if (rate > 0 && this.tNs >= this.durationNs) this.tNs = 0;
+    if (rate < 0 && this.tNs <= 0) this.tNs = this.durationNs;
+    this.playRate = rate;
     this.playing = true;
     this.playAnchorWallMs = performance.now();
     this.playAnchorTNs = this.tNs;
@@ -159,11 +191,15 @@ export class PreviewPlayer {
       // Time comes from the WALL CLOCK, not from a frame counter. If decoding
       // cannot keep up, playback drops frames and stays time-accurate rather
       // than sliding into slow motion — a preview that drifts from real time is
-      // lying about the recording it is previewing.
+      // lying about the recording it is previewing. At 8x it drops seven of
+      // every eight, which is what a shuttle is.
       const elapsedNs = (performance.now() - this.playAnchorWallMs) * 1e6;
-      this.tNs = this.playAnchorTNs + elapsedNs;
-      if (this.tNs >= this.durationNs) {
-        this.tNs = this.durationNs;
+      this.tNs = this.playAnchorTNs + elapsedNs * this.playRate;
+      // Either end stops. Reverse has a floor exactly as forward has a
+      // ceiling; without it a backward shuttle runs to negative time and the
+      // frame source is asked for material that never existed.
+      if (this.playRate > 0 ? this.tNs >= this.durationNs : this.tNs <= 0) {
+        this.tNs = this.playRate > 0 ? this.durationNs : 0;
         this.pause();
         void this.draw();
         this.onTime?.(this.tNs, false);
@@ -178,6 +214,7 @@ export class PreviewPlayer {
 
   pause(): void {
     this.playing = false;
+    this.playRate = 0;
     if (this.raf) cancelAnimationFrame(this.raf);
     this.raf = 0;
   }
@@ -268,6 +305,8 @@ export class PreviewPlayer {
   }> {
     if (this.closed) throw new Error("preview is closed");
     const wasPlaying = this.playing;
+    // Read BEFORE pause(), which zeroes it.
+    const wasRate = this.playRate;
     if (wasPlaying) this.pause();
     // A still is what the EXPORT would produce, never what the preview happens
     // to be drawing. `setViewSize` (the viewer's eye) shrinks the canvas and
@@ -290,7 +329,11 @@ export class PreviewPlayer {
       // Restored even if the capture threw: leaving the view dropped would
       // silently turn the toggle off after a failed Copy.
       if (view) await this.setViewSize(view);
-      if (wasPlaying) this.play();
+      // Resumed at the rate it was RUNNING at, not at 1x. Grabbing a frame
+      // is a way of LOOKING, and it must not quietly change the transport's
+      // state — an 8x shuttle silently becoming 1x is the same family of
+      // fault as STC-318's capture that changed size with the view.
+      if (wasPlaying) this.play(wasRate);
     }
   }
 
