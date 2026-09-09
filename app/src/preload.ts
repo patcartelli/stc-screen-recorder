@@ -54,6 +54,13 @@ contextBridge.exposeInMainWorld("recorder", {
   start: () => ipcRenderer.invoke("recorder:start"),
   stop: () => ipcRenderer.invoke("recorder:stop"),
   reveal: (dir: string) => ipcRenderer.invoke("recorder:reveal", dir),
+  // Share (STC-242). `publish` takes no arguments on purpose: the take is the
+  // one main already has open, and the destination and slug are read from
+  // settings inside main — a renderer that could pass either could make this
+  // process copy a file to a path of its choosing.
+  publish: () => ipcRenderer.invoke("share:publish"),
+  chooseShareDestination: () => ipcRenderer.invoke("share:chooseDestination"),
+  revealPublished: () => ipcRenderer.invoke("share:reveal"),
   on: (event: string, cb: (payload: any) => void) => {
     const channels = ["helper:ready", "helper:stats", "helper:respawned",
                       "helper:gave-up", "helper:recording-lost", "helper:recording-ended",

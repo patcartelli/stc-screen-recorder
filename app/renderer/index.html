@@ -100,6 +100,8 @@
     .trimbar button { padding: 3px 10px; font-size: 12px; }
     #triminfo { opacity: .7; font-variant-numeric: tabular-nums; }
     #exportbar { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
+    .sharebar { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+    #sharestatus { font-size: 12px; opacity: .75; }
     #exportbar[hidden] { display: none; }
     .framebar { display: flex; align-items: center; gap: 8px; margin-top: 6px; font-size: 12px; }
     .framebar button { padding: 3px 10px; font-size: 12px; }
@@ -213,6 +215,18 @@
       <progress id="exportprogress" max="1000" value="0"></progress>
       <span id="exportstatus"></span>
       <button id="cancelexport">Cancel</button>
+    </div>
+    <!--
+      Share (STC-242) — the last step of the loop. Deliberately a separate row
+      from the export bar: exporting and publishing are different decisions,
+      and a take is often exported several times before one is worth putting
+      on the site.
+    -->
+    <div class="sharebar">
+      <button id="share" title="Copy this take's export into the site folder">Share to site</button>
+      <button id="sharedest">Site folder…</button>
+      <button id="revealshared" title="Show the published file in Finder">Show published</button>
+      <span id="sharestatus"></span>
     </div>
   </div>
 

@@ -3,7 +3,8 @@ import { mkdtempSync, writeFileSync, readFileSync, existsSync, chmodSync, mkdirS
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  readSettings, writeSettings, DEFAULT_SETTINGS, DEFAULT_STILL_SETTINGS, DEFAULT_THUMBNAIL_SETTINGS,
+  readSettings, writeSettings, DEFAULT_SETTINGS, DEFAULT_SHARE_SETTINGS, DEFAULT_STILL_SETTINGS,
+  DEFAULT_THUMBNAIL_SETTINGS,
 } from "../src/settings.js";
 import { DEFAULT_SHORTCUTS, HYPER } from "../src/hotkeys.js";
 
@@ -21,7 +22,7 @@ describe("the camera preference", () => {
     expect(readSettings(dir()))
       .toEqual({ camera: false, displayId: null, shortcuts: DEFAULT_SHORTCUTS,
                  shutterSound: true, still: DEFAULT_STILL_SETTINGS,
-                 thumbnail: DEFAULT_THUMBNAIL_SETTINGS });
+                 thumbnail: DEFAULT_THUMBNAIL_SETTINGS, share: DEFAULT_SHARE_SETTINGS });
     expect(DEFAULT_SETTINGS.camera).toBe(false);
   });
 
@@ -58,7 +59,7 @@ describe("the camera preference", () => {
     expect(JSON.parse(readFileSync(join(d, "settings.json"), "utf8")))
       .toEqual({ camera: true, displayId: null, shortcuts: DEFAULT_SHORTCUTS,
                  shutterSound: true, still: DEFAULT_STILL_SETTINGS,
-                 thumbnail: DEFAULT_THUMBNAIL_SETTINGS });
+                 thumbnail: DEFAULT_THUMBNAIL_SETTINGS, share: DEFAULT_SHARE_SETTINGS });
   });
 
   test("an unwritable directory does not throw — the preference is not worth a crash", () => {
@@ -110,7 +111,7 @@ describe("the display preference (STC-247)", () => {
     expect(readSettings(d))
       .toEqual({ camera: true, displayId: 2, shortcuts: DEFAULT_SHORTCUTS,
                  shutterSound: true, still: DEFAULT_STILL_SETTINGS,
-                 thumbnail: DEFAULT_THUMBNAIL_SETTINGS });
+                 thumbnail: DEFAULT_THUMBNAIL_SETTINGS, share: DEFAULT_SHARE_SETTINGS });
   });
 });
 
@@ -213,6 +214,68 @@ describe("the capture shortcuts", () => {
     writeSettings(d, { shortcuts: { ...DEFAULT_SHORTCUTS, regoin: "Alt+X" } as never });
     const stored = JSON.parse(readFileSync(join(d, "settings.json"), "utf8"));
     expect(Object.keys(stored.shortcuts).sort()).toEqual(["display", "region", "window"]);
+  });
+});
+
+/**
+ * STC-242: where a shared take goes. Same rules as every other block — an
+ * unknown shape falls back whole, each field is validated on its own terms.
+ */
+describe("the share preferences (STC-242)", () => {
+  test("defaults to no site folder and the network slug", () => {
+    const s = readSettings(dir()).share;
+    // Null rather than a guess: this app cannot know where someone keeps a
+    // site checkout, and a wrong default writes a file somewhere unasked.
+    expect(s.destination).toBeNull();
+    expect(s.slug).toBe("network");
+    expect(s.embedTemplate).toContain("{src}");
+  });
+
+  test("the site folder is sticky and survives an unrelated change", () => {
+    const d = dir();
+    writeSettings(d, { share: { ...readSettings(d).share, destination: "/Users/me/site/public" } });
+    writeSettings(d, { camera: true });
+    expect(readSettings(d).share.destination).toBe("/Users/me/site/public");
+  });
+
+  test("changing the slug does NOT drop the site folder", () => {
+    const d = dir();
+    writeSettings(d, { share: { ...readSettings(d).share, destination: "/Users/me/site" } });
+    writeSettings(d, { share: { slug: "vividly" } as never });
+    const s = readSettings(d).share;
+    expect(s.slug).toBe("vividly");
+    expect(s.destination).toBe("/Users/me/site");
+  });
+
+  /**
+   * The one that is a decision rather than plumbing: a stored slug that no
+   * longer validates falls back to the DEFAULT rather than being repaired into
+   * something adjacent. Turning "My Demo" into "my-demo" would publish to a
+   * path the user never chose and never saw, while the page embedding the old
+   * one broke silently.
+   */
+  test("an invalid stored slug falls back rather than being repaired", () => {
+    const d = dir();
+    writeFileSync(join(d, "settings.json"),
+                  JSON.stringify({ share: { slug: "My Demo", destination: "/s" } }));
+    const s = readSettings(d).share;
+    expect(s.slug).toBe("network");
+    expect(s.slug).not.toBe("my-demo");
+    // The destination beside it is still honoured — one bad field does not
+    // cost the whole block.
+    expect(s.destination).toBe("/s");
+  });
+
+  test("a relative destination is treated as unset, not resolved against cwd", () => {
+    const d = dir();
+    writeFileSync(join(d, "settings.json"), JSON.stringify({ share: { destination: "site/public" } }));
+    expect(readSettings(d).share.destination).toBeNull();
+  });
+
+  test("an empty template falls back rather than pasting nothing", () => {
+    const d = dir();
+    writeFileSync(join(d, "settings.json"), JSON.stringify({ share: { embedTemplate: "   " } }));
+    expect(readSettings(d).share.embedTemplate).toContain("{src}");
   });
 });
 

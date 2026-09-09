@@ -80,6 +80,12 @@ declare const recorder: {
   start(): Promise<{ ok: boolean; dir?: string; code?: string; detail?: string }>;
   stop(): Promise<{ ok: boolean; info?: any }>;
   reveal(dir: string): Promise<void>;
+  publish(): Promise<{
+    ok: boolean; plan: PublishPlan["kind"]; message?: string;
+    file?: string; name?: string; replaced?: boolean; snippet?: string;
+  }>;
+  chooseShareDestination(): Promise<{ destination: string | null }>;
+  revealPublished(): Promise<{ ok: boolean; file?: string; message?: string }>;
   on(event: string, cb: (p: any) => void): () => void;
 };
 
@@ -99,6 +105,7 @@ import {
 import { TRANSFORM_VERSION } from "@transform/transform-version";
 import { renderLibrary, type LibraryCallbacks } from "./library-view.js";
 import type { LibraryItem, LibraryList } from "./library-items.js";
+import { exportManifestName, exportMediaName, type PublishPlan } from "./share.js";
 import { decorationForMode, layoutStill } from "@transform/still-decorate";
 import { renderStill, sampleRedactionFills } from "@transform/still-render";
 import { colorSpaceFor } from "@transform/still-export";
@@ -751,10 +758,15 @@ async function runExport(): Promise<void> {
 
     if (result.cancelled) { status.textContent = "Cancelled."; return; }
 
-    const name = `export-${openTakeName}.mp4`;
+    // Both names come from `share.ts` rather than being built here. STC-242's
+    // publish path has to FIND this exact file afterwards, from another
+    // process — two copies of one filename rule is the defect CLAUDE.md
+    // records fixing four times in one session, and `share.test.ts` greps this
+    // file to keep the second copy from coming back.
+    const name = exportMediaName(openTakeName);
     await recorder.writeExport(name, result.encoded!.buffer as ArrayBuffer);
     const lastNs = openSession.frames[openSession.frames.length - 1] ?? 0;
-    await recorder.writeExport(`export-${openTakeName}.json`, new TextEncoder().encode(JSON.stringify({
+    await recorder.writeExport(exportManifestName(openTakeName), new TextEncoder().encode(JSON.stringify({
       version: 1,
       // Which transform computed the hash below. Without it the manifest could
       // verify an export against itself and never say what made it (STC-308).
@@ -779,6 +791,54 @@ async function runExport(): Promise<void> {
 }
 
 $("export").addEventListener("click", () => void runExport());
+
+/**
+ * Share (STC-242) — the last step of the loop.
+ *
+ * The renderer names no path and holds no destination: it asks main to
+ * publish, and renders whatever main says happened. Every refusal already
+ * carries its own sentence from `planPublish`, so there is no message-building
+ * here and no second copy of the wording — the same rule `hotkeys.ts` follows
+ * for every sentence the user is shown.
+ */
+function shareStatus(text: string): void {
+  $("sharestatus").textContent = text;
+}
+
+async function publish(): Promise<void> {
+  const btn = $("share") as HTMLButtonElement;
+  btn.disabled = true;
+  shareStatus("Copying…");
+  try {
+    const r = await recorder.publish();
+    if (!r.ok) { shareStatus(r.message ?? "Could not share."); return; }
+    // "Replaced" rather than "Wrote" when something was already there. The
+    // stable slug means re-publishing OVERWRITES by design, and the design
+    // being deliberate is not a reason to be quiet about it — a person who
+    // did not expect it should learn so from the app, not from `git status`.
+    const verb = r.replaced ? "Replaced" : "Wrote";
+    shareStatus(`${verb} ${r.name}. Snippet copied.`);
+    if (r.snippet) await navigator.clipboard.writeText(r.snippet).catch(() => {
+      // The file is the deliverable; the snippet is a convenience. A clipboard
+      // that refuses must not read as a failed publish.
+      shareStatus(`${verb} ${r.name}. (Could not copy the snippet.)`);
+    });
+  } catch (e: any) {
+    shareStatus(`Failed: ${e?.message ?? e}`);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+$("share").addEventListener("click", () => void publish());
+$("sharedest").addEventListener("click", () => void (async () => {
+  const { destination } = await recorder.chooseShareDestination();
+  shareStatus(destination ? `Site folder: ${destination}` : "No site folder chosen.");
+})());
+$("revealshared").addEventListener("click", () => void (async () => {
+  const r = await recorder.revealPublished();
+  if (!r.ok) shareStatus(r.message ?? "Nothing published yet.");
+})());
 
 // ---- the current frame as a still (STC-298) -------------------------------
 //
