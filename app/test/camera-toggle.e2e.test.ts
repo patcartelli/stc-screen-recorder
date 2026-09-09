@@ -119,9 +119,9 @@ describe("the camera toggle", () => {
       await expect.poll(() => win.textContent("#takes"), { timeout: 20_000 }).toContain("2026-08-26");
       await win.click("#takes >> text=Preview");
       await expect.poll(() => win.isVisible("#player"), { timeout: 30_000 }).toBe(true);
-      await win.fill("#scrub", "400");
+      await win.fill("#scrub", "120");
       await win.dispatchEvent("#scrub", "input");
-      await expect.poll(() => win.textContent("#clock"), { timeout: 30_000 }).toMatch(/0:02/);
+      await expect.poll(() => win.textContent("#clock"), { timeout: 30_000 }).toMatch(/^0:02:00 /);
       // Both runs seek to the SAME tick — value/1000 x durationNs, and the two
       // fixtures share frames.json — so the pixel comparison below is exact.
       // But a read taken mid-draw would differ for a reason that has nothing to

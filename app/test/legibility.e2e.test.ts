@@ -234,7 +234,7 @@ describe("legibility at embed width (STC-318)", () => {
       cursor: { style: "circle", scale: 8 },
     }, null, 2));
     const win = await openTake(dir);
-    await win.fill("#scrub", "500");
+    await win.fill("#scrub", "150");
     await win.dispatchEvent("#scrub", "input");
     await new Promise((r) => setTimeout(r, 1500));
 
