@@ -726,7 +726,7 @@ function updateLegibilityUI(): void {
   ($("vieweye") as HTMLInputElement).checked = player.viewSize !== null;
 }
 
-/** The embed width as a view size for the preview, at the capture's aspect. */
+/** The embed width as a view size for the preview, at the EXPORT's aspect. */
 function viewSizeForEmbed(): Size | null {
   if (!openProject) return null;
   // `outputSizeFor` owns the width -> height rule, including the evening H.264
@@ -900,6 +900,18 @@ async function closePreview(): Promise<void> {
   openProject = undefined;
   openCapture = undefined;
   openDisplay = undefined;
+  // The stage's display width is pinned to the embed width while the viewer's
+  // eye is on, and that pin is only justified by the player that asked for it.
+  // Left set, it outlives the player: the next take opens with a fresh player
+  // whose `viewSize` is null and a checkbox reading OFF, on a canvas still
+  // displayed at the old embed width. Measured on a 1728-point take — the
+  // stage stayed 1232 CSS px in a 465 px column, so the picture overflowed the
+  // player and scrolled, with nothing on screen saying why.
+  //
+  // Cleared HERE rather than in the open path because `openPreviewOrThrow`
+  // begins with this function, so it is the single choke point every new
+  // player passes through — and one owner beats two that must agree.
+  applyStageDisplay();
   $("player").setAttribute("hidden", "");
   await recorder.closePreview();
 }
