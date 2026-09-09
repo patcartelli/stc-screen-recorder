@@ -119,11 +119,11 @@ describe("share to the site folder", () => {
   test("offers a snippet carrying the dimensions the export actually encoded", async () => {
     const { win } = await launch();
     const r = await publish(win);
-    expect(r.snippet).toContain('src="/lab/network/network.mp4"');
+    expect(r.snippet).toContain("src: '/lab/videos/network.mp4'");
     // 1920x1080 comes from the MANIFEST, not from the project as it now
     // stands — the project is editable after an export.
-    expect(r.snippet).toContain('width="1920"');
-    expect(r.snippet).toContain('height="1080"');
+    expect(r.snippet).toContain("width: 1920");
+    expect(r.snippet).toContain("height: 1080");
   }, 60_000);
 
   test("with no manifest, the snippet says so rather than pasting a zero", async () => {
