@@ -69,6 +69,25 @@ describe("a start the helper refuses (STC-315)", () => {
     expect(alert).toMatch(/Input Monitoring/);
     expect(alert).not.toMatch(/Screen & System Audio Recording/);
 
+    // WATCHED on hardware 2026-09-09: macOS raises its own Input Monitoring
+    // prompt on the first `tapCreate`, and that prompt says "keystrokes". This
+    // app's tap mask is mouse-only and it has never recorded a keypress, so
+    // without this sentence a user is asked to allow keylogging by a screen
+    // recorder and has every reason to refuse. Both halves are asserted —
+    // that the dialog is acknowledged at all, and that the discrepancy is
+    // named — because a message mentioning one without the other is either a
+    // dangling reference or an unanswered alarm.
+    expect(alert).toMatch(/macOS may have just asked/);
+    expect(alert).toMatch(/keystrokes/);
+    expect(alert).toMatch(/mouse movement and clicks only/);
+
+    // "Quit and reopen", not "press Record again". Input Monitoring commonly
+    // needs the granted process restarted and that is UNOBSERVED for this app
+    // (see the renderer's comment), so the instruction has to be the one that
+    // is sufficient either way. A regression to the shorter wording is a
+    // message that can send someone in a circle.
+    expect(alert).toMatch(/quit and reopen/i);
+
     // The app must NOT be in a recording state it cannot leave. Before this
     // ticket the same code arrived as a warning after `started`, so the button
     // said Stop and the state said recording — for a take that, from

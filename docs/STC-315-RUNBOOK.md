@@ -13,12 +13,24 @@ section that needs the grant genuinely revoked.
 1. Whether the app's sentence reads as *"nothing was recorded"* rather than
    *"grant this and try again"*. It is asserted as a string; whether a person
    pressing Record understands that there is no take is an eye's judgement.
-2. Whether macOS raises its own Input Monitoring prompt on the first `start`,
-   or silently returns nil. **This is the one that could change the design.**
-   `CGEvent.tapCreate` is documented to prompt on first use for an app that has
-   never asked; if it does, the refusal a user sees the very first time is one
-   they can fix by answering a dialog, and the message should say so. If it
-   does not, the message is right as written. §3 is the only way to find out.
+2. ~~Whether macOS raises its own Input Monitoring prompt on the first
+   `start`.~~ **ANSWERED 2026-09-09, on hardware: IT PROMPTS.** After
+   `tccutil reset ListenEvent`, a `npm run test:capture` run raised macOS's own
+   Input Monitoring dialog and the run failed. So the first refusal a user ever
+   sees usually has a dialog beside it, and the app's message now leads with
+   that instead of sending them to System Settings.
+   **It also surfaced something the ticket never considered:** that prompt says
+   *"receive keystrokes from any application"*. This app's tap mask is
+   mouse-only and has never recorded a keypress (STC-327 exists because nothing
+   here captures keyboard input), but macOS's dialog is generic and cannot say
+   so — a person reading it for a screen recorder has every reason to Deny. The
+   message names the discrepancy now.
+   **Still open, and §4 is the only way to close it:** whether the granted
+   process needs RESTARTING before capture works. Input Monitoring commonly
+   does, and nothing has observed it for THIS app — the run above granted the
+   *terminal* (the identity a directly-spawned helper inherits), not Electron.
+   The message says "quit and reopen" because that is sufficient either way;
+   if a restart turns out to be unnecessary the sentence can be shortened.
 3. Whether `tccutil reset ListenEvent` actually revokes for the identity the
    helper inherits. PHASE-0 §6: a bare CLI binary inherits the LAUNCHING
    process's TCC identity, so for `npm run test:capture` the subject is the
@@ -88,9 +100,10 @@ channels fall back to it:
 
 and `/tmp/stc-tap-check` must **not exist**.
 
-**Write down whether a permission dialog appeared before that answer.** That is
-open question 2, and the answer decides whether the app's message needs a line
-about answering the prompt.
+**A permission dialog appeared** when this was run on 2026-09-09 — that is open
+question 2, answered, and the app's message was rewritten around it. Note
+whether it happens again on a fresh reset: a one-off would mean the message is
+built on a single observation.
 
 Then re-grant Input Monitoring to the terminal and confirm the same command
 answers `started`. A refusal that survives the grant is the failure worth
@@ -111,7 +124,21 @@ that says, in this order:
 1. **Nothing was recorded — the take did not start.**
 2. why: the cursor is drawn afterwards from what the tap records, so a take
    without it would have no cursor at all
-3. what to do: Input Monitoring, in System Settings
+3. that macOS may have just asked, and that its "keystrokes" wording does not
+   describe what this app records
+4. what to do: allow it, or tick the recorder under Input Monitoring — then
+   quit and reopen
+
+**This section carries the LAST open question and it is not the wording.** Run
+it from a bundle launched with `open`, not `npm run app:start`: launched that
+way the app is a child of the terminal and resolves to the terminal's grants,
+so it proves nothing about Electron's (STC-292's runbook records the same trap,
+met by the runbook written to test permissions). Then answer two things:
+
+- Does the prompt appear for the APP, as it does for the terminal?
+- **After allowing it, does Record work immediately, or does the app have to be
+  quit and reopened first?** The message currently says quit and reopen because
+  that is sufficient either way. If a restart is unnecessary, shorten it.
 
 Look at it and answer one question: does someone who pressed Record understand
 that there is no file? If the first thing they reach for is the take library to
