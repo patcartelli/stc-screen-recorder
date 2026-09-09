@@ -57,6 +57,9 @@ events → deterministic transform → CFR MP4 with cursor overlay.
 | `helper/test/still-encode.test.ts` | the encoder for real, on CI — encoding needs no grant, so PNG colour type, the P3 `iCCP` chunk and the HEIC brand are checked on every push |
 | `docs/STC-293-RUNBOOK.md` | what to run on the Mac for the export path: the pasteboard, the paste targets, and the P3 round trip an eye has to judge |
 | `docs/STC-291-RUNBOOK.md` | what to look at on the Mac for the decorated still, and which dial to turn when a preset is wrong |
+| `app/src/scrubber.ts` | the scrubber's decisions (STC-338) — **the interaction study's deliverable is its HEADER**: rules 1-10, which every later timeline control inherits. Position is a FRAME not a time; the grid is `time.ts`'s and this module does not own it; a drag is direct and a release only settles; the playhead is free and the trim is drawn rather than fenced; a clamp is felt as a rubber band; the minimum trim is TWO frames (arithmetic, not taste); one signed shuttle ladder; a bare letter belongs to the timeline only when nothing is being typed; a tick is drawn only when it can be seen; the readout is frame-accurate or decorative. No DOM, no Electron — and it may NOT import `trim.ts` (that chains to `cursor-art.ts` and fails the no-DOM pass), so `frameCount` is derived from `exportFrameOf` with a test holding the two together |
+| `app/test/scrubber.e2e.test.ts` | the scrubber WIRED — the pure tests prove `decideKey` decides, which is a different claim from the app doing what it decided. Found both of this ticket's real bugs |
+| `docs/STC-338-RUNBOOK.md` | what only a Mac can settle for the scrubber: whether the drag feels direct or dead, whether 24 px of rubber band reads as resistance or as breakage, whether ticks at 6 px are a scale or noise, and reverse shuttle on a 4K take |
 | `app/src/hotkeys.ts` | the global shortcuts' pure decisions (STC-292) — the accelerator grammar, the reserved list, duplicates, keystroke recording, and every sentence the user is shown. No Electron, no DOM |
 | `app/src/tray-menu.ts` | the menu-bar item's pure half — the template and the icon's pixels. Nothing in Electron can read a `Tray` back, so everything checkable is checked before it gets there |
 | `app/src/tray.ts`, `app/src/shutter.ts` | the Electron `Tray`; the system camera-shutter sound, honouring `com.apple.sound.uiaudio.enabled` and the alert volume |
@@ -142,7 +145,7 @@ belonging to a different commit).
 
 | ticket | what | needs |
 |---|---|---|
-| STC-315 | **cursor telemetry is a hard requirement — written 2026-09-09 on Linux, so THE TCC PATH IS UNOBSERVED.** `CGEvent.tapCreate` returning nil is an ERROR on `start` (`event-tap-unavailable`) instead of a warning over a video-only take. The pixels never carry a pointer (`showsCursor` is false; the transform draws it from events.json), so the old behaviour produced a take with no cursor ANYWHERE that looked like every other take — rule 2 broken silently, and the `when` signal auto-zoom (STC-324) needs. **The whole change is an ORDERING one:** `makeEventTap()` is split out of the tap's thread and called from `begin()`, because `tapCreate` fails SYNCHRONOUSLY and the old arrangement learned that inside a `Thread` the start had already been answered without. Nothing about a tap needs its creating thread — the run loop the source is added to decides where the callback lands, and that is still the dedicated thread. Placed after `SCShareableContent` and **before `setupWriter()`**, which is load-bearing in both directions: after it there is a display.mp4 with frames and `removeIfNothingWorthKeeping` correctly KEEPS the directory, so "no take directory can exist without a cursor track" would be false; before the enumeration it would displace `no-displays` as the first answer on every ungranted machine and quietly make several existing tests vacuous. Cost, stated rather than buried: **every capture grant test now needs Input Monitoring too**, so `_start-outcome.ts` gained a third classification (`no-input-monitoring`) that says SKIP-GRANT and names the RIGHT pane — a machine can hold Screen Recording and still land here. Mid-take tap loss is deliberately NOT in scope and is recorded in BRIEF.md's Cursor row | a Mac: `docs/STC-315-RUNBOOK.md`. §3 (`tccutil reset ListenEvent`) is the only real revocation, and it answers the open question — **whether macOS raises its own Input Monitoring prompt on the first `tapCreate`**, which decides whether the app's message needs a line about answering a dialog |
+| STC-315 | **cursor telemetry is a hard requirement — written 2026-09-09 on Linux, so THE TCC PATH IS UNOBSERVED.** `CGEvent.tapCreate` returning nil is an ERROR on `start` (`event-tap-unavailable`) instead of a warning over a video-only take. The pixels never carry a pointer (`showsCursor` is false; the transform draws it from events.json), so the old behaviour produced a take with no cursor ANYWHERE that looked like every other take — rule 2 broken silently, and the `when` signal auto-zoom (STC-324) needs. **The whole change is an ORDERING one:** `makeEventTap()` is split out of the tap's thread and called from `begin()`, because `tapCreate` fails SYNCHRONOUSLY and the old arrangement learned that inside a `Thread` the start had already been answered without. Nothing about a tap needs its creating thread — the run loop the source is added to decides where the callback lands, and that is still the dedicated thread. Placed after `SCShareableContent` and **before `setupWriter()`**, which is load-bearing in both directions: after it there is a display.mp4 with frames and `removeIfNothingWorthKeeping` correctly KEEPS the directory, so "no take directory can exist without a cursor track" would be false; before the enumeration it would displace `no-displays` as the first answer on every ungranted machine and quietly make several existing tests vacuous. Cost, stated rather than buried: **every capture grant test now needs Input Monitoring too**, so `_start-outcome.ts` gained a third classification (`no-input-monitoring`) that says SKIP-GRANT and names the RIGHT pane — a machine can hold Screen Recording and still land here. Mid-take tap loss is deliberately NOT in scope and is recorded in BRIEF.md's Cursor row | **§3 RUN 2026-09-09 and the open question is ANSWERED: macOS DOES prompt.** `tccutil reset ListenEvent`, then `test:capture`, raised macOS's own Input Monitoring dialog and the run failed — so the first refusal a user sees usually has a dialog beside it, and the message leads with that rather than sending them to System Settings. **It also surfaced what the ticket never considered: the prompt says "receive KEYSTROKES from any application".** The tap's mask is mouse-only and this app has never recorded a keypress (STC-327), but macOS's dialog is generic and cannot say so — someone reading it for a screen recorder has every reason to Deny, so the message names the discrepancy. Still needs a Mac for §4, and it is a DIFFERENT question: whether the granted process must be RESTARTED. The runs that established the prompt granted the TERMINAL (a directly-spawned helper's identity), not Electron, and `npm run app:start` resolves to the terminal's grants too — only a bundle launched via `open` can settle it. The message says "quit and reopen" because that is sufficient either way |
 | STC-232 | **PHASE 3 COMPLETE 2026-08-30** — increments 1-5 done. Recorded from the app with the camera toggle on, previewed with no hand-written project.json, sync measured at 65 ms | nothing |
 | STC-232 4b | **done and VISUALLY CONFIRMED 2026-08-28** — both sinks draw the PiP, gate proves it, app opens camera takes, and a human watched a real 4K take. Increment 5 is unblocked | nothing; increment 5 is next |
 | STC-259 | **DONE** — steps 1-3, plus Mode B diagnosed. Both encoder queries bounded at 15 s, the harness's first append bounded behind a deadline watchdog, and the product answered: it does not need one. `ATTEMPTS = 1` (measured useless). The wedge is the decoder's synchronous `configure()`. **`prefer-software` did NOT fix it, CONFIRMED on CI** — run 33576888543 wedged all four gates with `decoder preference: prefer-software` in every trail | nothing. What the decoder is blocked ON is the open question, and it is no longer answerable by choosing a different decoder |
@@ -174,6 +177,7 @@ belonging to a different commit).
 | STC-335 | **export size is choosable — DONE 2026-09-09 (#116, another session).** `transform/src/output-size.ts` owns three rules: height follows the capture's aspect and is never typed, both dimensions are EVEN (H.264's 4:2:0 cannot express an odd one, and `round(width/aspect)` is odd about half the time), and an option wider than the capture is returned FLAGGED rather than dropped — refusing by omission makes a preset vanish, which reads as a bug in the list rather than a fact about the take. Presets come from the site's measured container, not a round number. **Reviewed after it merged and it produced four follow-ups**, three fixed in #120 and one left as a decision (STC-337): the size select stayed live DURING an export (`exportSession` fixes the canvas once, `render()` re-reads `project.output` per frame, so changing it mid-export puts cursor and PiP in the wrong space for the rest of the file and still reports "Done"), no rollback when the write failed, and `export-one.mjs` still misreporting for a document `parseProject` rejects | nothing |
 | STC-318 | **legibility at embed width — DONE 2026-09-09 (#117, another session; blockers fixed in #120).** `textPt * embedWidth / display.pointWidth`, and **the output width CANCELS** — exporting smaller does not make text bigger, which is the opposite of the intuitive belief and worth saying out loud. The ticket's own formula was wrong by a factor of `backingScale`; the input is the display's width in POINTS, which lives in `anchors.display` and not in the project. Also carried the project-4 fix (STC-336) — `main.ts`'s `preview:writeProject` hand-listed versions 1-3 while `projectForWrite` emits 4 for a non-default zoom, so for a day **a take with zoom set could not be saved at all**; one list in `transform/src/project-version.ts` now, with a seam test refusing a third copy. **Two blockers found reviewing it, both live on master for an hour** (#120): `captureFrame` sized its buffer from `this.canvas`, so with the viewer's eye on Copy/Save frame silently wrote a 1232-wide still for a 1728-wide take — a way of LOOKING changing what comes OUT — and `#stage { width: 100% }` stretched the smaller render back to the player column, so the toggle showed the original size with fewer pixels, flattering small text rather than testing it | a Mac, for whether 4K desktop text is legible at all in the `/lab` column — the numbers say no, and the answer is decided at CAPTURE time |
 | STC-337 | **the PiP's inset varies with the export size — a DECISION, not a bug, and deliberately unmade.** `widthPct` scales with the output and `marginPx` does not, so on a 3840-wide take the margin is 6.7% of the PiP's width at native and 20.8% at embed width. Latent in the PiP design since STC-232 and unreachable until STC-335 let output differ from capture. A margin in real pixels is defensible as a safe area; a margin in percent as consistent composition. Neither is wrong and nobody has said which was meant — that is the whole ticket. STC-318's viewer's eye now displays at the embed width for real, so it can be LOOKED at rather than reasoned about | an eye on a real camera take at 1232 and at native. If it changes: project-5, STC-314's rounding order, and `gate:identity` pins the current geometry |
+| STC-338 | **interaction study #1, the scrubber — written 2026-09-09 on Linux, so EVERY JUDGEMENT ABOUT FEEL IS UNMADE.** The first of a series that does not wait for the editor: one control made to feel right, with the rules written down so the editor inherits a vocabulary instead of inventing one. `app/src/scrubber.ts`'s header IS the deliverable (rules 1-10). **`#scrub` is parameterised in EXPORT FRAMES now** (`min=0 max=frameCount-1 step=1`), not per-mille — so "the playhead is always on the export grid" is the control's own arithmetic rather than a rounding applied afterwards, and a per-mille control with a snap on top would pass every behavioural test while still being able to HOLD an off-grid value. Trim handles rubber-band past their clamp and settle back; the cut material is dimmed rather than made unreachable (you must be able to look at what you cut); ticks are drawn at a stride wide enough to read and at no stride at all when none is; the clock is `M:SS:FF`. J/K/L is ONE SIGNED LADDER, which is what makes "J while playing forward decelerates" fall out instead of needing a rule — `PreviewPlayer.play(rate)` gained a signed rate and a floor for reverse. **The minimum trim is TWO frames and that is measured, not chosen:** `minTrimNs(60)` is 16666667 ns while the grid steps 16666666 and 16666667 alternately, so `clampTrim` pushes a ONE-frame trim off the grid at a third of frame positions (66666 of 200000, first at frame 2) and a two-frame trim at none; the test re-derives it against the real `clampTrim` so the constant moves if the grid does. Six E2E files had their scrub values converted from per-mille to frames. 37 pure assertions + 15 E2E | a Mac: `docs/STC-338-RUNBOOK.md`. §2 confirmed direct, not dead. §3's rubber band was reviewed 2026-09-09 and found genuinely broken — both directions were pinned dead at the clamp with no creep at all, a sign error in `onHandleMove`, now fixed and covered by a real-pointer E2E; the 24 px range itself is still an unjudged number. §6 (are 6 px ticks a scale or noise, and does the resize path work), whether J's "keeps going into reverse" past zero (rule 7, by design) reads as intentional shuttle behavior or wants a stop-at-zero instead, and §4's reverse shuttle on a 4K take, which was only ever run against a 640x360 fixture |
 | STC-251/252 | preview memory ceiling (~15 min at 4K); Node 20 actions deprecation | — |
 
 `PHASE-2.md` records the measured limits (export 1.52x realtime, preview ~1.2x file size in RAM).
@@ -477,6 +481,19 @@ reachable via KVC (`setValue(3, forKey: "captureResolution")`, verified in phase
   new capture fails this way. It reads like a permission or entitlement problem and is not one:
   with the stray app gone, the same helper immediately reports the honest `no-displays` instead.
   Check `ps -Ao pid,command | grep stc-screen-recorder` before debugging anything else.
+  **STC-292 made this much easier to hit, and this note predates it.** The app is menu-bar-FIRST
+  now: `window-all-closed` no longer quits on macOS, the Dock icon goes with the last window and
+  the menu-bar item stays. So ⌘W leaves a live `Electron` + `stc-helper` holding the display with
+  **no window and no Dock icon** to remind you it is there — the app is working exactly as
+  designed and is invisible in both of the places you would look. Hit for real on 2026-09-09: a
+  bare `start` from the terminal failed `-3805` twice in a row while `ps` showed pid 65217
+  (`Electron … /stc-screen-recorder`) and its child helper. Quit it from the MENU BAR rather than
+  `kill`, unless you are sure it is idle — `ps` cannot tell you whether a take is live, and
+  killing mid-recording loses it.
+  NB the grep matches other apps' Electron crashpad helpers (Linear, Discord, Claude, Wispr Flow
+  all shipped Electron); scope on the absolute path `stc-screen-recorder/node_modules/electron`,
+  which is the same "the shell running the check matched itself" lesson the saturation note
+  already records one screen down.
 - **`SCStream` can fail through `didStopWithError` INSTEAD of `startCapture`'s completion** — seen
   as `-3805 "application connection being interrupted"`. Wiring only the completion left `start`
   permanently unanswered. Every request path must resolve exactly once: the delegate answers a
@@ -1720,6 +1737,66 @@ reachable via KVC (`setValue(3, forKey: "captureResolution")`, verified in phase
   flag would have tested the flag. `chmod` would have been worse than useless — the container runs
   as root, so it is a no-op locally and only bites on CI, which is a test that lies in the one
   direction nobody checks.
+- **A native control can be a SECOND AUTHOR of the state your module owns, and the pure test
+  cannot see it (STC-338).** `decideKey` correctly refuses a modifier chord — ⌘→ is the app's,
+  not the scrubber's — and the playhead moved anyway, because `#scrub` is an `<input type=range>`
+  and a focused range steps on arrows BY ITSELF. The module's decision was right and irrelevant:
+  there were two writers to the position and only one of them consulted the rules. `PageUp`,
+  `PageDown` and the vertical arrows were worse, moving the playhead by a chunk with no rule
+  behind them at all. The fix is `preventDefault` on the CONTROL's native keys — which cancels
+  the default action without stopping the event, so a modifier chord still reaches the app's own
+  accelerators. Found only by an E2E driving real keystrokes; watched failing again by mutation
+  (removing the suppression fails exactly those two tests and no others). **Whenever a pure
+  decision module sits on top of a native control, ask what the CONTROL does with the same input
+  before believing the module is the only path to the state.**
+
+- **A layout measurement taken while the element is hidden reads as a legitimate answer
+  (STC-338).** `tickStrideFrames` returns null when no tick stride clears the legibility floor,
+  and drawing nothing is the CORRECT response to that. `updateTrimUI` ran before
+  `$("player").removeAttribute("hidden")`, so the track measured 0 px wide, no stride could
+  clear the floor, and the grid never appeared on open — a null that meant "I could not see the
+  element" being consumed as "this take has no legible stride". The two are indistinguishable at
+  the call site. Same family as `performance.memory` not counting ArrayBuffers and as STC-318's
+  canvas having three different sizes: **a measurement that cannot fail loudly will fail
+  quietly and plausibly.** Measure after the reveal, and prefer a null that the caller can tell
+  apart from a zero.
+
+- **A rubber band's sign was wrong in BOTH branches, so it looked asymmetric to a human
+  and was actually symmetric — reported 2026-09-09 on real hardware.** `onHandleMove`'s `excess`
+  and `band` were each computed backwards for BOTH "in" and "out": `rubberBandPx` always saw a
+  NEGATIVE number and returned 0, so a trim handle pinned dead at its clamp with no creep in
+  EITHER direction — only the red/wide `.held` styling ever fired. A small overshoot in one
+  direction reads as "the handle turned red, fine"; a large one in the other reads as "stuck
+  bright red, all red" — the SAME zero-band bug, reported as two different symptoms because the
+  two test drags happened to travel different distances. Verified numerically before touching the
+  code (`node -e` reproducing the exact sign flip) rather than guessed from the report.
+  No existing test could have caught it: `scrubber.test.ts` exercises `clampTrimFrame`/
+  `rubberBandPx` in isolation (both individually correct), and `scrubber.e2e.test.ts`'s keyboard
+  tests never touch `onHandleMove`'s pixel math at all — the wiring between the pure functions and
+  the screen was untested. `app/test/scrubber.e2e.test.ts`'s new "rubber band, dragged with a real
+  pointer" describe block drives a real `mouse.down`/`mouse.move` past the clamp and asserts the
+  margin actually moves (not just that `.held` is set); mutation-proven — reverting the sign fix
+  fails exactly those 3 tests and none of the other 15.
+- **Two 10px-wide trim handles a few frames apart OVERLAP almost entirely on a narrow window, and
+  whichever is LATER IN THE DOM wins every click.** The first draft of the rubber-band E2E put the
+  in/out handles 10 frames apart (matching the runbook reviewer's own scenario) — on this
+  environment's ~32px-wide timeline that is under 2px of screen separation between two 10px
+  buttons, so EVERY click meant for `#trim-in` silently landed on `#trim-out` (added second in the
+  HTML, so it wins z-index/paint ties) and `onHandleMove` never fired for the handle under test at
+  all. The tell was that `left` stayed at the handle's PRE-drag position no matter how far the
+  drag went, for any overshoot down to a few pixels — not a threshold effect, a totally different
+  element receiving the pointerdown. The fix is not to click more precisely; it is to set up the
+  trim with the two handles FAR apart (frame 20 and 280 of 299) so the INITIAL mousedown is
+  unambiguous — pointer capture (already set at mousedown) is what makes it safe for the drag to
+  travel past the other handle's position once under way, so only the very first click needs the
+  separation.
+- **A test that clicks a control to focus it may MOVE the control (STC-338).** `win.click("#scrub")`
+  on a range input sets its value from the click's x, so a test that clicked "to give it focus"
+  and then asserted the position was asserting against a seek it performed itself — it reported
+  `expected 149 to be 120` and looked exactly like the product bug it was written to catch. Focus
+  through `element.focus()` in an `evaluate`. The tell was that the number was the MIDDLE of the
+  track rather than one step from where the test put it; arithmetic identified it, "flaky E2E"
+  would not have.
 
 - **Two PRs merged unreviewed within an hour on 2026-09-09, and a review of each found real
   defects the same hour.** #116 produced four follow-ups (STC-337 and three fixed in #120); #117
