@@ -111,6 +111,22 @@ describe("explainFailedStart — what the reader is told", () => {
     // and it says what the honest no-grant signal would have been, so the
     // reader can tell the next run apart without coming back here
     expect(m).toContain("no-displays");
+
+    // The grep is SCOPED to this project's path. It used to carry
+    // `\\|[E]lectron`, which matches every other Electron app's crashpad
+    // helper — measured 2026-09-09 on a real Mac: nine lines, five of them
+    // Linear, Discord, Claude and Wispr Flow, with the two that mattered
+    // buried in the middle. A diagnostic that buries its own answer in noise
+    // is the same defect as one that omits it.
+    expect(m).not.toContain("[E]lectron");
+
+    // Since STC-292 the app survives its last window, so the old "kill it"
+    // is advice that can lose a live take, and "look for a leftover app" is
+    // advice that sends you to a Dock icon that is not there. Both halves are
+    // asserted: WHERE to quit it from, and WHY `ps` alone cannot tell you it
+    // is safe to kill.
+    expect(m).toMatch(/menu bar/i);
+    expect(m).toMatch(/mid-recording/i);
   });
 
   test("every message names WHAT went unverified and quotes the outcome", () => {

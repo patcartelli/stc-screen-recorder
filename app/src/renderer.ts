@@ -327,13 +327,45 @@ const START_FAULTS: Record<string, string> = {
   // anywhere. It is a refusal now — nothing was recorded — so the sentence has
   // to say that first, before the fix, or a user reads "grant this" and
   // assumes the take they just made is fine.
+  //
+  // The wording changed once macOS was WATCHED doing this (2026-09-09, on
+  // hardware after `tccutil reset ListenEvent`). Two things were wrong with
+  // the first draft, and both were guesses this file could not check from
+  // Linux:
+  //
+  // (1) It assumed `tapCreate` fails SILENTLY and sent the reader to System
+  //     Settings. It does not — macOS raises its own Input Monitoring prompt.
+  //     So the first refusal a user ever sees usually has a dialog on screen
+  //     next to it, and a message that ignores that sends them hunting through
+  //     Settings for something they could have answered in place.
+  //
+  // (2) That prompt says "receive KEYSTROKES from any application". This app
+  //     has never recorded a keypress — the tap's mask is mouse-only, and
+  //     STC-327 exists precisely because nothing here captures keyboard input
+  //     — but macOS's dialog is generic and cannot say so. Somebody reading
+  //     that for a screen recorder has every reason to click Deny, and until
+  //     now nothing told them otherwise. Naming the discrepancy is not
+  //     reassurance for its own sake: it is the difference between a grant
+  //     that gets given and one that gets refused for a sound reason.
+  //
+  // "Quit and reopen" rather than "press Record again", deliberately. Input
+  // Monitoring commonly needs the granted process restarted, and that has NOT
+  // been observed for THIS app: the runs that established the prompt went
+  // through the terminal (which is the granted identity for a directly-spawned
+  // helper), and `npm run app:start` makes the app a child of the terminal and
+  // resolves to its grants too — STC-292's runbook already records that trap.
+  // Only a bundle launched via `open` can settle it. So the instruction is the
+  // one that is sufficient in EITHER case rather than the shorter one that
+  // might send someone in a circle.
   "event-tap-unavailable":
     "Nothing was recorded — the take did not start.\n\nThe recorder could not " +
     "watch your mouse, and the cursor is never captured in the video itself: it " +
     "is drawn afterwards from what the tap records. A take without it would have " +
-    "no cursor at all, so it is refused rather than made.\n\nGrant Input " +
-    "Monitoring in System Settings › Privacy & Security › Input Monitoring, then " +
-    "press Record again.",
+    "no cursor at all, so it is refused rather than made.\n\nmacOS may have just " +
+    "asked to allow this — its dialog says \"keystrokes\", but this app records " +
+    "mouse movement and clicks only, and never what you type.\n\nAllow it, or " +
+    "tick the recorder under System Settings › Privacy & Security › Input " +
+    "Monitoring. Then quit and reopen the recorder and press Record.",
 };
 
 recordBtn.addEventListener("click", async () => {
