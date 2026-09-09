@@ -1,4 +1,5 @@
-import type { FrameState } from "./render.js";
+import { FULL_FRAME_UV, type FrameState } from "./render.js";
+import { uvRectToPixels } from "./spaces.js";
 import { CLICK_HIGHLIGHT_PT, drawCircle, drawCursor } from "./cursor-art.js";
 
 /**
@@ -15,6 +16,38 @@ import { CLICK_HIGHLIGHT_PT, drawCircle, drawCursor } from "./cursor-art.js";
  * export-identity.slow pins both processes to software because across
  * rasterizers they differ (CLAUDE.md, the rasterization-backend trap).
  */
+/**
+ * The display frame, cropped to the zoom's rectangle.
+ *
+ * The full-frame case takes the FIVE-argument `drawImage` rather than the
+ * nine-argument one with a full source rect. The two are equivalent by spec
+ * and this repo does not make claims about rasterisers it does not control —
+ * CLAUDE.md records the pre-encode hash already differing between GPU and
+ * swiftshader for far simpler drawing. Taking the old call when the crop is
+ * the whole frame makes "auto-zoom stage 1 changes no pixels" true by
+ * CONSTRUCTION rather than by a measurement that might not hold on the next
+ * Chromium. The nine-argument path goes live with STC-326, which changes the
+ * picture on purpose.
+ *
+ * The crop is UV over the CAPTURE, so it is converted against the frame's own
+ * size through spaces.ts — the one owner (STC-314).
+ */
+function drawSource(
+  ctx: OffscreenCanvasRenderingContext2D,
+  frame: ImageBitmap,
+  fs: FrameState,
+  width: number,
+  height: number,
+): void {
+  const c = fs.zoom.crop;
+  if (c.x === 0 && c.y === 0 && c.width === 1 && c.height === 1) {
+    ctx.drawImage(frame, 0, 0, width, height);
+    return;
+  }
+  const src = uvRectToPixels(c, { x: 0, y: 0, width: frame.width, height: frame.height });
+  ctx.drawImage(frame, src.x, src.y, src.width, src.height, 0, 0, width, height);
+}
+
 export function composite(
   ctx: OffscreenCanvasRenderingContext2D,
   frame: ImageBitmap | null,
@@ -25,7 +58,7 @@ export function composite(
 ): void {
   ctx.fillStyle = "#000000";
   ctx.fillRect(0, 0, width, height);
-  if (frame) ctx.drawImage(frame, 0, 0, width, height);
+  if (frame) drawSource(ctx, frame, fs, width, height);
 
   // The PiP sits UNDER the cursor deliberately: a cursor over the bottom-right
   // corner must stay visible. render() has already decided the rectangle; this
