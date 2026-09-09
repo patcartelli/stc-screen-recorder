@@ -70,6 +70,8 @@ events → deterministic transform → CFR MP4 with cursor overlay.
 | `app/test/nothing-lost.e2e.test.ts` | gate 4: N captures in a burst, every panel ignored, N recoverable shots AND N exports. Found two real bugs on its first run |
 | `transform/test/shot-v1-frozen.test.ts`, `fixtures/shot-v1/` | gate 5: a FROZEN shot-1 document plus its committed layout. Never edit the fixture to make a test pass |
 | `helper/test/still-gates.grant.test.ts` | gates 3 and 6 — capture latency and a still taken mid-recording. Need a grant, so `npm run test:capture`, never CI |
+| `app/src/share.ts` | share's pure decisions (STC-242) — the STABLE published name from a slug, `planPublish`'s refusals, the embed template, and the ONE definition of the export filenames `renderer.ts` used to build inline. No node, no DOM |
+| `docs/STC-242-RUNBOOK.md` | what to check on the Mac for share: the native picker, whether `showItemInFolder` really selects the file, and whether the `/lab/<slug>/` assumption matches the real site |
 | `docs/STC-295-RUNBOOK.md` | annotation has NO UI yet — how to author one by hand, and the judgement calls (the accent colour, the head size, whether 3.5 pt is a marker or a hairline at 4K) |
 | `docs/STC-294-RUNBOOK.md` | what only a Mac can settle for the library: how the grid LOOKS, the 500-take scroll, re-open and duplicate by hand |
 | `docs/STC-300-FORMAT-AUDIT.md` | whether `shot.json` already holds every parameter a still editor would expose. Read it BEFORE adding a field to `shot-1` — it says which of STC-300's inspector items are already there, which one is the ticket's mistake rather than the format's, and what a re-crop actually needs |
@@ -155,16 +157,10 @@ belonging to a different commit).
 | STC-295 | **annotation — FORMAT AND RENDER ONLY, no UI, and that is the slice rather than an omission.** The ticket asks for "select, move, resize, delete, and undo/redo hooked into the editor's existing history" and there IS no editor — STC-300 is gated — so the tools wait for whichever surface wins, and this slice deliberately does not settle that by defaulting. What it does ship is everything the four acceptance criteria are actually about: `shot-2` (`decoration.annotations` — arrow, box/ellipse, text label), coordinates normalised to the CAPTURE like STC-297's redactions so markup moves with the picture rather than the canvas, and a render pass OVER the decorated still — the opposite of redaction, which composites into the picture before decoration and before encode. **The version is the MINIMUM that can express the document**: an un-annotated still is still written as shot-1, so the helper needed no change and an old build can still read it; adding an annotation makes it v2 and removing the last takes it back. `shotForWrite` became the real write funnel for this (`still:writeShot` used to serialise `parseShot`'s output directly, which would have written `annotations: []` into a v1 document that shot-1's `additionalProperties: false` forbids). **There is deliberately no outline under the stroke**, which is how the fourth criterion — no halo where an arrow crosses the window edge — is discharged by construction rather than patched afterwards; `npm run gate:still` asserts it on real pixels and it was MUTATION-TESTED (a white outline makes it fail at 211 from the accent). Sizes are POINTS at the capture's scale, so a 1x and 2x capture get markup of the same apparent size | a Mac: `docs/STC-295-RUNBOOK.md`. Nothing creates an annotation yet, so authoring one by hand is the only way to look — and the questions are all taste: the accent colour on a real screenshot, the head size, and whether 3.5 pt reads as a marker or a hairline at 4K (the number most likely to be wrong, chosen with no 4K screen) |
 | STC-301 | **gates for the screenshot slice — five of six built, and gate 4 FOUND TWO REAL BUGS on its first run.** Five captures in quick succession produced five shots on disk, THREE export requests and TWO files: (1) `runExport`'s `if (!composite) return false` is a fair guard, but `settle()` treated it as completion, so a panel replaced before it had decoded its frame reported "done" and exported nothing — `settle` waits for the decode now, though that fix arrived from #102 rather than from here (found independently, in review, and BOUNDED by `SETTLE_READY_MS` with a clearance test against `SETTLE_BACKSTOP_MS`; merging master took that version whole); (2) concurrent exports overwrote each other, and `uniqueFileName`'s OWN COMMENT predicted it ("a counter derived from a listing is correct only until two exports race") while its belt-and-braces suffix loop re-checked the same stale snapshot — names are claimed in-process before the write now, and that fix ALSO arrived from elsewhere (#104 hit the identical race from the other direction, since stacking is the first thing in the app that can export twice at once, and its claim is RELEASED in the same `finally` as the scratch file where mine never released). Measured 5/3/2 → 5/5/3 → 5/5/5. **So BOTH of gate 4's bugs were fixed on master rather than in the branch that found them, and that does not diminish the gate**: it is what measured them and what will notice them coming back. It also has a teardown bound derived from `SETTLE_READY_MS`, because vitest's default hook timeout is the same 10 s and made `app.close()` a coin flip against the wait underneath it — 1 failure in 5 before, 6 of 6 after. **Two departures from the ticket, both recorded rather than done quietly** (`docs/STC-301-GATES.md`): gates 3 and 6 call `capture-still` and so need a TCC grant, which no GitHub runner has — they are `*.grant.test.ts` rather than CI gates that would skip on every push; and gate 1 asserts PROPERTIES rather than the golden PNGs the ticket names, for the reason STC-291 already refused them. The light/dark half of gate 1 was worth adding and set its own tolerance: the same injected premultiply fault drifts a light capture 245 and a dark one only 26, so the threshold is 8 rather than the older check's 24, which would have caught the dark case by a margin of two | a Mac for gates 3 and 6 (`npm run test:capture`), and STC-313 for the ticket's own closing line — the slice "is not done until one real portfolio figure has been made with it" |
 | STC-314 | **coordinate spaces — DONE 2026-09-08, on Linux; no machine needed and none used.** `transform/src/spaces.ts` names every space on both axes (time: session ns · sim tick · export frame · source PTS · clip-relative; space: global points · display-local points · capture pixels · output pixels · UV · PiP rect · view pixels) and owns every conversion the transform can reach. The review's axis-B table said display-UV ↔ crop-UV "does not exist"; it DID — the still path has had it since STC-291 (`redactionToPixels`, `pointToPixels`, `cursorLayout`, `pxPerPointOf`), just only for stills, so shipping a second one for zoom would have been two owners on day one. All of it routes through `spaces.ts` now, including the three pixels→UV sites in `still-annotate.ts`/`still-redact.ts` that were doing the same division by hand. The PiP is a UV rect over the output rather than a corner in output px, with pixel identity swept against the rule it replaced. Four `Point`/`Size`/`Rect` declarations collapsed to one. Blocks auto-zoom (STC-324) | nothing |
+| STC-242 | **share — DONE 2026-09-09, and it is the last software step before the demo (#107).** Three buttons under the preview: Site folder… (a native picker, sticky), Share to site (copy the export in, snippet to the clipboard), Show published. No upload, no auth, no third-party service — the ticket cut all of that once the destination was decided, and publishing to the web stays `git push` in the site repo by a person who can read the diff. **The decision the ticket did NOT state and the one that matters: the published file is named from a stable SLUG, never from the take.** The export is `export-<take timestamp>.mp4`, which correctly names its recording and is exactly wrong on the site — the page embeds a fixed path, so a timestamped name costs a page edit on every re-record, and STC-313 makes a point of the Music Network take being re-recordable. So the site gets `network.mp4` and keeps getting it; two takes publishing to ONE path is asserted by a test, because it is the property the whole design rests on. That makes re-publishing an OVERWRITE, deliberately — `replaced` is read BEFORE the copy (after it the answer is always yes) and the UI says "Replaced" rather than "Wrote". No modal: the folder was picked by hand and the slug typed by hand, and the site repo's own `git diff` is a better safety net than a prompt on every republish. **The embed snippet is PROVISIONAL and says so** — the ticket gates it on "once the site's video component shape is settled", it is not settled, and it could not be settled from this repo, which has no sight of the site. The default is a plain `<video>` (correct HTML whatever Astro component wraps it later) and the template is a PREFERENCE, so the real shape needs no code change; inventing a `<Video …>` API for a repo I cannot read would have looked settled to the next person. `share.destination` is stripped from `recorder:setSettings` like `still.destination`, and tested through the IPC rather than the UI (STC-292's two-layer lesson) | a Mac: `docs/STC-242-RUNBOOK.md`. The picker, whether `showItemInFolder` selects the FILE, and **whether `/lab/<slug>/` matches the real site** — the most likely thing to be wrong, and its symptom is a snippet whose `src` 404s while the file sits in exactly the right folder |
 | STC-251/252 | preview memory ceiling (~15 min at 4K); Node 20 actions deprecation | — |
 
 `PHASE-2.md` records the measured limits (export 1.52x realtime, preview ~1.2x file size in RAM).
-
-### Open PR from another agent
-
-`#3 STC-241: in-app trim before export` — a separate agent, working in the linked worktree at
-`../stc-screen-recorder-stc-241`. Untouched by this session. It overlaps `transform/src/export.ts`
-and the app UI; git reports no textual conflict, but `test:slow` (UI vs CLI export identity) is the
-gate that would catch a semantic one, and it does not run in CI.
 
 ## Build & smoke
 
@@ -1200,6 +1196,44 @@ reachable via KVC (`setValue(3, forKey: "captureResolution")`, verified in phase
   `decoration.redactions`, so it moves with the content — and it can only ever SHRINK, because the
   pixels outside the captured region were never taken. Full reasoning, and the six inspector
   parameters that ARE already in the document, in `docs/STC-300-FORMAT-AUDIT.md`.
+- **A filename built in one process and looked for in another is the "one value, two copies"
+  defect with a process boundary hiding it (STC-242).** `renderer.ts` built the export's name as an
+  inline template literal — `` `export-${openTakeName}.mp4` `` — and STC-242's publish path, in the
+  MAIN process, has to find that exact file afterwards. Two authors for one filename rule, and no
+  typecheck can see the pair because neither side names the other. That is the fifth instance of
+  this defect in this file, and the first where the copies are not even in the same process.
+  Both names live in `share.ts` now and `share.test.ts` GREPS the renderer, because a test that
+  only checked `exportMediaName` would pass just as well with the literal back where it was. The
+  grep is exact rather than hopeful, verified in both directions: **0 matches on the clean file,
+  exactly 1 with the literal planted back**. Comments are blanked before scanning, so the file may
+  DISCUSS the rule it keeps (STC-294's lesson, met again).
+
+- **A test can fail on a selector that could never have matched, and it reads as a product fault
+  (STC-242).** All seven share E2E tests failed on `waitForSelector("#share")` timing out at 30 s.
+  Nothing was wrong with the code: the share row lives inside `<div id="player" hidden>`, so the
+  button is ATTACHED but never VISIBLE, and `waitForSelector` waits for visible by default.
+  Reordering would not have fixed it either — these tests deliberately drive `window.recorder`
+  rather than clicking (STC-292: a UI-driven test only ever reaches the first refusal it meets), so
+  the renderer's own open path never runs and the panel never unhides. A visibility wait could not
+  pass in ANY order. `{ state: "attached" }` is the fix, and it is what the wait was for in the
+  first place: proof the preload is in place before the first `evaluate`.
+  **The green run then wanted disbelieving too**: 4.5 s for seven Electron launches is fast enough
+  to be the "success by finding nothing to do" trap. It was real — the verbose run shows all seven
+  at ~500 ms with none skipped, and a MUTATION (publish under the take's name instead of the slug)
+  fails exactly the two tests asserting that property and correctly leaves the other five green.
+  These tests are fast because they wait on nothing; the slow E2E files here poll on panel
+  timeouts and file appearance.
+
+- **This box cannot attribute a full-suite failure, and CI is the instrument that can (STC-242).**
+  A local run including `helper/test/**` reported 75 failures and I could not say which were mine:
+  those tests need `swiftc`, which is why `vitest.global-setup.ts` dies here and why every local
+  run needs a throwaway config. Two attempts to build one failed in different ways — deleting it
+  before vitest had READ it (it worked once, so I generalised from a single instance), then putting
+  it outside the repo where `vitest/config` will not resolve. The answer was not a third throwaway
+  config: the PR's CI runs `npm test` on macOS with a real toolchain, went green, and settled the
+  attribution in one step. When a local environment structurally cannot run a check, reach for the
+  one that can rather than engineering around the gap.
+
 - **An overlay that hides itself is still in the photograph, sometimes (STC-290).** `BrowserWindow
   .hide()` and a `SCScreenshotManager` capture reach the window server down different paths with no
   ordering between them, so "hide, then capture" is a race — and the one time it loses is the one
