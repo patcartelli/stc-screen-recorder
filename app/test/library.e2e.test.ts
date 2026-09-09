@@ -60,9 +60,38 @@ async function launch(seed: (recordings: string) => void): Promise<Launched> {
 }
 
 /** Poll for a cached thumbnail, and report the renderer's own errors if it never arrives. */
+/** 0 when the file is absent; never throws, so a poller can call it freely. */
+function sizeOf(path: string): number {
+  try { return statSync(path).size; } catch { return 0; }
+}
+
+/**
+ * A file that exists, is non-empty, and has STOPPED GROWING.
+ *
+ * Measured rather than assumed. Polling a 6 MB `writeFile` concurrently, from
+ * 120 runs, the first sighting was 0 bytes 22 times and a PARTIAL file 98
+ * times — and the complete size 0 times. So "it exists" and even "it is
+ * non-empty" are both states the writer passes through, and only a size that
+ * has settled means the write is done.
+ */
+async function settledSize(path: string): Promise<number> {
+  const first = sizeOf(path);
+  if (first === 0) return 0;
+  await new Promise((r) => setTimeout(r, 30));
+  return sizeOf(path) === first ? first : 0;
+}
+
 async function expectThumbnail(dir: string, errors: string[]): Promise<void> {
   try {
-    await expect.poll(() => existsSync(join(dir, THUMBNAIL_FILE)), { timeout: 20_000 }).toBe(true);
+    // Polled on the SIZE, not on existence. `writeFile` CREATES the file and
+    // then writes it, so `existsSync` goes true in between — and a caller that
+    // then reads `size` can legitimately see 0 on a file that is about to be a
+    // perfectly good PNG. That is what reddened CI on #117, on a run whose
+    // Test step was 110s longer than master's and so had a wider window; the
+    // race predates that PR by a long way and it is the wait that was wrong,
+    // not the write.
+    await expect.poll(() => settledSize(join(dir, THUMBNAIL_FILE)), { timeout: 20_000 })
+      .toBeGreaterThan(0);
   } catch (e) {
     throw new Error(`no ${THUMBNAIL_FILE} in ${dir} after 20s. Renderer errors:\n`
       + (errors.length ? errors.join("\n") : "(none — the tile was never painted at all)")
@@ -162,8 +191,9 @@ describe("decorated thumbnails", () => {
     // Polled on the FILE, not on the <img>: the picture appearing is what the
     // cache is for, and the write is the last step of the render.
     await expectThumbnail(takeDir, errors);
-    // A real PNG, not an empty file — the main-process guard refuses anything
-    // that is not, so a written file is already proof it had the magic bytes.
+    // A real PNG, not an empty file. The main-process guard refuses bytes that
+    // are not one, so a FINISHED file is proof it had the magic — but "finished"
+    // is the load-bearing word, and waiting for existence never established it.
     expect(statSync(join(takeDir, THUMBNAIL_FILE)).size).toBeGreaterThan(0);
   }, 60_000);
 
