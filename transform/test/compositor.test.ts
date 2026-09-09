@@ -1,6 +1,6 @@
 import { describe, test, expect } from "vitest";
 import { composite } from "../src/compositor.js";
-import type { FrameState } from "../src/render.js";
+import { FULL_FRAME_UV, type FrameState } from "../src/render.js";
 import { CIRCLE_PT, CLICK_HIGHLIGHT_PT } from "../src/cursor-art.js";
 import { recorder } from "./_canvas-recorder.js";
 
@@ -14,6 +14,7 @@ import { recorder } from "./_canvas-recorder.js";
 function frameState(over: Partial<FrameState["cursor"]> = {}): FrameState {
   return {
     tick: 0, frameIndex: null, framePtsNs: null, pip: null,
+    zoom: { amount: 0, crop: FULL_FRAME_UV },
     cursor: {
       x: 300.5, y: 200.25, vx: 0, vy: 0, pressed: false, visible: true,
       shape: "arrow", style: "default", pxPerPoint: 1.5, ...over,
@@ -26,6 +27,38 @@ function draw(fs: FrameState) {
   composite(ctx as unknown as OffscreenCanvasRenderingContext2D, null, null, fs, 640, 360);
   return ops;
 }
+
+describe("auto-zoom stage 1 draws the source, and the stub changes nothing", () => {
+  const bitmap = { width: 1280, height: 720 } as unknown as ImageBitmap;
+
+  function drawWith(crop: { x: number; y: number; width: number; height: number }): string[] {
+    const { ctx, ops } = recorder();
+    const fs: FrameState = { ...frameState(), zoom: { amount: 1, crop } };
+    composite(ctx as unknown as OffscreenCanvasRenderingContext2D, bitmap, null, fs, 640, 360);
+    return ops.filter((o) => o.startsWith("drawImage"));
+  }
+
+  test("the full-frame stub takes the FIVE-argument call, byte for byte the old one", () => {
+    // The load-bearing claim of this slice: stage 1 is in the render path and
+    // changes no pixels. Nine-argument drawImage with a full source rect is
+    // equivalent BY SPEC, and this repo does not make claims about rasterisers
+    // it does not control — so the old call is taken, and that is checkable
+    // here rather than hoped for in a browser.
+    expect(drawWith(FULL_FRAME_UV)).toEqual(["drawImage([object Object],0,0,640,360)"]);
+  });
+
+  test("a real crop takes the NINE-argument call, in capture pixels", () => {
+    // The control. Without it, the test above is also satisfied by a
+    // compositor that ignores the crop entirely — which is exactly the bug
+    // that would make STC-326 look wired up while drawing the whole frame.
+    expect(drawWith({ x: 0.25, y: 0.5, width: 0.5, height: 0.25 }))
+      .toEqual(["drawImage([object Object],320,360,640,180,0,0,640,360)"]);
+  });
+
+  test("the two paths really differ — otherwise the guard above is decoration", () => {
+    expect(drawWith(FULL_FRAME_UV)).not.toEqual(drawWith({ x: 0, y: 0, width: 0.5, height: 0.5 }));
+  });
+});
 
 describe("composite() draws the pointer at the hotspot", () => {
   test("the artwork is translated to exactly (cursor.x, cursor.y) and scaled by pxPerPoint", () => {
