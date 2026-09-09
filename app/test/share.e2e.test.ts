@@ -58,9 +58,15 @@ async function launch(opts: { withExport?: boolean; slug?: string } = {}): Promi
   });
   const win = await app.firstWindow();
   await win.waitForLoadState("domcontentloaded");
-  await win.waitForSelector("#share");
+  // `attached`, not the default `visible`. The share row lives inside
+  // `#player`, which is hidden until the renderer's own open path runs — and
+  // these tests deliberately drive `window.recorder` rather than the UI, so
+  // that path never runs here and a visibility wait can only ever time out.
+  // Waiting for it attached is what this needs it for: proof the preload is
+  // in place before the first `evaluate`.
+  await win.waitForSelector("#share", { state: "attached" });
   // Publishing acts on the OPEN take — main holds it, so the preview has to be
-  // opened for there to be one.
+  // opened for there to be one. Main-side only; the DOM is not involved.
   await win.evaluate((d) => (window as any).recorder.openPreview(d), takeDir);
   return { win, recordings, takeDir, site };
 }
