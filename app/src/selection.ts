@@ -10,11 +10,11 @@ import { rectToDisplayLocal, snapRectEdges } from "@transform/spaces.js";
  * a pointer or a display server. `app/src/overlay.ts` draws it; it does not
  * repeat it.
  *
- * This is the second study in STC-338's series (scrubber → selection overlay
- * handles → floating thumbnail motion → take library). Unlike the scrubber,
- * this module was already built and reviewed before the study — the rules
- * below are that design made explicit, so the series has one vocabulary to
- * inherit rather than a different one per control. Only rule 4 changed as a
+ * This is STC-342, the second study in STC-338's series (scrubber → selection
+ * overlay handles → floating thumbnail motion → take library). Unlike the
+ * scrubber, this module was already built and reviewed before the study — the
+ * rules below are that design made explicit, so the series has one vocabulary
+ * to inherit rather than a different one per control. Only rule 4 changed as a
  * result of writing them down; the rest describe decisions STC-290 already
  * made.
  *
