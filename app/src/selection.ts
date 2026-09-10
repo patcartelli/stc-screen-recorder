@@ -10,23 +10,111 @@ import { rectToDisplayLocal, snapRectEdges } from "@transform/spaces.js";
  * a pointer or a display server. `app/src/overlay.ts` draws it; it does not
  * repeat it.
  *
- * ## Two coordinate spaces, named
+ * This is the second study in STC-338's series (scrubber → selection overlay
+ * handles → floating thumbnail motion → take library). Unlike the scrubber,
+ * this module was already built and reviewed before the study — the rules
+ * below are that design made explicit, so the series has one vocabulary to
+ * inherit rather than a different one per control. Only rule 4 changed as a
+ * result of writing them down; the rest describe decisions STC-290 already
+ * made.
  *
- * GLOBAL points are the desktop's own space: origin at the top-left of the main
- * display, y down, one unit per point. Electron's `screen` module and
- * CoreGraphics agree on it, and the helper's `windows` verb reports window
- * frames in it — so the marquee, the display list and the window list can all
- * be compared without conversion. DISPLAY-LOCAL points are what
- * `capture-still`'s `crop` takes: the same units, but relative to one display's
- * own origin. The conversion happens once, at the hand-off, in `confirm`.
+ * ════════════════════════════════════════════════════════════════════════
+ * THE RULES
+ * ════════════════════════════════════════════════════════════════════════
  *
- * ## One overlay, two capture paths
+ * **1. Two coordinate spaces, named.** GLOBAL points are the desktop's own
+ * space: origin at the top-left of the main display, y down, one unit per
+ * point. Electron's `screen` module and CoreGraphics agree on it, and the
+ * helper's `windows` verb reports window frames in it — so the marquee, the
+ * display list and the window list can all be compared without conversion.
+ * DISPLAY-LOCAL points are what `capture-still`'s `crop` takes: the same
+ * units, relative to one display's own origin. The conversion happens once,
+ * at the hand-off, in `confirm`.
  *
- * Region mode keeps the v1 rule (capture the display, crop at render time) and
- * hands over a display id plus a crop. Window mode cannot keep it — STC-291's
- * transparent modes need the window through its own filter — so it hands over a
- * window id instead. The branch is HERE, at the hand-off, and nowhere in the
- * interaction: everything above `confirm` is the same code for both modes.
+ * **2. One overlay, two capture paths, branching only at the hand-off.**
+ * Region mode keeps the v1 rule (capture the display, crop at render time)
+ * and hands over a display id plus a crop. Window mode cannot keep it —
+ * STC-291's transparent modes need the window through its own filter — so it
+ * hands over a window id instead. The branch is in `confirm`, nowhere in the
+ * interaction: everything above it is the same code for both modes.
+ *
+ * **3. A bare click is not a selection.** Below `MIN_SELECTION_POINTS` the
+ * state keeps no rect at all on release — it is how someone dismisses a menu
+ * or checks the overlay has focus, and macOS's own tool ignores it too.
+ *
+ * **4. A resize floors at the same minimum, LIVE — it never lets an existing
+ * marquee shrink through the floor to nothing.** `resizeRect` clamps the
+ * signed extent, not just the released rect, and re-derives the moving corner
+ * from the clamped value so the corner opposite the dragged handle stays
+ * exactly fixed. Before this rule was enforced this way, shrinking a marquee
+ * past the minimum and releasing there discarded the WHOLE selection — a
+ * fresh drag ending too small correctly reads as "that was a click" (rule 3),
+ * but a resize that empties an established marquee with no warning and no
+ * resistance is a different and worse thing: the user had something and lost
+ * it. Found reviewing this module for the study, not by a report — the same
+ * shape of defect as the scrubber's rubber-band sign bug, one series earlier.
+ *
+ * **5. Shift means something different on a fresh drag than on a resize, and
+ * that is not an inconsistency.** On a NEW drag there is no prior aspect, so
+ * "constrain ratio" can only mean a square, following whichever delta is
+ * larger so the pointer stays on the diagonal it is nearest. On a RESIZE
+ * there is a prior aspect — the marquee's own, at the moment the handle was
+ * grabbed — and Shift preserves that instead.
+ *
+ * **6. Option is a centred variant of whichever gesture is already running.**
+ * A new drag draws from the anchor as the centre; a resize grows or shrinks
+ * about the marquee's own centre, so the opposite edge moves out (or in) by
+ * as much as the dragged one does.
+ *
+ * **7. A drag or resize past the opposite corner flips rather than going
+ * negative.** `rectFromCorners` always normalises to a positive rect from
+ * whichever two corners it is given, so pulling a handle through the far
+ * side produces a smaller-then-growing-again marquee on the other side of
+ * it, never a rect with negative width or height for anything downstream to
+ * mishandle.
+ *
+ * **8. Handles are drawn only once a gesture ends, never during one.**
+ * Drawing eight squares under the pointer at exactly the moment the user is
+ * watching the edge they are dragging would obscure the one thing they need
+ * to see.
+ *
+ * **9. Handle hit-testing is nearest-wins, and an exact tie has no correct
+ * answer, only a declared one.** `overlay-hittest.ts`'s `handleAt` picks the
+ * closest handle so adjacent corners keep their own targets on a small
+ * marquee; on a dead tie (every handle exactly `HANDLE_GRAB_PADDING` away,
+ * reachable now that rule 4 floors a marquee at a fixed minimum size) the
+ * LAST handle checked wins, which is an arbitrary but deterministic choice
+ * rather than a bug — `overlay-hittest.test.ts` pins it so the choice cannot
+ * drift silently if `HANDLES`' order ever changes.
+ *
+ * **10. Arrow keys nudge the marquee, never invent one.** One point, ten with
+ * Shift, and a no-op with nothing selected — a stray arrow key must not
+ * conjure a selection out of nowhere.
+ *
+ * **11. Space toggles mode and keeps whatever marquee already existed.** A
+ * mis-press between region and window costs nothing; the rect survives the
+ * toggle either way.
+ *
+ * **12. A window-mode click confirms at once; region mode always waits for
+ * Return.** The hover already showed exactly what would be taken, so in
+ * window mode a second confirming gesture would be ceremony. A region is
+ * drawn first and reviewed before it is confirmed, because unlike a window
+ * click it can be adjusted.
+ *
+ * **13. Escape cancels from every state, and a selection that cannot be
+ * confirmed makes Return a NO-OP rather than an error.** A window that closed
+ * between hover and Return, or a display list that has gone stale, must not
+ * be captured by data that is no longer true — but a no-op has a cost of its
+ * own: `reduce` cannot settle the caller's promise on a keystroke that
+ * decided nothing, which is why `OverlaySession` keeps its display list LIVE
+ * for as long as the overlay is open rather than snapshotting it once.
+ *
+ * **14. A region spanning displays is attributed to, and clipped to,
+ * whichever one holds the most of it — and the readout always names what
+ * would actually be captured, not what was drawn.** `capture-still` captures
+ * one display; a marquee that crosses a bezel is tracked in full but confirms
+ * to the dominant display's share of it, so the live size chip is the truth
+ * rather than a preview of a rect nobody is going to get.
  */
 
 export interface Point { x: number; y: number }
@@ -203,6 +291,21 @@ const SIZES_Y: Record<Handle, number> = { nw: -1, n: -1, ne: -1, e: 0, se: 1, s:
  * rect's centre, so the opposite edge moves out by as much as this one moves in.
  * A drag past the opposite edge flips the rect rather than producing a negative
  * size — the same forgiveness `rectFromCorners` gives a backwards drag.
+ *
+ * `width`/`height` here are never allowed to fall below `MIN_SELECTION_POINTS`
+ * in magnitude (rule 4). Before this floor, a resize that shrank an EXISTING
+ * marquee through the minimum passed through a band of sub-minimum sizes with
+ * nothing marking it as invalid — and `reduce`'s release handler, which
+ * correctly discards a marquee too small to keep, then discarded the WHOLE
+ * selection if the pointer happened to be let go inside that band. A fresh
+ * drag ending too small reads as "that was a click, not a selection"; a resize
+ * that shrinks an established marquee too far and makes it vanish entirely,
+ * with no resistance and no warning, is a different and worse thing — the
+ * user had something and lost it. The floor is applied to the signed extent
+ * (`width`/`height`, still carrying direction) rather than clamping the final
+ * rect's own field, specifically so `x`/`y` can be re-derived from the SAME
+ * clamped value and the corner opposite the dragged handle stays exactly
+ * fixed — the invariant every unclamped resize already holds.
  */
 export function resizeRect(origin: Rect, handle: Handle, dx: number, dy: number,
                            mods: Modifiers = {}): Rect {
@@ -225,20 +328,25 @@ export function resizeRect(origin: Rect, handle: Handle, dx: number, dy: number,
     }
   }
 
+  const floor = (v: number): number =>
+    Math.abs(v) < MIN_SELECTION_POINTS ? MIN_SELECTION_POINTS * Math.sign(v || 1) : v;
+
   let width: number, height: number, x: number, y: number;
   if (mods.alt) {
-    width = origin.width + sx * 2;
-    height = origin.height + sy * 2;
-    x = origin.x - sx;
-    y = origin.y - sy;
+    width = floor(origin.width + sx * 2);
+    height = floor(origin.height + sy * 2);
+    x = origin.x - (width - origin.width) / 2;
+    y = origin.y - (height - origin.height) / 2;
   } else {
-    width = origin.width + sx;
-    height = origin.height + sy;
+    width = floor(origin.width + sx);
+    height = floor(origin.height + sy);
     // A handle on the left or top edge moves the origin; one on the right or
     // bottom leaves it. Under Shift a corner's paired axis moves too, which is
-    // why this reads MOVES_* rather than testing the raw delta.
-    x = origin.x - (MOVES_X[handle] ? sx : 0);
-    y = origin.y - (MOVES_Y[handle] ? sy : 0);
+    // why this reads MOVES_* rather than testing the raw delta. Deriving the
+    // delta from the (possibly floored) width/height rather than the raw
+    // sx/sy is what keeps the opposite corner fixed when the floor fires.
+    x = origin.x - (MOVES_X[handle] ? (width - origin.width) : 0);
+    y = origin.y - (MOVES_Y[handle] ? (height - origin.height) : 0);
   }
   // Flip instead of going negative.
   return rectFromCorners({ x, y }, { x: x + width, y: y + height });
