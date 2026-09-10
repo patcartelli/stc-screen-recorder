@@ -1737,6 +1737,17 @@ reachable via KVC (`setValue(3, forKey: "captureResolution")`, verified in phase
   flag would have tested the flag. `chmod` would have been worse than useless — the container runs
   as root, so it is a no-op locally and only bites on CI, which is a test that lies in the one
   direction nobody checks.
+  **Reading immediately after a poll raced TWICE in this one change, and CI caught the second.**
+  A poll resolves at one point in a sequence and the assertion is about a LATER one, so the gap is
+  invisible on a fast machine and real on a slow one. (1) Persist-first made the document lead the
+  picture by a repaint, so an assertion reading the canvas the instant `project.json` appeared
+  started racing — caught in a full local run, passing 20/20 in isolation. (2) `runExport` sets
+  "Done" and THEN awaits `refreshTakes()`, so the `finally` re-enabling the controls runs one IPC
+  round trip after the status a poll was waiting on — passed here, failed on CI.
+  Neither was a product fault and neither wanted a product change; both wanted the assertion to
+  wait for the thing it is actually about. **Before reading a value straight after `expect.poll`,
+  ask whether the polled signal and the asserted one are set at the same point in the code** — if
+  there is an `await` between them, poll the second too.
 - **A native control can be a SECOND AUTHOR of the state your module owns, and the pure test
   cannot see it (STC-338).** `decideKey` correctly refuses a modifier chord — ⌘→ is the app's,
   not the scrubber's — and the playhead moved anyway, because `#scrub` is an `<input type=range>`

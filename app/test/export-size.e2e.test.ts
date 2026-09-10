@@ -223,7 +223,18 @@ describe("export size, the things that assumed it could not vary (STC-337)", () 
     await expect.poll(disabled, { timeout: 20_000 }).toBe(true);
     await expect.poll(() => win.textContent("#exportstatus"), { timeout: 120_000 })
       .toContain("Done");
-    expect(await disabled()).toBe(false);
+    // POLLED, and the reason is exact: `runExport` sets "Done" and THEN awaits
+    // `refreshTakes()`, so the `finally` that re-enables this control runs one
+    // IPC round trip after the status the poll above is waiting on. Read once,
+    // this passed here and failed on CI, where that round trip is slower.
+    //
+    // Second time in this change that reading immediately after a poll raced —
+    // the poll resolves at one point in the sequence and the assertion is about
+    // a later one. The window is real but harmless: "Done" is shown while the
+    // library is still refreshing, and the export genuinely is not finished
+    // until it has. Moving the re-enable earlier would be contorting the
+    // product to suit the test.
+    await expect.poll(disabled, { timeout: 20_000 }).toBe(false);
   }, 180_000);
 
   test("AN EXPORT KEEPS THE SIZE IT STARTED WITH, even if the document changes under it", async () => {
