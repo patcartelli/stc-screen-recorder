@@ -9,23 +9,99 @@
  * `app/src/thumbnail-window.ts` owns the real `BrowserWindow` and the real
  * `setTimeout`; it asks this module what they mean.
  *
- * ## What this slice covers, and what it does not
+ * This is STC-343, the third study in STC-338's series (scrubber → selection
+ * overlay handles → floating thumbnail motion → take library). STC-296 shipped
+ * the panel, the right-click menu, swipe-to-discard, true drag-out and
+ * stacking across several passes; this study is what STC-342 was for the
+ * selection overlay — writing the vocabulary down in one place, and a careful
+ * adversarial pass over the motion math that shipped believing it correct.
+ * That pass found one real defect: rule 6 below.
  *
- * The ticket's full scope is a stack of independently-shippable pieces: the
- * panel itself (appear, expand, timeout, save-on-ignore), true OS drag-out
- * (`NSFilePromiseProvider`), a right-click menu, and multiple captures
- * stacking rather than replacing. This module — and STC-296 in this pass —
- * is the FIRST of those: one panel at a time, replaced (not stacked) by a
- * capture that arrives while it is still showing. The right-click menu and
- * swipe-to-discard have since landed; drag-out and stacking are still
- * follow-up work. See CLAUDE.md.
+ * ════════════════════════════════════════════════════════════════════════
+ * THE RULES
+ * ════════════════════════════════════════════════════════════════════════
  *
- * ## Why the clock is a parameter
+ * **1. The panel is exactly three states, and expanding is a ONE-WAY door.**
+ * `idle` → `showing` → `expanded`. There is no second timeout after expand,
+ * the same way macOS's own screenshot thumbnail waits forever once Markup is
+ * open — getting back to `idle` needs an explicit action (Copy, Save, Close,
+ * or a discard), never a clock.
  *
- * `reduce` and `tick` take `now` rather than reading `Date.now()`, the same
- * rule `render()` follows for the transform: a decision that reads its own
- * clock cannot be replayed in a test, and "the timeout fired" needs to be
+ * **2. The clock is always a PARAMETER, never read internally.** `show` and
+ * `isExpired` take `now` rather than calling `Date.now()`, the same rule
+ * `render()` follows for the transform: a decision that reads its own clock
+ * cannot be replayed in a test, and "the timeout fired" needs to be
  * producible on demand rather than waited for.
+ *
+ * **3. The timeout floor is enforced on every READ, not just at the edges of
+ * a settings form.** `clampTimeoutMs` runs on whatever a stored preference
+ * or a hand-edited file happens to hold, because a panel that CAN be
+ * configured to vanish instantly is a panel that can lose a capture nobody
+ * had time to look at — which is exactly what "nothing is lost by doing
+ * nothing" forbids.
+ *
+ * **4. Multiple captures STACK, newest at the corner — and a stack of one is
+ * not a separate calculation from a lone panel.** `stackPosition(0, ...)` IS
+ * `positionFor(...)`, so the single-panel case cannot drift from the stacked
+ * one; it is the same formula asked for index zero. "Drains oldest-first on
+ * timeout" needs no queue either — every panel arms its OWN timer when it
+ * paints, so panels that appeared in order expire in order by construction.
+ *
+ * **5. Only ONE gesture destroys a capture, and it needs the corner to mean
+ * anything.** A swipe toward the panel's OWN corner discards; the same delta
+ * from the opposite corner does nothing — `discardDirection` is what makes
+ * "the direction that throws it away is the direction you can see it
+ * leaving" true rather than a coincidence. It is also what tells a discard
+ * apart from a drag-out (rule 7): one pointer gesture, and nothing but its
+ * direction to choose between the two outcomes.
+ *
+ * **6. A discard must never race the panel's own timeout, and asking it not
+ * to is not enough — it has to be TOLD.** `deleteShot` is an async round
+ * trip; the timer that can settle-and-hide the very same panel lives in a
+ * different process and has no way to know a discard is already in flight.
+ * Before this rule was enforced, a timeout landing in that gap would hide
+ * the window, and a delete that then FAILED would strand its own recovery —
+ * the renderer restoring the panel and reporting the error — inside a
+ * window main had already hidden, headed for a silent destroy at
+ * `SETTLE_BACKSTOP_MS` regardless. The fix is a `discarding` event sent as
+ * the FIRST thing `discard()` does, before anything async: found reviewing
+ * this module for the study, the same shape of defect as the scrubber's
+ * rubber-band sign bug and the selection overlay's resize floor — a real
+ * gap neither the panel's own tests nor its window's could see, because
+ * proving it needs a live race no deterministic test can reliably produce.
+ * `thumbnail-discard-race.test.ts` pins the source properties that make the
+ * race impossible by construction instead.
+ *
+ * **7. Drag-out commits SOONER than discard, on purpose.** `DRAG_START_PX`
+ * (12) is well under `SWIPE_DISCARD_PX` (90): a drag-out handed to a
+ * cancellable OS drag costs nothing if dropped on nothing, while a discard
+ * destroys something, so the cheap-to-undo gesture is the one that fires
+ * first. The gap between them is load-bearing, not slack — committing to a
+ * drag-out any sooner would let the OS take the pointer before a swipe
+ * could ever reach the discard threshold, making the two features look
+ * built while one had silently made the other unreachable.
+ *
+ * **8. A successful drag-out does not end the panel's lifecycle.** Electron's
+ * `startDrag` hands a file to the window server and gives the caller no
+ * signal back — no "the drop landed", no "it was cancelled" — so there is
+ * nothing to hook a dismissal to. The panel is left exactly as it was: still
+ * showing, still counting down its own timeout. This is not an oversight;
+ * it is the one honest answer available, and it costs nothing new — "nothing
+ * is lost by doing nothing" already covers whatever happens next, since an
+ * untouched panel settles and exports per its own default regardless of
+ * whether a drag also happened.
+ *
+ * **9. Every position comes from the display's WORK AREA, never its full
+ * bounds.** The work area excludes the menu bar and the Dock; a borderless
+ * always-on-top panel landing partly under either on first launch would read
+ * as a bug rather than as the one pixel someone forgot.
+ *
+ * **10. Growing or shrinking in place stays anchored to the panel's OWN
+ * corner, whatever size it grows to.** Expand and Redact resize through
+ * `stackPosition`, never `positionFor` — a panel mid-stack that grew by
+ * jumping to the bare corner would abandon the place in the stack it was
+ * shown at, and one that grew by moving its origin would walk off the edge
+ * it is anchored to.
  */
 
 export type Corner = "top-left" | "top-right" | "bottom-left" | "bottom-right";
