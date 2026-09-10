@@ -65,19 +65,14 @@ try {
 
   const frames = Math.round(seconds * 60);
   const fromFrame = Math.round(fromSeconds * 60);
-  // The OUTPUT size, not the capture's. These are the same until someone
-  // chooses otherwise (STC-335), and printing the capture regardless is a log
-  // that reports one number while the encoder correctly uses another — it
-  // briefly convinced the person who filed that ticket the export ignored the
-  // setting. `?? capture` because the page applies the same default when
-  // there is no project.json.
-  const outW = projectRaw?.output?.width ?? anchors.capture.width;
-  const outH = projectRaw?.output?.height ?? anchors.capture.height;
-  console.log(`exporting ${seconds}s from t=${fromSeconds}s (${frames} frames) ` +
-              `at ${outW}x${outH}` +
-              (outW === anchors.capture.width && outH === anchors.capture.height
-                ? "…"
-                : ` (capture is ${anchors.capture.width}x${anchors.capture.height})…`));
+  // Deliberately NO size on this line (STC-337 finding 4). The only thing that
+  // knows the output size is `parseProject`, which runs in the PAGE — reading
+  // `projectRaw?.output?.width` here is right for a document parseProject
+  // accepts and WRONG for one it falls back on (an unsupported version, a
+  // non-integer width), which is the narrower version of the very defect this
+  // hunk was added to fix. The size is printed below, from the export's own
+  // answer, so there is exactly one source for it and it cannot be premature.
+  console.log(`exporting ${seconds}s from t=${fromSeconds}s (${frames} frames)…`);
   const r = await page.evaluate(([p, f, ff]) =>
     window.exportSession("/session", p, { maxFrames: f, fromFrame: ff, encode: true, returnFile: true }),
     [project, frames, fromFrame]);
@@ -85,6 +80,11 @@ try {
   const dest = join(sessionDir, `export-${seconds}s-from${fromSeconds}s.mp4`);
   writeFileSync(dest, Buffer.from(r.encodedBase64, "base64"));
   console.log(`\n${r.frames} frames in ${(r.durationMs / 1000).toFixed(1)}s`);
+  const { width: outW, height: outH } = r.output;
+  console.log(`output ${outW}x${outH}` +
+              (outW === anchors.capture.width && outH === anchors.capture.height
+                ? " (the capture size)"
+                : ` (capture is ${anchors.capture.width}x${anchors.capture.height})`));
   console.log(`wrote ${dest} (${(r.encodedBytes / 1e6).toFixed(2)} MB)`);
   out = 0;
 } catch (e) {

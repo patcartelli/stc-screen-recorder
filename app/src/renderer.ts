@@ -731,17 +731,42 @@ async function setOutputSize(opt: OutputOption): Promise<void> {
   if (!openProject || !player) return;
   // `output.fps` is untouched: 60 is the settled export rate and this control
   // is about size only. Rebuilding the object would be the quiet way to drop it.
+  const previous = { ...openProject.output };
   openProject.output.width = opt.size.width;
   openProject.output.height = opt.size.height;
+
+  // Persist BEFORE showing it (STC-337 finding 2). `persistProject` builds the
+  // document from `openProject`, so the mutation has to happen first — but on
+  // failure it is put back, because the alternative is a UI and a preview
+  // showing a size the document does not have, which then reverts on the next
+  // open with no further word. The handler alerts on a throw, so re-throwing
+  // is what makes the rollback visible rather than silent.
+  try {
+    await persistProject();
+  } catch (e) {
+    openProject.output.width = previous.width;
+    openProject.output.height = previous.height;
+    updateOutputSizeUI();
+    throw e;
+  }
+
   updateOutputSizeUI();
   // The canvas is sized in the player's constructor and `composite` reads the
   // project every draw, so the player has to be told or it draws the new size
   // onto the old canvas.
-  await player.outputResized();
+  //
+  // With the viewer's eye ON, telling it is not enough (STC-337 finding 5):
+  // `effectiveOutput` spreads the view over `project.output`, so the view keeps
+  // the width and height derived from the OLD output and the toggle goes on
+  // claiming to show what a viewer gets while showing the previous shape.
+  // Invisible while every export size shared the capture's aspect; reachable
+  // the moment one does not, which is the case this whole feature exists for.
+  // One repaint either way — both routes end in `applyOutput`.
+  if (player.viewSize) await player.setViewSize(viewSizeForEmbed());
+  else await player.outputResized();
   // The sentence does NOT change — the output width cancels out of it — and
   // refreshing anyway is how that stays visibly true rather than asserted.
   updateLegibilityUI();
-  await persistProject();
 }
 
 $("outsize").addEventListener("change", () => {
@@ -1239,13 +1264,35 @@ async function runExport(): Promise<void> {
   const status = $("exportstatus");
   bar.removeAttribute("hidden");
   ($("export") as HTMLButtonElement).disabled = true;
+  // The export-size select mutates `openProject.output`, and an export in
+  // flight is reading that object (STC-337 finding 1). Disabled so the UI does
+  // not invite an action the running export will ignore — the SNAPSHOT below
+  // is what makes ignoring it safe.
+  ($("outsize") as HTMLSelectElement).disabled = true;
   progress.value = 0;
   status.textContent = "Exporting…";
   clearAlert();
 
   const started = performance.now();
+  // THE EXPORT GETS ITS OWN COPY, and that is the real fix rather than the
+  // disabled select above (STC-337 finding 1).
+  //
+  // `exportSession` destructures `width, height, fps` ONCE — the canvas, the
+  // muxer and the encoder are all built from that — while `render()` re-reads
+  // `project.output` on EVERY frame, for the display->output mapping, the
+  // output rect and the PiP's UV rect. So a live object mutated mid-export
+  // gives the rest of the file markup computed for the new size on a canvas
+  // sized for the old, and it still reports "Done". A 50 s demo at the
+  // measured 1.52x realtime is ~75 s of window to change your mind in.
+  //
+  // Disabling each control that can mutate it would work today and rots the
+  // first time someone adds a fourth: a snapshot is immune to controls nobody
+  // has written yet. The manifest is built from this copy too, so it describes
+  // the file that was actually made rather than whatever the UI holds by the
+  // time the write lands.
+  const exporting: Project = structuredClone(openProject);
   try {
-    const result = await exportSession(openSession, openProject, {
+    const result = await exportSession(openSession, exporting, {
       // Hashing costs a full pixel read-back per frame and exists for the
       // gates. It is on here so the manifest can record a verifiable hash —
       // an export nobody can check is an export nobody can trust.
@@ -1278,14 +1325,14 @@ async function runExport(): Promise<void> {
       frames: result.frames,
       preEncodeHash: result.hash,
       encodedBytes: result.encodedBytes,
-      output: openProject.output,
-      trim: projectForWrite(openProject, lastNs).trim ?? null,
+      output: exporting.output,
+      trim: projectForWrite(exporting, lastNs).trim ?? null,
       // Checkable after the fact (STC-318). `embedWidthPx` is what someone
       // asked about at export time — a view setting, not a property of the
       // take — so it is recorded here BESIDE the figure rather than left
       // implicit: "4.2px" means nothing without the width it was computed at.
       legibility: openDisplay ? (() => {
-        const l = legibility(openDisplay!, openProject!.textPt ?? DEFAULT_TEXT_PT, embedWidthPx);
+        const l = legibility(openDisplay!, exporting.textPt ?? DEFAULT_TEXT_PT, embedWidthPx);
         return { textPt: l.textPt, embedWidthPx: l.embedWidthPx, textPx: l.textPx, verdict: l.verdict };
       })() : null,
       exportDurationMs: result.durationMs,
@@ -1299,6 +1346,7 @@ async function runExport(): Promise<void> {
   } finally {
     exportAbort = undefined;
     ($("export") as HTMLButtonElement).disabled = false;
+    ($("outsize") as HTMLSelectElement).disabled = false;
   }
 }
 

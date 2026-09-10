@@ -1701,6 +1701,53 @@ reachable via KVC (`setValue(3, forKey: "captureResolution")`, verified in phase
   the path everything takes rather than on the paths that happen to set it. Watched failing before
   the fix and mutation-proven after — removing the one line fails exactly one test of eleven.
 
+- **An export reading a LIVE document is a file that disagrees with itself, and disabling the
+  controls is the half that rots (STC-337).** `exportSession` destructures `width, height, fps`
+  ONCE — the canvas, the muxer and the encoder are all built from that — while `render()` re-reads
+  `project.output` on EVERY frame, for the display->output mapping, the output rect and the PiP's
+  UV rect. So changing the export size mid-export gives the rest of the file markup computed for
+  the new size on a canvas sized for the old, and it still reports "Done". A 50 s demo at the
+  measured 1.52x realtime is ~75 s of window to change your mind in.
+  The obvious fix is to disable `#outsize` alongside `#export`, and it is only the courtesy half:
+  it is correct today and wrong the first time someone adds a fourth control that touches
+  `openProject`. The load-bearing fix is that **the export gets its own `structuredClone`**, which
+  is immune to controls nobody has written yet — and the manifest is built from that copy too, so
+  it describes the file that was actually made rather than whatever the UI holds by the time the
+  write lands. Both are in, because a control that silently does nothing is worse than one that
+  says it cannot be used.
+  The test DEFEATS the disabled attribute on purpose (`sel.disabled = false`, then dispatch), which
+  is the only way to reach the snapshot: driving it through the disabled control would prove the
+  control and pass with the snapshot removed. It also asserts `#export` was still disabled at the
+  moment of the change — otherwise a fast export makes the whole thing vacuous — and that the
+  DOCUMENT moved to 1232 while the manifest stayed at 1280, because asserting only the manifest
+  would pass if the change had never landed at all.
+  NB the first draft used the fixture's own 640x360 and proved nothing: at 640 every preset
+  UPSCALES and the change handler correctly refuses those, so the size never changed. The helper's
+  own comment had already said so. **A test whose setup is refused by a guard looks exactly like a
+  test whose subject works.**
+
+- **`setOutputSize` showed the user a size the document did not have (STC-337).** It mutated
+  `openProject.output`, repainted the select and resized the preview BEFORE awaiting the write.
+  The handler alerts on failure so it was never silent — but the UI and the picture then showed a
+  size `project.json` lacked, and it reverted on the next open with no further word. Persist
+  first, roll back and re-throw on failure.
+  The test needs a write that REALLY fails, and the seam is already in the preload:
+  `recorder.closePreview()` clears main's `openTake` while the renderer's player is untouched, so
+  the next `preview:writeProject` refuses with "no take is open" through the actual IPC. A fault
+  flag would have tested the flag. `chmod` would have been worse than useless — the container runs
+  as root, so it is a no-op locally and only bites on CI, which is a test that lies in the one
+  direction nobody checks.
+  **Reading immediately after a poll raced TWICE in this one change, and CI caught the second.**
+  A poll resolves at one point in a sequence and the assertion is about a LATER one, so the gap is
+  invisible on a fast machine and real on a slow one. (1) Persist-first made the document lead the
+  picture by a repaint, so an assertion reading the canvas the instant `project.json` appeared
+  started racing — caught in a full local run, passing 20/20 in isolation. (2) `runExport` sets
+  "Done" and THEN awaits `refreshTakes()`, so the `finally` re-enabling the controls runs one IPC
+  round trip after the status a poll was waiting on — passed here, failed on CI.
+  Neither was a product fault and neither wanted a product change; both wanted the assertion to
+  wait for the thing it is actually about. **Before reading a value straight after `expect.poll`,
+  ask whether the polled signal and the asserted one are set at the same point in the code** — if
+  there is an `await` between them, poll the second too.
 - **A native control can be a SECOND AUTHOR of the state your module owns, and the pure test
   cannot see it (STC-338).** `decideKey` correctly refuses a modifier chord — ⌘→ is the app's,
   not the scrubber's — and the playhead moved anyway, because `#scrub` is an `<input type=range>`
