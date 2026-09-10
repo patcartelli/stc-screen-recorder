@@ -25,9 +25,9 @@ import {
 import { join, dirname, basename } from "node:path";
 import { fileURLToPath } from "node:url";
 import { existsSync, readdirSync } from "node:fs";
-import { readFile, writeFile, stat, open, mkdir, readdir, copyFile, rm } from "node:fs/promises";
+import { readFile, writeFile, stat, open, copyFile, rm } from "node:fs/promises";
 import { HelperSupervisor } from "./supervisor.js";
-import { newTakeDir, takesRoot, setTakeLabel, insideTakesRoot } from "./takes.js";
+import { newTakeDir, takesRoot, setTakeLabel, insideTakesRoot, duplicateTake } from "./takes.js";
 import { listTakes, listLibrary, THUMBNAIL_FILE } from "./library.js";
 import { openOverlay, closeOverlay, overlayIsOpen } from "./overlay-session.js";
 import type { WindowInfo } from "./selection.js";
@@ -612,15 +612,11 @@ ipcMain.handle("still:reopen", async (_e, dir: string) => {
 /**
  * Copy a shot so a second decoration can be tried without re-capturing.
  *
- * The whole directory minus its cached thumbnail: the copy's decoration is
- * about to diverge, so carrying the original's picture over would show the old
- * decoration under the new document until something happened to redraw it —
- * a cache that lies is worse than one that is cold. Everything else is copied
- * rather than linked, because the point is two shots that can be edited apart.
- *
  * The new directory gets a fresh timestamp from the same `newTakeDir` a
- * capture uses, so the duplicate sorts as what it is — made now — and cannot
- * collide with a capture taken in the same second.
+ * capture uses, so the duplicate sorts as what it is — made now. The copy and
+ * its race-safety (STC-345: a double-click or two tiles duplicated in the
+ * same second used to be able to collide on one destination) live in
+ * `duplicateTake`; this handler is only validation and the IPC boundary.
  */
 ipcMain.handle("still:duplicate", async (_e, dir: string) => {
   if (!insideTakesRoot(process.env, dir)) {
@@ -629,17 +625,7 @@ ipcMain.handle("still:duplicate", async (_e, dir: string) => {
   // Read it back through `parseShot` first: duplicating a document this build
   // cannot load would produce a second directory the library also refuses.
   parseShot(JSON.parse(await readFile(join(dir, "shot.json"), "utf8")));
-
-  const root = takesRoot(process.env);
-  const existing = existsSync(root) ? readdirSync(root) : [];
-  const dest = newTakeDir(process.env, new Date(), existing);
-  await mkdir(dest, { recursive: true });
-  for (const name of await readdir(dir)) {
-    if (name === THUMBNAIL_FILE) continue;
-    const from = join(dir, name);
-    if (!(await stat(from)).isFile()) continue;
-    await copyFile(from, join(dest, name));
-  }
+  const dest = await duplicateTake(process.env, dir, THUMBNAIL_FILE);
   return { ok: true, dir: dest };
 });
 
