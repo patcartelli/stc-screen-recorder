@@ -16,7 +16,8 @@
     "gate:identity": "node scripts/gate-retry.mjs scripts/identity-gate.mjs",
     "gate:still": "node scripts/gate-retry.mjs scripts/still-gate.mjs",
     "test:slow": "vitest run --config vitest.slow.config.ts",
-    "merge": "node scripts/merge-when-green.mjs"
+    "merge": "node scripts/merge-when-green.mjs",
+    "ticket": "NODE_USE_ENV_PROXY=1 node scripts/ticket-check.mjs"
   },
   "devDependencies": {
     "@types/node": "^26.2.0",
