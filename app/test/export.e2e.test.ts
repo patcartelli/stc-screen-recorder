@@ -67,7 +67,7 @@ describe("export from the app", () => {
     await win.fill("#scrub", "0");
     await win.dispatchEvent("#scrub", "input");
     await win.click("#markin");
-    await win.fill("#scrub", "80");
+    await win.fill("#scrub", "24");
     await win.dispatchEvent("#scrub", "input");
     await win.click("#markout");
     await expect.poll(() => win.textContent("#triminfo"), { timeout: 10_000 }).toMatch(/–/);

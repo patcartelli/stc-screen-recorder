@@ -133,3 +133,28 @@ describe("the library's seam stays in the adapter (STC-294)", () => {
     }
   });
 });
+
+/**
+ * The layering rule `library.ts`'s header states — "library.ts does the
+ * scanning and imports node; [library-items.ts] must not" — had itself
+ * drifted (STC-345). `cameraSummary`, which reads a raw `anchors.json` blob,
+ * existed identically in BOTH files: the real one in `library.ts` (imported,
+ * called from `readRecording`), and a byte-for-byte copy in `library-items.ts`
+ * that nothing ever called. A dead duplicate is the quiet half of "one value,
+ * two copies" — nothing was WRONG today, because nothing reached the second
+ * copy, but a future edit to the real one had no reason to know a second
+ * existed, and the fix for a bug found tomorrow could easily land in the
+ * unreachable copy instead.
+ */
+describe("library-items.ts owns no I/O-shaped decisions (STC-345)", () => {
+  test("cameraSummary lives in library.ts only — library-items.ts never reads a raw anchors document", () => {
+    // Comments blanked first: this file's own header discusses the fix by
+    // name, which is exactly the case `library-seam.test.ts` already learned
+    // to allow for the "no view branches on kind" guard above — a file may
+    // DISCUSS a rule it keeps.
+    const items = stripComments(readFileSync(join(repo, "app/src/library-items.ts"), "utf8"));
+    expect(items).not.toContain("cameraSummary");
+    const scanner = readFileSync(join(repo, "app/src/library.ts"), "utf8");
+    expect(scanner).toContain("function cameraSummary");
+  });
+});

@@ -57,6 +57,12 @@ applyDecoderPreference();
     encodedBase64 = btoa(bin);
   }
   const { encoded, ...rest } = r;
-  return { ...rest, encodedBase64 };
+  // `output` is parseProject's OWN answer, returned from the call that used
+  // it (STC-337 finding 4). A caller reading `projectRaw?.output` off the JSON
+  // gets a different answer for any document parseProject falls back on — an
+  // unsupported version, a non-integer width — and prints a size the encoder
+  // never used. Deriving it a second time anywhere is the "two answers, and
+  // the CLI's was the wrong one" defect this file's own header records.
+  return { ...rest, output: project.output, encodedBase64 };
 };
 (window as any).__exportReady = true;

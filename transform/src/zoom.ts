@@ -30,6 +30,27 @@ import { SIM_HZ, tickTimeNs } from "./time.js";
  * drag however long it lasts. A rule that needed an exception for drags would
  * be a rule with a seam in it.
  *
+ * ## The long-drag case is OPEN, and STC-313's take settles it
+ *
+ * A ten-second drag is ONE window here. The alternative is defensible and was
+ * built: PR #111 implemented this ticket independently, counted only
+ * `down`/`up` as triggers, and got TWO windows for that drag — the merge rule
+ * covers a short drag (both ends inside the gap) and lets a long one split, on
+ * the argument that a long drag has a beginning and an end worth seeing and a
+ * middle that is just travel.
+ *
+ * Neither rule can be chosen from a machine with no take to watch. What is
+ * kept is the one that makes "a drag is ONE window, however long" fall out of
+ * the locked rule with no case analysis, and whose failure mode is a zoom that
+ * stays in too long rather than one that pulls out mid-gesture. If the Music
+ * Network take reads the other way, the change is to drop the `move` arm of
+ * `isTrigger` — one line, and the reasoning above is the argument for it.
+ *
+ * A smaller difference falls out of the same choice and is also unsettled: a
+ * drag's window carries every held move in `events`, where #111's carried only
+ * the two buttons. Nothing reads that field yet. STC-326 will, and it should
+ * say which it wants rather than inheriting this one.
+ *
  * ## Keystrokes are NOT here, and the ticket said they were
  *
  * STC-325 said keystrokes count and that `events.json` already carries them.

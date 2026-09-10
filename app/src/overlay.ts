@@ -2,6 +2,7 @@ import type {
   DisplayInfo, Handle, Point, Rect, SelectionOutcome, SelectionState, WindowInfo,
 } from "./selection.js";
 import { pixelSize, rectContains } from "./selection.js";
+import { HANDLES, handleAt, handlePoint } from "./overlay-hittest.js";
 
 /**
  * The overlay's view (STC-290). It draws state and reports input; it decides
@@ -42,10 +43,6 @@ let origin: Point = { x: 0, y: 0 };
 let current: OverlayPayload | undefined;
 const handles = new Map<Handle, HTMLElement>();
 
-const HANDLES: Handle[] = ["nw", "n", "ne", "e", "se", "s", "sw", "w"];
-/** How near a handle a press has to land. Generous: these are small targets. */
-const HANDLE_GRAB_PADDING = 8;
-
 for (const h of HANDLES) {
   const el = document.createElement("div");
   el.className = `handle ${h}`;
@@ -61,38 +58,6 @@ const toLocal = (r: Rect): Rect =>
 
 const send = (event: unknown) => window.overlay.send(event);
 const mods = (e: PointerEvent | KeyboardEvent) => ({ shift: e.shiftKey, alt: e.altKey });
-
-/** Handle positions for a marquee, in this window's own coordinates. */
-function handlePoint(r: Rect, h: Handle): Point {
-  const midX = r.x + r.width / 2, midY = r.y + r.height / 2;
-  const right = r.x + r.width, bottom = r.y + r.height;
-  switch (h) {
-    case "nw": return { x: r.x, y: r.y };
-    case "n": return { x: midX, y: r.y };
-    case "ne": return { x: right, y: r.y };
-    case "e": return { x: right, y: midY };
-    case "se": return { x: right, y: bottom };
-    case "s": return { x: midX, y: bottom };
-    case "sw": return { x: r.x, y: bottom };
-    case "w": return { x: r.x, y: midY };
-  }
-}
-
-/**
- * Which handle a press is grabbing, if any. Nearest wins rather than first, so
- * the corners keep their own targets where two hit boxes overlap on a marquee
- * small enough for that to happen.
- */
-function handleAt(local: Rect, p: Point): Handle | undefined {
-  let best: Handle | undefined;
-  let bestDist = HANDLE_GRAB_PADDING;
-  for (const h of HANDLES) {
-    const c = handlePoint(local, h);
-    const d = Math.max(Math.abs(c.x - p.x), Math.abs(c.y - p.y));
-    if (d <= bestDist) { best = h; bestDist = d; }
-  }
-  return best;
-}
 
 function place(el: HTMLElement, r: Rect): void {
   el.style.left = `${r.x}px`;

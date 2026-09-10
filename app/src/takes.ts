@@ -1,6 +1,7 @@
 import { homedir } from "node:os";
-import { writeFile } from "node:fs/promises";
-import { join, resolve, sep } from "node:path";
+import { existsSync } from "node:fs";
+import { writeFile, readdir, mkdir, copyFile, stat } from "node:fs/promises";
+import { join, resolve, sep, basename } from "node:path";
 
 /**
  * Is `dir` a real directory INSIDE the recordings root?
@@ -76,4 +77,57 @@ export async function setTakeLabel(env: NodeJS.ProcessEnv, dir: string, label: s
     throw new Error(`label is too long (max ${MAX_LABEL_LENGTH} characters)`);
   }
   await writeFile(join(dir, "take.json"), JSON.stringify({ version: 1, label: trimmed }, null, 2));
+}
+
+/**
+ * Destination names a duplicate has claimed but not yet finished writing
+ * (STC-345).
+ *
+ * `newTakeDir`'s uniqueness check reads the filesystem, and that read and the
+ * eventual `mkdir` are two different moments — a second duplicate racing in
+ * the gap (a quick double-click, or Duplicate pressed on two different tiles
+ * inside the same second) sees the same, still-stale listing and computes the
+ * SAME destination. `mkdir(..., {recursive:true})` does not throw when the
+ * directory already exists, so both calls would go on to copy into it — two
+ * unrelated shots' files interleaving in one directory, silently, since the
+ * result still parses as SOME shot. Same race this repo has already paid for
+ * twice (`still-io.ts`'s exported filenames, STC-296's stacking claim), and
+ * the fix is the same shape: claim the name in-process before anything async,
+ * release it in a `finally`. Module-level rather than per-call because the
+ * whole point is to be visible to the OTHER concurrent call.
+ */
+const duplicating = new Set<string>();
+
+/**
+ * Copy a take's directory to a fresh one, minus its cached thumbnail
+ * (STC-345's fix; the duplicate action itself is STC-294's).
+ *
+ * The whole directory otherwise: the copy's decoration is about to diverge
+ * from the original, so carrying its cached picture over would show the OLD
+ * decoration under the NEW document until something happened to redraw it —
+ * a cache that lies is worse than one that is cold.
+ *
+ * `thumbnailFile` is a parameter rather than an import so this module stays
+ * what it already is, a plain node module with no dependency on the library's
+ * item contract; the caller already knows the name.
+ */
+export async function duplicateTake(env: NodeJS.ProcessEnv, dir: string,
+                                    thumbnailFile: string): Promise<string> {
+  const root = takesRoot(env);
+  const existing = existsSync(root) ? await readdir(root) : [];
+  const dest = newTakeDir(env, new Date(), [...existing, ...duplicating]);
+  const name = basename(dest);
+  duplicating.add(name);
+  try {
+    await mkdir(dest, { recursive: true });
+    for (const entry of await readdir(dir)) {
+      if (entry === thumbnailFile) continue;
+      const from = join(dir, entry);
+      if (!(await stat(from)).isFile()) continue;
+      await copyFile(from, join(dest, entry));
+    }
+    return dest;
+  } finally {
+    duplicating.delete(name);
+  }
 }

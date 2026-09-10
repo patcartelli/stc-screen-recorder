@@ -88,6 +88,19 @@ type ThumbEvent =
   | { kind: "expanded" }
   /** Redact mode opening or closing (STC-297), which the panel is resized for. */
   | { kind: "redact"; on: boolean }
+  /**
+   * A discard has committed — the swipe passed its threshold, or the
+   * right-click Delete — and the renderer is about to ask main to trash the
+   * capture (STC-343). The panel's own timeout has no idea a discard is in
+   * flight, so without this it can fire in the gap between here and the
+   * delete resolving: `settleAndDestroy()` would hide the window and arm its
+   * own backstop, and if the delete then FAILS, the renderer's recovery (it
+   * restores the panel and reports the error) happens inside a window main
+   * has already hidden — invisible, and still headed for a silent destroy at
+   * `SETTLE_BACKSTOP_MS` regardless of the failure. Stopping the timer the
+   * moment the gesture commits closes the gap rather than narrowing it.
+   */
+  | { kind: "discarding" }
   | { kind: "done" };
 
 /**
@@ -304,6 +317,10 @@ class ThumbnailSession {
       this.expanded = true;
       this.clearTimers();
       this.resizeTo(ev.on ? REDACT_SIZE : EXPANDED_SIZE);
+    } else if (ev.kind === "discarding") {
+      // Not `expanded` — a discarded panel is not an expanded one, and
+      // `armTimer`'s own guard is moot once the timer it would check is gone.
+      this.clearTimers();
     } else if (ev.kind === "done") {
       this.destroy();
     }

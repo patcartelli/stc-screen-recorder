@@ -37,7 +37,16 @@ contextBridge.exposeInMainWorld("thumb", {
   // Fire-and-forget notices to the window that owns this panel
   // (`thumbnail-window.ts`), not request/response: it reacts by resizing or
   // destroying the window, and has nothing to hand back.
-  event: (ev: { kind: "painted" | "expanded" | "done" }) => ipcRenderer.send("thumbnail:event", ev),
+  //
+  // `unknown` rather than a restated union: this file's own copy of the
+  // event shape (`"painted" | "expanded" | "done"`) had already fallen out
+  // of sync with the real one — missing `"redact"`, which `thumbnail-renderer
+  // .ts`'s `declare global` had and this did not — silently, because nothing
+  // ever checks a preload's declared type against what a renderer actually
+  // sends across `contextBridge`. `overlay-preload.ts`'s `send` already uses
+  // `unknown` for the identical reason; `thumbnail-window.ts`'s `ThumbEvent`
+  // is the one place this shape is decided.
+  event: (ev: unknown) => ipcRenderer.send("thumbnail:event", ev),
   // The timeout fired (or a new capture is replacing this panel) and it is
   // time to composite-and-export in the background. Main has already hidden
   // the window by the time this arrives — see thumbnail-window.ts.

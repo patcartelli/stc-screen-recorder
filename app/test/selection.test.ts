@@ -126,6 +126,28 @@ describe("geometry", () => {
     expect(r.x).toBeLessThan(origin.x);
   });
 
+  test("resizing never shrinks below the minimum, whichever edge is driven", () => {
+    // Small enough to have driven origin.width to 1px pre-floor.
+    const small = { x: 100, y: 100, width: 200, height: 200 };
+    for (const handle of ["nw", "n", "ne", "e", "se", "s", "sw", "w"] as const) {
+      const r = resizeRect(small, handle, -199, -199);
+      expect(r.width, handle).toBeGreaterThanOrEqual(MIN_SELECTION_POINTS);
+      expect(r.height, handle).toBeGreaterThanOrEqual(MIN_SELECTION_POINTS);
+    }
+  });
+
+  test("the floor keeps the corner opposite the dragged handle exactly fixed", () => {
+    // se driven inward until width/height would fall under the minimum: the
+    // nw corner (the one the handle does not touch) must not move at all.
+    const r = resizeRect(origin, "se", -397, -197, {});
+    expect(r.x).toBe(origin.x);
+    expect(r.y).toBe(origin.y);
+    // nw driven the same way: its OPPOSITE corner (se) must stay fixed instead.
+    const r2 = resizeRect(origin, "nw", 397, 197, {});
+    expect(r2.x + r2.width).toBe(origin.x + origin.width);
+    expect(r2.y + r2.height).toBe(origin.y + origin.height);
+  });
+
   test("rounding keeps the far edge where it was, not the width", () => {
     // Naively rounding x and width separately loses a point here.
     expect(snapRectEdges({ x: 10.6, y: 0, width: 100.1, height: 10 }))
@@ -260,6 +282,27 @@ describe("the interaction", () => {
       { t: "pointerup", at: { x: 400, y: 350 } },
     ]);
     expect(state.rect).toEqual({ x: 100, y: 100, width: 300, height: 250 });
+  });
+
+  /**
+   * A fresh drag ending too small reads as "that was a click, not a
+   * selection" (the test above this one). Shrinking an EXISTING marquee below
+   * the minimum with a handle is a different event — the user had something —
+   * and before resizeRect's floor, releasing there wiped the whole selection
+   * rather than holding it at the minimum. resizeRect's own floor test proves
+   * the arithmetic; this proves the thing a person would actually notice: the
+   * marquee they were resizing is still there.
+   */
+  test("shrinking an existing marquee past the minimum with a handle holds it at the floor, not discards it", () => {
+    const { state } = run([
+      ...drag([100, 100], [300, 300]),
+      { t: "pointerdown", at: { x: 300, y: 300 }, handle: "se" },
+      { t: "pointermove", at: { x: 101, y: 101 } },
+      { t: "pointerup", at: { x: 101, y: 101 } },
+    ]);
+    expect(state.rect).toBeDefined();
+    expect(state.rect!.width).toBeGreaterThanOrEqual(MIN_SELECTION_POINTS);
+    expect(state.rect!.height).toBeGreaterThanOrEqual(MIN_SELECTION_POINTS);
   });
 
   test("arrow keys nudge by one point, ten with Shift", () => {

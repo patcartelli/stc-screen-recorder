@@ -73,7 +73,7 @@ describe("preview player in the app", () => {
     await expect.poll(() => win.isVisible("#player"), { timeout: 30_000 }).toBe(true);
     // A black canvas would satisfy "the element exists"; require real pixels.
     await expect.poll(() => inkiness(win), { timeout: 30_000 }).toBeGreaterThan(0.2);
-    expect(await win.textContent("#clock")).toMatch(/0:00 \/ \d+:\d\d/);
+    expect(await win.textContent("#clock")).toMatch(/^0:00:00 \/ \d+:\d\d:\d\d$/);
   }, 120_000);
 
   test("scrubbing changes the displayed frame", async () => {
@@ -86,10 +86,10 @@ describe("preview player in the app", () => {
       return c.getContext("2d")!.getImageData(0, 0, 64, 64).data.join(",");
     });
     const atStart = await frameHash();
-    await win.fill("#scrub", "700");
+    await win.fill("#scrub", "209");
     await win.dispatchEvent("#scrub", "input");
     await expect.poll(async () => (await frameHash()) !== atStart, { timeout: 30_000 }).toBe(true);
-    expect(await win.textContent("#clock")).not.toMatch(/^0:00 /);
+    expect(await win.textContent("#clock")).not.toMatch(/^0:00:00 /);
   }, 120_000);
 
   // A scrub is a burst of input events. The last one very often lands while
@@ -112,9 +112,9 @@ describe("preview player in the app", () => {
     });
 
     // The reference: one clean seek to the final value.
-    await win.fill("#scrub", "700");
+    await win.fill("#scrub", "209");
     await win.dispatchEvent("#scrub", "input");
-    await expect.poll(() => win.textContent("#clock"), { timeout: 20_000 }).not.toMatch(/^0:00 /);
+    await expect.poll(() => win.textContent("#clock"), { timeout: 20_000 }).not.toMatch(/^0:00:00 /);
     await new Promise((r) => setTimeout(r, 500));
     const expected = await stageHash();
 
@@ -125,7 +125,7 @@ describe("preview player in the app", () => {
     expect(await stageHash()).not.toBe(expected);
     await win.evaluate(() => {
       const s = document.getElementById("scrub") as HTMLInputElement;
-      for (let v = 100; v <= 700; v += 25) {
+      for (let v = 29; v <= 209; v += 9) {
         s.value = String(v);
         s.dispatchEvent(new Event("input"));
       }
@@ -139,7 +139,7 @@ describe("preview player in the app", () => {
     await expect.poll(() => inkiness(win), { timeout: 30_000 }).toBeGreaterThan(0.2);
 
     await win.click("#playpause");
-    await expect.poll(() => win.textContent("#clock"), { timeout: 20_000 }).not.toMatch(/^0:00 /);
+    await expect.poll(() => win.textContent("#clock"), { timeout: 20_000 }).not.toMatch(/^0:00:00 /);
     await win.click("#playpause");
     // Wait for the UI to CONFIRM the pause rather than for a fixed delay. The
     // click, the last in-flight frame and the repaint are all async, so a
@@ -165,11 +165,11 @@ describe("preview player in the app", () => {
     await expect.poll(() => win.isVisible("#player"), { timeout: 30_000 }).toBe(true);
     await expect.poll(() => win.textContent("#triminfo"), { timeout: 10_000 }).toMatch(/Full take/);
 
-    await win.fill("#scrub", "200");
+    await win.fill("#scrub", "60");
     await win.dispatchEvent("#scrub", "input");
-    await expect.poll(() => win.textContent("#clock"), { timeout: 20_000 }).not.toMatch(/^0:00 /);
+    await expect.poll(() => win.textContent("#clock"), { timeout: 20_000 }).not.toMatch(/^0:00:00 /);
     await win.click("#markin");
-    await win.fill("#scrub", "400");
+    await win.fill("#scrub", "120");
     await win.dispatchEvent("#scrub", "input");
     await win.click("#markout");
 

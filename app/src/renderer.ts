@@ -102,7 +102,20 @@ import {
   parseProject, projectForWrite, exportWindow, estimateExportMs,
   clampTrim, isFullTake, minTrimNs,
 } from "@transform/trim";
+import {
+  outputSizeFor,
+  outputOptions, selectedOption, type OutputOption,
+} from "@transform/output-size";
+import type { Size } from "@transform/spaces";
+import { render } from "@transform/render";
+import {
+  DEFAULT_TEXT_PT, EMBED_TARGETS, legibility, legibilitySentence, zoomFactorForCrop,
+} from "@transform/legibility";
 import { TRANSFORM_VERSION } from "@transform/transform-version";
+import {
+  clampTrimFrame, decideKey, formatReadout, formatShuttle, frameAtFraction, frameToNs,
+  fractionOfFrame, lastFrame, nsToFrame, rubberBandPx, tickStrideFrames, type ScrubAction,
+} from "./scrubber.js";
 import { renderLibrary, type LibraryCallbacks } from "./library-view.js";
 import type { LibraryItem, LibraryList } from "./library-items.js";
 import { exportManifestName, exportMediaName, type PublishPlan } from "./share.js";
@@ -289,6 +302,72 @@ stillBtn.addEventListener("click", async () => {
 // keeps an open window from showing a stale take list and no explanation.
 recorder.on("still:captured", (r: StillResult) => { void reportStill(r); });
 
+/**
+ * Why a take did not start, said in terms of what it costs and what to do.
+ *
+ * A map rather than the ternary chain this replaced: there are two permission
+ * refusals now, they read almost identically to a user ("something about
+ * privacy settings"), and they send you to DIFFERENT panes. A chain that grows
+ * one arm per grant is how the second one ends up phrased as an afterthought
+ * of the first.
+ *
+ * Neither says "try again" without saying what to change first — a start that
+ * refused for a missing grant will refuse identically until the grant exists,
+ * and inviting a retry is how someone presses Record four times and concludes
+ * the app is broken.
+ */
+const START_FAULTS: Record<string, string> = {
+  "no-displays":
+    "Screen Recording permission is required.\nGrant it in System Settings › " +
+    "Privacy & Security › Screen & System Audio Recording, then try again.",
+  // STC-315. This used to be a WARNING, arriving after the take was already
+  // running: the recording went ahead with no cursor track at all, and since
+  // the pixels never carry a pointer (the transform draws it from events.json)
+  // the resulting file looked like every other take and had no cursor
+  // anywhere. It is a refusal now — nothing was recorded — so the sentence has
+  // to say that first, before the fix, or a user reads "grant this" and
+  // assumes the take they just made is fine.
+  //
+  // The wording changed once macOS was WATCHED doing this (2026-09-09, on
+  // hardware after `tccutil reset ListenEvent`). Two things were wrong with
+  // the first draft, and both were guesses this file could not check from
+  // Linux:
+  //
+  // (1) It assumed `tapCreate` fails SILENTLY and sent the reader to System
+  //     Settings. It does not — macOS raises its own Input Monitoring prompt.
+  //     So the first refusal a user ever sees usually has a dialog on screen
+  //     next to it, and a message that ignores that sends them hunting through
+  //     Settings for something they could have answered in place.
+  //
+  // (2) That prompt says "receive KEYSTROKES from any application". This app
+  //     has never recorded a keypress — the tap's mask is mouse-only, and
+  //     STC-327 exists precisely because nothing here captures keyboard input
+  //     — but macOS's dialog is generic and cannot say so. Somebody reading
+  //     that for a screen recorder has every reason to click Deny, and until
+  //     now nothing told them otherwise. Naming the discrepancy is not
+  //     reassurance for its own sake: it is the difference between a grant
+  //     that gets given and one that gets refused for a sound reason.
+  //
+  // "Quit and reopen" rather than "press Record again", deliberately. Input
+  // Monitoring commonly needs the granted process restarted, and that has NOT
+  // been observed for THIS app: the runs that established the prompt went
+  // through the terminal (which is the granted identity for a directly-spawned
+  // helper), and `npm run app:start` makes the app a child of the terminal and
+  // resolves to its grants too — STC-292's runbook already records that trap.
+  // Only a bundle launched via `open` can settle it. So the instruction is the
+  // one that is sufficient in EITHER case rather than the shorter one that
+  // might send someone in a circle.
+  "event-tap-unavailable":
+    "Nothing was recorded — the take did not start.\n\nThe recorder could not " +
+    "watch your mouse, and the cursor is never captured in the video itself: it " +
+    "is drawn afterwards from what the tap records. A take without it would have " +
+    "no cursor at all, so it is refused rather than made.\n\nmacOS may have just " +
+    "asked to allow this — its dialog says \"keystrokes\", but this app records " +
+    "mouse movement and clicks only, and never what you type.\n\nAllow it, or " +
+    "tick the recorder under System Settings › Privacy & Security › Input " +
+    "Monitoring. Then quit and reopen the recorder and press Record.",
+};
+
 recordBtn.addEventListener("click", async () => {
   recordBtn.disabled = true;
   clearAlert();
@@ -296,9 +375,7 @@ recordBtn.addEventListener("click", async () => {
     if (!recording) {
       const r = await recorder.start();
       if (!r.ok) {
-        alertUser(r.code === "no-displays"
-          ? "Screen Recording permission is required.\nGrant it in System Settings › Privacy & Security › Screen & System Audio Recording, then try again."
-          : `Could not start: ${r.code}\n${r.detail ?? ""}`);
+        alertUser(START_FAULTS[String(r.code)] ?? `Could not start: ${r.code}\n${r.detail ?? ""}`);
         setState("idle");
       } else {
         recording = true;
@@ -431,21 +508,21 @@ const CAMERA_FAULTS: Record<string, string> = {
  * Warnings that are not about the camera but still decide whether a take is
  * what the user thinks it is.
  *
- * `event-tap-unavailable` is the one that matters most: the captured pixels
- * carry no cursor by design (showsCursor is false, the transform draws it from
- * events.json), so a take recorded without the tap has NO cursor anywhere and
- * looked identical to a good one — the rule that the cursor is never only in
- * the video was being broken silently, and the library's "0 events" was the
- * only trace. `stream-stopped` is a display stream that died mid-take. It used
- * to leave the helper in "recording" with frames simply stopping until Stop
- * was pressed; since STC-306 the helper ends the take itself, so this warning
- * is followed by a `recording-ended` with the same reason.
+ * `event-tap-unavailable` used to be the entry that mattered most here and is
+ * deliberately NOT one any more: since STC-315 a take that cannot record the
+ * cursor does not start, so the helper answers the `start` request with that
+ * code instead of warning about a recording already underway. Its wording
+ * lives in START_FAULTS, where it can say "nothing was recorded" — which is
+ * the fact a warning phrased for a live take could not state. Leaving a copy
+ * here would be a message that can no longer fire, describing a take that can
+ * no longer exist.
+ *
+ * `stream-stopped` is a display stream that died mid-take. It used to leave the
+ * helper in "recording" with frames simply stopping until Stop was pressed;
+ * since STC-306 the helper ends the take itself, so this warning is followed
+ * by a `recording-ended` with the same reason.
  */
 const RECORDING_FAULTS: Record<string, string> = {
-  "event-tap-unavailable":
-    "Cursor input is NOT being recorded: the recorder could not install its input tap, " +
-    "so this take will have no cursor at all. Grant Input Monitoring in System Settings › " +
-    "Privacy & Security, then record again.",
   "stream-stopped":
     "The display capture stopped unexpectedly, so the recording is being stopped. " +
     "What was captured up to this point is kept.",
@@ -507,6 +584,19 @@ let openProject: Project | undefined;
 let openTakeName = "";
 /** The open take's directory, so a saved frame can land beside its recording. */
 let openTakeDir = "";
+/**
+ * The take's capture size — the aspect ratio every export size is derived from,
+ * and the ceiling above which an option would be inventing pixels.
+ *
+ * Held apart from `openProject.output`, which is the CHOSEN size and moves.
+ * Reading the aspect back off the output once it had been changed would let a
+ * second change compound the first's rounding.
+ */
+let openCapture: Size | undefined;
+/** The take's display geometry — legibility needs its width in POINTS (STC-318). */
+let openDisplay: { pointWidth: number } | undefined;
+/** The width the demo is shown at, in CSS px. A view setting, never stored on the take. */
+let embedWidthPx = EMBED_TARGETS[0]!.widthPx;
 let exportAbort: AbortController | undefined;
 
 const fmtClock = (ns: number) => {
@@ -532,12 +622,48 @@ function updateTrimUI(): void {
   kept.style.left = `${inPct}%`;
   kept.style.width = `${Math.max(0, outPct - inPct)}%`;
 
+  // Rule 4: what was cut is DIMMED, not fenced off. The playhead still goes
+  // there, because you have to be able to look at what you removed.
+  const head = $("cut-head") as HTMLElement;
+  head.style.left = "0%";
+  head.style.width = `${Math.max(0, inPct)}%`;
+  const tail = $("cut-tail") as HTMLElement;
+  tail.style.left = `${outPct}%`;
+  tail.style.width = `${Math.max(0, 100 - outPct)}%`;
+  updateTicks();
+
   const w = exportWindow(openProject, player.durationNs);
   const est = fmtEstimate(estimateExportMs(w.maxFrames));
   $("triminfo").textContent = isFullTake(openProject, player.durationNs)
     ? `Full take · ${fmtClock(player.durationNs)} · ${est}`
     : `${fmtClock(w.startNs)}–${fmtClock(w.endNs)} · ${fmtClock(w.endNs - w.startNs)} · ${est}`;
 }
+
+/**
+ * The export grid on the track (STC-338 rule 9).
+ *
+ * `tickStrideFrames` returns null when no stride on the ladder clears the
+ * legibility floor, and the answer then is to draw NOTHING — sub-pixel
+ * hatching reads as a texture, not as frames. Drawn as a repeating gradient
+ * rather than a node per tick: a minute-long take is 3600 frames, and that is
+ * one line of paint either way.
+ */
+function updateTicks(): void {
+  const ticks = $("ticks") as HTMLElement;
+  const width = $("timeline").getBoundingClientRect().width;
+  const stride = player ? tickStrideFrames(player.durationNs, width) : null;
+  if (!player || stride === null || width <= 0) {
+    ticks.setAttribute("hidden", "");
+    return;
+  }
+  ticks.removeAttribute("hidden");
+  ticks.style.setProperty("--tick-px", `${(width / lastFrame(player.durationNs)) * stride}px`);
+}
+
+// The stride is a function of the track's WIDTH, so it has to be recomputed
+// when the window is resized — a take that showed per-frame ticks in a wide
+// window must coarsen rather than keep a stride that no longer fits.
+window.addEventListener("resize", () => { if (player) updateTicks(); });
 
 async function persistProject(): Promise<void> {
   if (!openProject || !player) return;
@@ -555,6 +681,219 @@ function setTrim(startNs: number, endNs: number, persist: boolean): void {
   updateTrimUI();
   if (persist) void persistProject().catch((e: any) => alertUser(String(e?.message ?? e)));
 }
+
+/**
+ * The export-size row (STC-335).
+ *
+ * A size the options do not offer — every take hand-edited under the old
+ * `project.json` workaround carries one — is shown as its own entry and
+ * SELECTED, so opening such a take neither misreports its setting nor loses it
+ * on the next save. Picking something else is the user discarding it, which is
+ * a different thing from the app discarding it for them.
+ */
+function updateOutputSizeUI(): void {
+  if (!openProject || !openCapture) return;
+  const sel = $("outsize") as HTMLSelectElement;
+  const out = openProject.output;
+  const opts = outputOptions(openCapture);
+  const known = selectedOption(openCapture, out);
+
+  sel.replaceChildren();
+  if (!known) {
+    const o = document.createElement("option");
+    o.value = "custom";
+    o.textContent = `Custom · ${out.width}×${out.height}`;
+    sel.append(o);
+  }
+  for (const opt of opts) {
+    const o = document.createElement("option");
+    o.value = opt.id;
+    o.textContent = opt.label;
+    // Offered and refused, rather than absent: a preset that vanished on a
+    // small capture reads as a bug in the list rather than a fact about the
+    // take.
+    o.disabled = opt.upscales;
+    if (opt.upscales) o.textContent += " — larger than the capture";
+    sel.append(o);
+  }
+  sel.value = known ? known.id : "custom";
+
+  const note = $("outsizenote");
+  note.textContent = known?.id === "capture" || (!known && sameAsCapture(out))
+    ? "No rescale."
+    : `Capture is ${openCapture.width}×${openCapture.height}.`;
+}
+
+const sameAsCapture = (out: Size) =>
+  !!openCapture && out.width === openCapture.width && out.height === openCapture.height;
+
+async function setOutputSize(opt: OutputOption): Promise<void> {
+  if (!openProject || !player) return;
+  // `output.fps` is untouched: 60 is the settled export rate and this control
+  // is about size only. Rebuilding the object would be the quiet way to drop it.
+  const previous = { ...openProject.output };
+  openProject.output.width = opt.size.width;
+  openProject.output.height = opt.size.height;
+
+  // Persist BEFORE showing it (STC-337 finding 2). `persistProject` builds the
+  // document from `openProject`, so the mutation has to happen first — but on
+  // failure it is put back, because the alternative is a UI and a preview
+  // showing a size the document does not have, which then reverts on the next
+  // open with no further word. The handler alerts on a throw, so re-throwing
+  // is what makes the rollback visible rather than silent.
+  try {
+    await persistProject();
+  } catch (e) {
+    openProject.output.width = previous.width;
+    openProject.output.height = previous.height;
+    updateOutputSizeUI();
+    throw e;
+  }
+
+  updateOutputSizeUI();
+  // The canvas is sized in the player's constructor and `composite` reads the
+  // project every draw, so the player has to be told or it draws the new size
+  // onto the old canvas.
+  //
+  // With the viewer's eye ON, telling it is not enough (STC-337 finding 5):
+  // `effectiveOutput` spreads the view over `project.output`, so the view keeps
+  // the width and height derived from the OLD output and the toggle goes on
+  // claiming to show what a viewer gets while showing the previous shape.
+  // Invisible while every export size shared the capture's aspect; reachable
+  // the moment one does not, which is the case this whole feature exists for.
+  // One repaint either way — both routes end in `applyOutput`.
+  if (player.viewSize) await player.setViewSize(viewSizeForEmbed());
+  else await player.outputResized();
+  // The sentence does NOT change — the output width cancels out of it — and
+  // refreshing anyway is how that stays visibly true rather than asserted.
+  updateLegibilityUI();
+}
+
+$("outsize").addEventListener("change", () => {
+  if (!openProject || !openCapture) return;
+  const id = ($("outsize") as HTMLSelectElement).value;
+  const opt = outputOptions(openCapture).find((o) => o.id === id);
+  // "custom" has no option to apply — re-selecting it is a no-op, not a reset
+  // to the capture size.
+  if (!opt || opt.upscales) { updateOutputSizeUI(); return; }
+  void setOutputSize(opt).catch((e: any) => alertUser(String(e?.message ?? e)));
+});
+
+/**
+ * The legibility row (STC-318).
+ *
+ * `embedWidthPx` is deliberately NOT persisted on the take: where a demo is
+ * shown is a property of the page it lands on, and two people looking at the
+ * same recording can reasonably ask about different columns. The base text
+ * size IS persisted, because it is a fact about what was recorded.
+ */
+function updateLegibilityUI(): void {
+  if (!openProject || !openDisplay || !player) return;
+  const sel = $("embedtarget") as HTMLSelectElement;
+  if (sel.options.length === 0) {
+    for (const t of EMBED_TARGETS) {
+      const o = document.createElement("option");
+      o.value = t.id;
+      o.textContent = `${t.label} · ${t.widthPx}px`;
+      sel.append(o);
+    }
+    // Two of the ticket's three targets need someone who can see the site's
+    // layout, so the free width is how every other case is asked for rather
+    // than a fallback — see EMBED_TARGETS' own comment.
+    const custom = document.createElement("option");
+    custom.value = "custom";
+    custom.textContent = "Custom width";
+    sel.append(custom);
+  }
+  const known = EMBED_TARGETS.find((t) => t.widthPx === embedWidthPx);
+  sel.value = known?.id ?? "custom";
+  ($("embedwidth") as HTMLInputElement).value = String(embedWidthPx);
+  ($("textpt") as HTMLInputElement).value = String(openProject.textPt ?? DEFAULT_TEXT_PT);
+
+  // The zoom the viewer will actually experience. Stage 1 leaves the crop at
+  // the full frame, so this is 1 today and becomes real with STC-326 — read
+  // from render()'s own answer rather than assumed, so it needs no revisit.
+  const fs = render(openProject, openSession!, player.currentNs);
+  const l = legibility(openDisplay, openProject.textPt ?? DEFAULT_TEXT_PT,
+                       embedWidthPx, zoomFactorForCrop(fs.zoom.crop.width));
+  const out = $("legibility");
+  out.textContent = legibilitySentence(l);
+  out.classList.toggle("warn", l.verdict === "warn");
+
+  ($("vieweye") as HTMLInputElement).checked = player.viewSize !== null;
+}
+
+/** The embed width as a view size for the preview, at the EXPORT's aspect. */
+function viewSizeForEmbed(): Size | null {
+  if (!openProject) return null;
+  // `outputSizeFor` owns the width -> height rule, including the evening H.264
+  // needs; re-deriving it here gave 693 against its 694 for the same 1232.
+  // Its aspect comes from `project.output` rather than the capture, because
+  // what gets embedded is the EXPORT — on a take whose output was hand-edited
+  // off the capture's aspect, previewing the capture's shape would preview the
+  // one thing this toggle exists to check.
+  return outputSizeFor(openProject.output, embedWidthPx);
+}
+
+/**
+ * Show the canvas at the embed width in CSS pixels while the view size is set.
+ *
+ * Rendering at 1232 and displaying at the column's width is a lower-resolution
+ * picture at the ORIGINAL size, which flatters small text instead of testing
+ * it. The CSS width is the half that makes the toggle mean what it says.
+ */
+function applyStageDisplay(): void {
+  const stage = $("stage") as HTMLCanvasElement;
+  const view = player?.viewSize ?? null;
+  if (view) {
+    stage.style.setProperty("--vieweye-w", `${embedWidthPx}px`);
+    stage.dataset.vieweye = "";
+  } else {
+    stage.style.removeProperty("--vieweye-w");
+    delete stage.dataset.vieweye;
+  }
+}
+
+async function setEmbedWidth(px: number): Promise<void> {
+  embedWidthPx = Math.max(80, Math.min(4096, Math.round(px)));
+  updateLegibilityUI();
+  // Keep the viewer's eye honest: it is showing THIS width, so changing the
+  // width while it is on must move the canvas with it.
+  if (player?.viewSize) await player.setViewSize(viewSizeForEmbed());
+  applyStageDisplay();
+}
+
+$("embedtarget").addEventListener("change", () => {
+  const id = ($("embedtarget") as HTMLSelectElement).value;
+  const t = EMBED_TARGETS.find((x) => x.id === id);
+  // "Custom" selects nothing — the number field is the control, and snapping
+  // the width on selecting it would discard what the user just typed.
+  if (t) void setEmbedWidth(t.widthPx).catch((e: any) => alertUser(String(e?.message ?? e)));
+  else updateLegibilityUI();
+});
+
+$("embedwidth").addEventListener("change", () => {
+  void setEmbedWidth(Number(($("embedwidth") as HTMLInputElement).value))
+    .catch((e: any) => alertUser(String(e?.message ?? e)));
+});
+
+$("textpt").addEventListener("change", () => {
+  if (!openProject) return;
+  const v = Number(($("textpt") as HTMLInputElement).value);
+  // Out of range is a no-op that puts the old value back, not a silent clamp:
+  // a field that quietly rewrites what you typed is how you stop trusting it.
+  if (Number.isFinite(v) && v > 0 && v <= 144) openProject.textPt = v;
+  updateLegibilityUI();
+  void persistProject().catch((e: any) => alertUser(String(e?.message ?? e)));
+});
+
+$("vieweye").addEventListener("change", () => {
+  if (!player) return;
+  const on = ($("vieweye") as HTMLInputElement).checked;
+  void player.setViewSize(on ? viewSizeForEmbed() : null)
+    .then(() => { applyStageDisplay(); updateLegibilityUI(); })
+    .catch((e: any) => alertUser(String(e?.message ?? e)));
+});
 
 async function openPreview(take: Openable): Promise<void> {
   try {
@@ -625,12 +964,26 @@ async function openPreviewOrThrow(take: Openable): Promise<void> {
   openProject = project;
   openTakeName = take.name;
   openTakeDir = take.dir;
+  openCapture = { width: anchors.capture.width, height: anchors.capture.height };
+  // The width in POINTS, not pixels — the legibility figure is in points and
+  // backingScale cancels out of it (see legibility.ts).
+  openDisplay = { pointWidth: anchors.display.pointWidth };
   player = new PreviewPlayer($("stage") as HTMLCanvasElement, session, project);
   const scrub = $("scrub") as HTMLInputElement;
+  // Rule 1: the control's domain is frames, so it cannot express a position
+  // between two of them. Set before the first seek, or the opening frame
+  // would be clamped against a stale max.
+  scrub.max = String(lastFrame(player.durationNs));
+  scrub.value = "0";
   player.onTime = (tNs, playing) => {
-    $("clock").textContent = `${fmtClock(tNs)} / ${fmtClock(player!.durationNs)}`;
+    // Rule 10: frame-accurate, on every tick the canvas draws — seconds alone
+    // cannot tell two adjacent frames apart, which is the whole distinction a
+    // nudge exists to make.
+    const frame = nsToFrame(tNs, player!.durationNs);
+    $("clock").textContent = formatReadout(frame, player!.durationNs);
     ($("playpause") as HTMLButtonElement).textContent = playing ? "Pause" : "Play";
-    if (!scrubbing) scrub.value = String(Math.round((tNs / (player!.durationNs || 1)) * 1000));
+    $("shuttle").textContent = formatShuttle(player!.rate);
+    if (!scrubbing) scrub.value = String(frame);
   };
   // Revealed only once a frame has actually been drawn, so a failure part-way
   // through never leaves a half-open player on screen.
@@ -640,7 +993,14 @@ async function openPreviewOrThrow(take: Openable): Promise<void> {
   // and shows the user a black rectangle that looks like a broken player.
   await player.seek(player.firstRenderableNs);
   updateTrimUI();
+  updateOutputSizeUI();
+  updateLegibilityUI();
   $("player").removeAttribute("hidden");
+  // AFTER the reveal, not before: `tickStrideFrames` is a function of the
+  // track's WIDTH, and a hidden element measures zero — which resolves to
+  // "no stride is legible" and draws nothing. updateTrimUI ran while #player
+  // was still hidden, so the grid never appeared on open.
+  updateTicks();
 }
 
 async function closePreview(): Promise<void> {
@@ -650,24 +1010,140 @@ async function closePreview(): Promise<void> {
   player = undefined;
   openSession = undefined;
   openProject = undefined;
+  openCapture = undefined;
+  openDisplay = undefined;
+  // The stage's display width is pinned to the embed width while the viewer's
+  // eye is on, and that pin is only justified by the player that asked for it.
+  // Left set, it outlives the player: the next take opens with a fresh player
+  // whose `viewSize` is null and a checkbox reading OFF, on a canvas still
+  // displayed at the old embed width. Measured on a 1728-point take — the
+  // stage stayed 1232 CSS px in a 465 px column, so the picture overflowed the
+  // player and scrolled, with nothing on screen saying why.
+  //
+  // Cleared HERE rather than in the open path because `openPreviewOrThrow`
+  // begins with this function, so it is the single choke point every new
+  // player passes through — and one owner beats two that must agree.
+  applyStageDisplay();
   $("player").setAttribute("hidden", "");
   await recorder.closePreview();
 }
 
 $("playpause").addEventListener("click", () => {
   if (!player) return;
-  player.isPlaying ? player.pause() : player.play();
-  ($("playpause") as HTMLButtonElement).textContent = player.isPlaying ? "Pause" : "Play";
+  // Always back to 1x: the button says Play, not "resume at 8x".
+  player.isPlaying ? player.pause() : player.play(1);
+  updateShuttleUI();
 });
 $("closepreview").addEventListener("click", () => void closePreview());
 $("scrub").addEventListener("pointerdown", () => { scrubbing = true; });
+// Rule 3: a release SETTLES, it does not travel. There is deliberately no
+// momentum here — the playhead stays on the frame the pointer left it on, and
+// the only thing `pointerup` does is hand the value back to `onTime`.
 $("scrub").addEventListener("pointerup", () => { scrubbing = false; });
+$("scrub").addEventListener("pointercancel", () => { scrubbing = false; });
 $("scrub").addEventListener("input", () => {
   if (!player) return;
+  // The value IS a frame index (rule 1), so there is nothing to snap: the
+  // control cannot hold a position between two frames.
+  //
   // Fire and forget: the source supersedes stale requests, so a drag does not
   // queue up dozens of decodes.
-  void player.seek((Number(($("scrub") as HTMLInputElement).value) / 1000) * player.durationNs);
+  void player.seek(frameToNs(Number(($("scrub") as HTMLInputElement).value), player.durationNs));
 });
+
+/**
+ * The scrubber's keyboard grammar (STC-338 rule 8).
+ *
+ * Bound on the WINDOW rather than on the timeline, because an editor's
+ * transport keys work wherever you are looking as long as you are not typing
+ * — and `decideKey` is what decides "not typing", not this listener.
+ *
+ * `preventDefault` runs only for a chord `decideKey` CLAIMED. The scrubber is
+ * a range input with native arrow handling, so an arrow that was handled and
+ * not prevented would move two frames; and a key that was prevented without
+ * being handled would break typing in the fields on this same page.
+ */
+function isTextField(el: Element | null): boolean {
+  if (!el) return false;
+  const tag = el.tagName;
+  if (tag === "TEXTAREA" || tag === "SELECT") return true;
+  if ((el as HTMLElement).isContentEditable) return true;
+  if (tag !== "INPUT") return false;
+  // The scrubber is itself an <input>, and a range is not somewhere you type.
+  const type = (el as HTMLInputElement).type;
+  return type !== "range" && type !== "checkbox" && type !== "button";
+}
+
+/**
+ * The keys a focused `<input type=range>` acts on by ITSELF.
+ *
+ * Rule 1 says the playhead's position is the scrubber's to decide, and a
+ * native step is a second author of it that `decideKey` never sees. Two ways
+ * that shows: ⌘→ is correctly declined as "not the scrubber's" and the range
+ * steps anyway, and PageUp moves the playhead by a chunk with no rule behind
+ * it at all. Both are cancelled here — `preventDefault` removes the CONTROL's
+ * default action without stopping the event, so a modifier chord still
+ * reaches the app's own accelerators.
+ */
+const RANGE_NATIVE_KEYS = new Set([
+  "ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown",
+  "PageUp", "PageDown", "Home", "End",
+]);
+
+window.addEventListener("keydown", (e) => {
+  if (!player || !openProject) return;
+  if ($("player").hasAttribute("hidden")) return;
+  if (e.target === $("scrub") && RANGE_NATIVE_KEYS.has(e.key)) e.preventDefault();
+  const action = decideKey(
+    {
+      key: e.key, shiftKey: e.shiftKey, metaKey: e.metaKey,
+      ctrlKey: e.ctrlKey, altKey: e.altKey,
+      inTextField: isTextField(document.activeElement),
+    },
+    { frame: currentFrame(), durationNs: player.durationNs, rate: player.rate },
+  );
+  if (!action) return;
+  e.preventDefault();
+  applyScrubAction(action);
+});
+
+function currentFrame(): number {
+  return player ? nsToFrame(player.currentNs, player.durationNs) : 0;
+}
+
+function applyScrubAction(action: ScrubAction): void {
+  if (!player || !openProject) return;
+  switch (action.kind) {
+    case "seek":
+      // A nudge is an absolute move, so it stops any shuttle: an editor
+      // stepping frame by frame while the take is still running away
+      // underneath is not stepping at all.
+      if (player.rate !== 0) player.pause();
+      void player.seek(frameToNs(action.frame, player.durationNs));
+      break;
+    case "shuttle":
+      action.rate === 0 ? player.pause() : player.play(action.rate);
+      updateShuttleUI();
+      break;
+    case "mark": {
+      const t = player.currentNs;
+      const min = minTrimNs(openProject.output.fps);
+      if (action.which === "in") {
+        const end = openProject.trim?.endNs ?? player.durationNs;
+        setTrim(t, t + min > end ? player.durationNs : end, true);
+      } else {
+        const start = openProject.trim?.startNs ?? 0;
+        setTrim(t < start + min ? 0 : start, t, true);
+      }
+      break;
+    }
+  }
+}
+
+function updateShuttleUI(): void {
+  $("shuttle").textContent = formatShuttle(player?.rate ?? 0);
+  ($("playpause") as HTMLButtonElement).textContent = player?.isPlaying ? "Pause" : "Play";
+}
 
 $("markin").addEventListener("click", () => {
   if (!player || !openProject) return;
@@ -688,10 +1164,11 @@ $("resettrim").addEventListener("click", () => {
   setTrim(0, player.durationNs, true);
 });
 
-function nsAtClientX(clientX: number): number {
+/** The frame under a pointer at `clientX`, on the export grid (rules 1 and 2). */
+function frameAtClientX(clientX: number): number {
   const r = $("timeline").getBoundingClientRect();
   const t = r.width <= 0 ? 0 : (clientX - r.left) / r.width;
-  return Math.round(Math.max(0, Math.min(1, t)) * (player?.durationNs ?? 0));
+  return frameAtFraction(t, player?.durationNs ?? 0);
 }
 
 let dragging: "in" | "out" | undefined;
@@ -701,16 +1178,68 @@ function onHandleDown(which: "in" | "out", e: PointerEvent): void {
   dragging = which;
   (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
 }
+
+/**
+ * A trim handle's drag (STC-338 rule 5).
+ *
+ * The handle is clamped to `MIN_TRIM_FRAMES` from its opposite, and when the
+ * pointer goes past that the handle is DRAWN past it too — by
+ * `rubberBandPx(excess)`, which decays to a bound rather than tracking. So
+ * the pointer visibly pulls away from the handle and the limit is something
+ * you feel arrive. The trim itself is set from the CLAMPED frame throughout:
+ * the rubber band is presentation, never a value anything can be saved at.
+ */
 function onHandleMove(e: PointerEvent): void {
   if (!dragging || !player || !openProject) return;
-  const t = nsAtClientX(e.clientX);
-  const start = openProject.trim?.startNs ?? 0;
-  const end = openProject.trim?.endNs ?? player.durationNs;
-  if (dragging === "in") setTrim(t, end, false);
-  else setTrim(start, t, false);
+  const durationNs = player.durationNs;
+  const startFrame = nsToFrame(openProject.trim?.startNs ?? 0, durationNs);
+  const endFrame = nsToFrame(openProject.trim?.endNs ?? durationNs, durationNs);
+  const wanted = frameAtClientX(e.clientX);
+  const opposite = dragging === "in" ? endFrame : startFrame;
+  const { clamped, held } = clampTrimFrame(dragging, wanted, opposite, durationNs);
+
+  if (dragging === "in") setTrim(frameToNs(clamped, durationNs), frameToNs(endFrame, durationNs), false);
+  else setTrim(frameToNs(startFrame, durationNs), frameToNs(clamped, durationNs), false);
+
+  // Drawn AFTER setTrim, which repositions the handle from the clamped value.
+  const handle = $(dragging === "in" ? "trim-in" : "trim-out");
+  if (held) {
+    const r = $("timeline").getBoundingClientRect();
+    const clampedX = r.left + fractionOfFrame(clamped, durationNs) * r.width;
+    // POSITIVE excess means the pointer has gone PAST the clamp in the
+    // direction that triggered it: rightward for "in" (which clamps on
+    // overshoot-right), leftward for "out" (which clamps on overshoot-left).
+    // The two prior sign choices here were both backwards, which is why
+    // rubberBandPx always saw a negative number and returned 0 — the handle
+    // pinned dead at the clamp with no creep in EITHER direction; only the
+    // red/wide `.held` styling ever showed. Found from a real drag (STC-338
+    // runbook review): "in past end" looked fine at a small overshoot and
+    // "out past beginning" looked broken at a large one, but it was the same
+    // zero-band bug both times, just more visible the farther you dragged.
+    const excess = dragging === "in" ? e.clientX - clampedX : clampedX - e.clientX;
+    // The handle creeps toward the pointer's pull: rightward (positive
+    // marginLeft) for "in", leftward (negative) for "out".
+    const band = rubberBandPx(excess) * (dragging === "in" ? 1 : -1);
+    handle.classList.add("held");
+    handle.style.marginLeft = `${-5 + band}px`;
+  } else {
+    handle.classList.remove("held");
+    handle.style.marginLeft = "";
+  }
 }
+
+/**
+ * Release settles (rule 3): the band relaxes to zero and the handle lands
+ * exactly on the clamp it was already committed to. Nothing moves that the
+ * pointer did not already move — the settle is the band unwinding, not the
+ * trim changing.
+ */
 function onHandleUp(): void {
   if (!dragging) return;
+  for (const id of ["trim-in", "trim-out"]) {
+    $(id).classList.remove("held");
+    $(id).style.marginLeft = "";
+  }
   dragging = undefined;
   void persistProject().catch((e: any) => alertUser(String(e?.message ?? e)));
 }
@@ -735,13 +1264,35 @@ async function runExport(): Promise<void> {
   const status = $("exportstatus");
   bar.removeAttribute("hidden");
   ($("export") as HTMLButtonElement).disabled = true;
+  // The export-size select mutates `openProject.output`, and an export in
+  // flight is reading that object (STC-337 finding 1). Disabled so the UI does
+  // not invite an action the running export will ignore — the SNAPSHOT below
+  // is what makes ignoring it safe.
+  ($("outsize") as HTMLSelectElement).disabled = true;
   progress.value = 0;
   status.textContent = "Exporting…";
   clearAlert();
 
   const started = performance.now();
+  // THE EXPORT GETS ITS OWN COPY, and that is the real fix rather than the
+  // disabled select above (STC-337 finding 1).
+  //
+  // `exportSession` destructures `width, height, fps` ONCE — the canvas, the
+  // muxer and the encoder are all built from that — while `render()` re-reads
+  // `project.output` on EVERY frame, for the display->output mapping, the
+  // output rect and the PiP's UV rect. So a live object mutated mid-export
+  // gives the rest of the file markup computed for the new size on a canvas
+  // sized for the old, and it still reports "Done". A 50 s demo at the
+  // measured 1.52x realtime is ~75 s of window to change your mind in.
+  //
+  // Disabling each control that can mutate it would work today and rots the
+  // first time someone adds a fourth: a snapshot is immune to controls nobody
+  // has written yet. The manifest is built from this copy too, so it describes
+  // the file that was actually made rather than whatever the UI holds by the
+  // time the write lands.
+  const exporting: Project = structuredClone(openProject);
   try {
-    const result = await exportSession(openSession, openProject, {
+    const result = await exportSession(openSession, exporting, {
       // Hashing costs a full pixel read-back per frame and exists for the
       // gates. It is on here so the manifest can record a verifiable hash —
       // an export nobody can check is an export nobody can trust.
@@ -774,8 +1325,16 @@ async function runExport(): Promise<void> {
       frames: result.frames,
       preEncodeHash: result.hash,
       encodedBytes: result.encodedBytes,
-      output: openProject.output,
-      trim: projectForWrite(openProject, lastNs).trim ?? null,
+      output: exporting.output,
+      trim: projectForWrite(exporting, lastNs).trim ?? null,
+      // Checkable after the fact (STC-318). `embedWidthPx` is what someone
+      // asked about at export time — a view setting, not a property of the
+      // take — so it is recorded here BESIDE the figure rather than left
+      // implicit: "4.2px" means nothing without the width it was computed at.
+      legibility: openDisplay ? (() => {
+        const l = legibility(openDisplay!, exporting.textPt ?? DEFAULT_TEXT_PT, embedWidthPx);
+        return { textPt: l.textPt, embedWidthPx: l.embedWidthPx, textPx: l.textPx, verdict: l.verdict };
+      })() : null,
       exportDurationMs: result.durationMs,
     }, null, 2)).buffer as ArrayBuffer);
 
@@ -787,6 +1346,7 @@ async function runExport(): Promise<void> {
   } finally {
     exportAbort = undefined;
     ($("export") as HTMLButtonElement).disabled = false;
+    ($("outsize") as HTMLSelectElement).disabled = false;
   }
 }
 

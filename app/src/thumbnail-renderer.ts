@@ -54,7 +54,8 @@ declare global {
       startDrag(file: string): void;
       reveal(): Promise<boolean>;
       writeShot(dir: string, redactions: unknown): Promise<{ ok: boolean; redactions: number }>;
-      event(ev: { kind: "painted" | "expanded" | "done" } | { kind: "redact"; on: boolean }): void;
+      event(ev: { kind: "painted" | "expanded" | "discarding" | "done" }
+                | { kind: "redact"; on: boolean }): void;
       onSettle(cb: () => void): () => void;
     };
   }
@@ -636,6 +637,11 @@ card.addEventListener("pointercancel", () => {
  * settle that got through would export the shot being discarded.
  */
 async function discard(): Promise<void> {
+  // Before anything async: stop the panel's own timeout racing this gesture.
+  // See thumbnail-window.ts's "discarding" handler — without it, a timeout
+  // landing in the gap before `deleteShot` resolves can hide the window and,
+  // if the delete then fails, strand the failure invisibly.
+  window.thumb.event({ kind: "discarding" });
   settling = true;
   card.style.transform = `translateX(${420 * discardDirection(corner)}px)`;
   card.style.opacity = "0";

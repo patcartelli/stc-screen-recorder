@@ -19,6 +19,7 @@ export class PreviewPlayer {
   private tNs = 0;
   private playAnchorWallMs = 0;
   private playAnchorTNs = 0;
+  private playRate = 0;
   private rendering = false;
   /** A draw asked for while one was in flight; served once that one lands. */
   private redrawWanted = false;
@@ -26,6 +27,8 @@ export class PreviewPlayer {
   private inFlight: Promise<void> | null = null;
   private closed = false;
   private lateFrames = 0;
+  /** STC-318's viewer's eye: draw at this size instead of the export's. */
+  private viewOutput: { width: number; height: number } | null = null;
   private renderedFrames = 0;
   private cameraRenderedFrames = 0;
 
@@ -72,6 +75,70 @@ export class PreviewPlayer {
     };
   }
 
+  /**
+   * Re-read `project.output` onto the canvas and repaint (STC-335).
+   *
+   * The canvas is sized once in the constructor, but `composite` reads
+   * `project.output` on EVERY draw — so a caller that changes the export size
+   * on the project this player was given would otherwise draw at the new size
+   * onto a canvas still at the old one, which is a scaled, offset picture
+   * rather than an error. This is the one call that keeps the two in step.
+   *
+   * The preview genuinely rendering at the export's resolution is the point,
+   * not a side effect: `#stage` is `width: 100%`, so nothing on screen moves,
+   * and what changes is how much detail is actually there — which is the
+   * question STC-318 is about and the reason to look before exporting.
+   */
+  async outputResized(): Promise<void> {
+    await this.applyOutput();
+  }
+
+  /**
+   * The viewer's eye (STC-318): render at the width the demo is EMBEDDED at,
+   * 1:1, instead of at the export's size. `null` returns to the export's.
+   *
+   * Not a CSS shrink of the canvas, which would show the browser's downscale
+   * of a 4K picture rather than what a viewer gets — and not a change to
+   * `project.output` either, because that is a document setting the user chose
+   * and this is a way of looking. The whole render moves: `render()` is handed
+   * a project whose output IS the view size, so the cursor, the PiP and the
+   * zoom crop all land where they would at that size. Passing a different size
+   * to `composite()` alone would draw the frame small and the cursor at the
+   * export's coordinates, which is a plausible half-fix and visibly wrong.
+   */
+  async setViewSize(size: { width: number; height: number } | null): Promise<void> {
+    this.viewOutput = size;
+    await this.applyOutput();
+  }
+
+  get viewSize(): { width: number; height: number } | null { return this.viewOutput; }
+
+  private async applyOutput(): Promise<void> {
+    const o = this.effectiveOutput;
+    this.canvas.width = o.width;
+    this.canvas.height = o.height;
+    // Resizing a canvas clears it, so a repaint is required rather than tidy.
+    await this.seek(this.tNs);
+  }
+
+  /** What this player is drawing at: the view override, else the document's. */
+  private get effectiveOutput(): Project["output"] {
+    return this.viewOutput
+      ? { ...this.project.output, ...this.viewOutput }
+      : this.project.output;
+  }
+
+  /**
+   * The project as this player is currently DRAWING it.
+   *
+   * Identical to the document unless a view size is set, in which case only
+   * `output` differs — everything else (trim, cursor, pip, zoom) is the take's
+   * own, because a way of looking must not change what is being looked at.
+   */
+  private get renderProject(): Project {
+    return this.viewOutput ? { ...this.project, output: this.effectiveOutput } : this.project;
+  }
+
   async seek(tNs: number): Promise<void> {
     this.tNs = Math.max(0, Math.min(tNs, this.durationNs));
     if (this.playing) {
@@ -82,9 +149,40 @@ export class PreviewPlayer {
     this.onTime?.(this.tNs, this.playing);
   }
 
-  play(): void {
-    if (this.playing || this.closed) return;
-    if (this.tNs >= this.durationNs) this.tNs = 0;
+  /**
+   * The signed multiple of real time playback advances at (STC-338's shuttle).
+   * 1 is ordinary playback; 8 is eight times forward; -2 is twice backwards.
+   * Zero is not a rate — it is `pause()`.
+   */
+  get rate(): number { return this.playRate; }
+
+  /**
+   * Change speed WITHOUT restarting playback.
+   *
+   * The anchor is re-taken at the current position, which is the whole point:
+   * wall-clock playback measures elapsed time from an anchor, so changing the
+   * rate without moving the anchor would retroactively re-time everything
+   * since the last one and the playhead would jump. Pressing L four times in
+   * a second must accelerate smoothly, not teleport three times.
+   */
+  setRate(rate: number): void {
+    this.playRate = rate;
+    if (this.playing) {
+      this.playAnchorWallMs = performance.now();
+      this.playAnchorTNs = this.tNs;
+    }
+  }
+
+  play(rate: number = 1): void {
+    if (rate === 0) { this.pause(); return; }
+    if (this.playing) { this.setRate(rate); return; }
+    if (this.closed) return;
+    // Restarting from an end only makes sense toward the material: forward
+    // from the last frame has nowhere to go, and neither does backward from
+    // the first. Wrapping to the other end would be a seek nobody asked for.
+    if (rate > 0 && this.tNs >= this.durationNs) this.tNs = 0;
+    if (rate < 0 && this.tNs <= 0) this.tNs = this.durationNs;
+    this.playRate = rate;
     this.playing = true;
     this.playAnchorWallMs = performance.now();
     this.playAnchorTNs = this.tNs;
@@ -93,11 +191,15 @@ export class PreviewPlayer {
       // Time comes from the WALL CLOCK, not from a frame counter. If decoding
       // cannot keep up, playback drops frames and stays time-accurate rather
       // than sliding into slow motion — a preview that drifts from real time is
-      // lying about the recording it is previewing.
+      // lying about the recording it is previewing. At 8x it drops seven of
+      // every eight, which is what a shuttle is.
       const elapsedNs = (performance.now() - this.playAnchorWallMs) * 1e6;
-      this.tNs = this.playAnchorTNs + elapsedNs;
-      if (this.tNs >= this.durationNs) {
-        this.tNs = this.durationNs;
+      this.tNs = this.playAnchorTNs + elapsedNs * this.playRate;
+      // Either end stops. Reverse has a floor exactly as forward has a
+      // ceiling; without it a backward shuttle runs to negative time and the
+      // frame source is asked for material that never existed.
+      if (this.playRate > 0 ? this.tNs >= this.durationNs : this.tNs <= 0) {
+        this.tNs = this.playRate > 0 ? this.durationNs : 0;
         this.pause();
         void this.draw();
         this.onTime?.(this.tNs, false);
@@ -112,6 +214,7 @@ export class PreviewPlayer {
 
   pause(): void {
     this.playing = false;
+    this.playRate = 0;
     if (this.raf) cancelAnimationFrame(this.raf);
     this.raf = 0;
   }
@@ -143,7 +246,7 @@ export class PreviewPlayer {
     try {
       const tick = tickOf(this.tNs);
       const t = tickTimeNs(tick);
-      const fs = render(this.project, this.session, t);
+      const fs = render(this.renderProject, this.session, t);
       // render()'s answer, not re-derived here — see export.ts.
       const idx = fs.frameIndex;
       // Both decoders are driven concurrently. They are independent decoders
@@ -158,7 +261,7 @@ export class PreviewPlayer {
       composite(this.ctx as unknown as OffscreenCanvasRenderingContext2D,
                 frame as unknown as ImageBitmap | null,
                 cameraFrame as unknown as ImageBitmap | null, fs,
-                this.project.output.width, this.project.output.height);
+                this.effectiveOutput.width, this.effectiveOutput.height);
       this.renderedFrames++;
       if (cameraFrame) this.cameraRenderedFrames++;
     } finally {
@@ -202,17 +305,36 @@ export class PreviewPlayer {
   }> {
     if (this.closed) throw new Error("preview is closed");
     const wasPlaying = this.playing;
+    // Read BEFORE pause(), which zeroes it.
+    const wasRate = this.playRate;
     if (wasPlaying) this.pause();
-    const { frame, tNs } = exportFrameOf(this.tNs);
-    await this.seek(tNs);
-    const { width, height } = this.canvas;
-    const data = this.ctx.getImageData(0, 0, width, height).data;
-    // Sliced to the exact bytes: a Uint8ClampedArray view may sit inside a
-    // larger buffer, and sending the whole one would ship the slack to the
-    // main process and fail the encoder's size check on arrival.
-    const rgba = data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength);
-    if (wasPlaying) this.play();
-    return { frame, tNs, rgba: rgba as ArrayBuffer, width, height };
+    // A still is what the EXPORT would produce, never what the preview happens
+    // to be drawing. `setViewSize` (the viewer's eye) shrinks the canvas and
+    // this function reads the canvas, so with the toggle on Copy/Save frame
+    // silently wrote a 1232-wide still for a 3840-wide take — a way of LOOKING
+    // changing what comes out. Dropped for the capture and restored after.
+    const view = this.viewOutput;
+    try {
+      if (view) await this.setViewSize(null);
+      const { frame, tNs } = exportFrameOf(this.tNs);
+      await this.seek(tNs);
+      const { width, height } = this.canvas;
+      const data = this.ctx.getImageData(0, 0, width, height).data;
+      // Sliced to the exact bytes: a Uint8ClampedArray view may sit inside a
+      // larger buffer, and sending the whole one would ship the slack to the
+      // main process and fail the encoder's size check on arrival.
+      const rgba = data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength);
+      return { frame, tNs, rgba: rgba as ArrayBuffer, width, height };
+    } finally {
+      // Restored even if the capture threw: leaving the view dropped would
+      // silently turn the toggle off after a failed Copy.
+      if (view) await this.setViewSize(view);
+      // Resumed at the rate it was RUNNING at, not at 1x. Grabbing a frame
+      // is a way of LOOKING, and it must not quietly change the transport's
+      // state — an 8x shuttle silently becoming 1x is the same family of
+      // fault as STC-318's capture that changed size with the view.
+      if (wasPlaying) this.play(wasRate);
+    }
   }
 
   close(): void {

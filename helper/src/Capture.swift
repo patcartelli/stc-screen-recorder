@@ -242,14 +242,45 @@ final class CaptureSession: NSObject, SCStreamOutput, SCStreamDelegate {
         // request before it called SCShareableContent (STC-258). Arming a
         // second one would answer the same request twice.
 
+        // STC-315: cursor telemetry is a HARD REQUIREMENT, so the tap is
+        // created here — before the writer, before the stream, before
+        // anything of this take exists on disk.
+        //
+        // The pixels carry no cursor by design (`showsCursor` is false; the
+        // transform draws the pointer from events.json), so a take recorded
+        // without a tap has no cursor ANYWHERE. Until now that take was made
+        // anyway, with a warning: a file that looks like every other take and
+        // silently breaks the brief's rule 2. Auto-zoom (STC-324) then reads
+        // clicks as its `when` signal, which cannot be built on a track that
+        // may be empty. So the answer is to refuse, and the refusal has to
+        // come before `setupWriter()` — after it there is a display.mp4 with
+        // frames in it and `removeIfNothingWorthKeeping` correctly keeps the
+        // directory, which is exactly what "no take directory can exist
+        // without a cursor track" forbids.
+        //
+        // Creating it HERE rather than on the tap's own thread is what makes
+        // the refusal answerable at all: `CGEvent.tapCreate` returns nil
+        // synchronously when Input Monitoring is not granted, and the old
+        // arrangement learned that inside a Thread the start had already been
+        // answered without. Nothing about the tap needs its creating thread —
+        // it is the run loop the source is added to that decides where the
+        // callback lands, and that is still the dedicated thread below.
+        guard let tap = makeEventTap() else {
+            finishStart(.failure(CaptureError.eventTapUnavailable))
+            return
+        }
+
         do {
             try setupWriter()
             try startStream(display: display) { [weak self] err in
                 guard let self else { return }
                 if let err {
+                    // The tap outlives nothing: this start is over and no
+                    // thread has been given the port yet.
+                    CFMachPortInvalidate(tap)
                     self.finishStart(.failure(CaptureError.streamFailed(err)))
                 } else {
-                    self.startEventTap()
+                    self.runEventTap(tap)
                     self.startCursorSampler()
                     // Optional subsystem: it must not sit on the critical path. PHASE-0
                     // recorded camera/mic setup blocking startup once already, and
@@ -269,6 +300,7 @@ final class CaptureSession: NSObject, SCStreamOutput, SCStreamDelegate {
                 }
             }
         } catch {
+            CFMachPortInvalidate(tap)
             finishStart(.failure(error))
         }
     }
@@ -504,10 +536,27 @@ final class CaptureSession: NSObject, SCStreamOutput, SCStreamDelegate {
 
     // MARK: - event tap
 
-    /// Runs on its own thread and run loop. If the tap's run loop is starved
-    /// the system disables it (`tapDisabledByTimeout`), so it must not share a
-    /// run loop with anything that can block — including command dispatch.
-    private func startEventTap() {
+    /// Creates the event tap, or returns nil if the system will not give us
+    /// one — which in practice means Input Monitoring is not granted.
+    ///
+    /// Called from `begin()` on whatever thread got there, deliberately: this
+    /// is the only part of the tap that can fail, it fails SYNCHRONOUSLY, and
+    /// STC-315 needs its answer before the take is allowed to exist. The
+    /// creating thread has no bearing on where events are delivered —
+    /// `runEventTap` adds the source to the dedicated thread's run loop, and
+    /// that is what decides.
+    private func makeEventTap() -> CFMachPort? {
+        // `STC_CAPTURE_FAULT=no-event-tap`: refuse as though the grant were
+        // missing. A refusal nobody has watched fire is indistinguishable from
+        // one that cannot fire, and the honest way to produce the real thing
+        // is `tccutil reset ListenEvent`, which costs the machine a grant and
+        // a relaunch. Same shape and same reason as `stream-died` above; read
+        // here rather than cached, so one process can be the control.
+        if ProcessInfo.processInfo.environment["STC_CAPTURE_FAULT"] == "no-event-tap" {
+            IO.log("STC_CAPTURE_FAULT=no-event-tap: refusing to start as if Input Monitoring were denied")
+            return nil
+        }
+
         let mask: CGEventMask =
             (1 << CGEventType.mouseMoved.rawValue) |
             (1 << CGEventType.leftMouseDown.rawValue) |
@@ -524,18 +573,23 @@ final class CaptureSession: NSObject, SCStreamOutput, SCStreamDelegate {
             return Unmanaged.passUnretained(event)
         }
 
+        return CGEvent.tapCreate(
+            tap: .cgSessionEventTap, place: .headInsertEventTap,
+            options: .listenOnly, eventsOfInterest: mask,
+            callback: callback,
+            userInfo: Unmanaged.passUnretained(self).toOpaque())
+    }
+
+    /// Runs the tap on its own thread and run loop. If the tap's run loop is
+    /// starved the system disables it (`tapDisabledByTimeout`), so it must not
+    /// share a run loop with anything that can block — including command
+    /// dispatch.
+    ///
+    /// Takes an already-created tap: creation is `makeEventTap`, and the split
+    /// is the whole of STC-315. There is no failure path left in here.
+    private func runEventTap(_ tap: CFMachPort) {
         let t = Thread { [weak self] in
             guard let self else { return }
-            guard let tap = CGEvent.tapCreate(
-                tap: .cgSessionEventTap, place: .headInsertEventTap,
-                options: .listenOnly, eventsOfInterest: mask,
-                callback: callback,
-                userInfo: Unmanaged.passUnretained(self).toOpaque())
-            else {
-                IO.send("warning", ["code": "event-tap-unavailable",
-                                    "detail": "CGEvent.tapCreate returned nil — Input Monitoring not granted; recording video only"])
-                return
-            }
             self.tap = tap
             let src = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
             self.tapSource = src
@@ -865,6 +919,9 @@ enum CaptureError: Error, CustomStringConvertible {
     case frameStatusMismatch(actual: Int)
     /// STC-247: `start` named a display SCK did not list.
     case displayNotFound(requested: CGDirectDisplayID, available: [CGDirectDisplayID])
+    /// STC-315: `CGEvent.tapCreate` returned nil, so this take could carry no
+    /// cursor track. Refusing is the policy, not a fallback — see `begin()`.
+    case eventTapUnavailable
 
     var description: String {
         switch self {
@@ -880,6 +937,10 @@ enum CaptureError: Error, CustomStringConvertible {
         case .frameStatusMismatch(let actual):
             return "SCFrameStatus.complete is \(actual), not \(SCFrameStatusCompleteRaw) — "
                  + "CaptureDecisions.swift must be updated or every frame will be discarded"
+        case .eventTapUnavailable:
+            return "cursor input could not be recorded (CGEvent.tapCreate returned nil) — "
+                 + "Input Monitoring is the usual cause. The cursor is never only in the "
+                 + "video, so a take with no cursor track is not started at all."
         }
     }
     var code: String {
@@ -891,6 +952,7 @@ enum CaptureError: Error, CustomStringConvertible {
         case .startTimedOut: return "start-timeout"
         case .frameStatusMismatch: return "frame-status-mismatch"
         case .displayNotFound: return "display-not-found"
+        case .eventTapUnavailable: return "event-tap-unavailable"
         }
     }
 }

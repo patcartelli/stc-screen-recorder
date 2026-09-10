@@ -18,7 +18,7 @@ const REQ = {
   takeName: "2026-09-09_14-22-05",
   takeDir: "/Users/x/Desktop/stc/2026-09-09_14-22-05",
   exportExists: true,
-  destination: "/Users/x/site/public/lab/network",
+  destination: "/Users/x/site/public/lab/videos",
   slug: "network",
 };
 
@@ -28,7 +28,7 @@ describe("planPublish", () => {
     expect(plan.kind).toBe("ready");
     if (plan.kind !== "ready") throw new Error("unreachable");
     expect(plan.name).toBe("network.mp4");
-    expect(plan.to).toBe("/Users/x/site/public/lab/network/network.mp4");
+    expect(plan.to).toBe("/Users/x/site/public/lab/videos/network.mp4");
     // The SOURCE still carries the take's timestamp — that is what makes the
     // export traceable to a recording. Only the published copy is stable.
     expect(plan.from).toContain("export-2026-09-09_14-22-05.mp4");
@@ -78,9 +78,9 @@ describe("planPublish", () => {
   });
 
   test("joins a destination that already ends in a separator without doubling it", () => {
-    const plan = planPublish({ ...REQ, destination: "/Users/x/site/public/lab/network/" });
+    const plan = planPublish({ ...REQ, destination: "/Users/x/site/public/lab/videos/" });
     if (plan.kind !== "ready") throw new Error("unreachable");
-    expect(plan.to).toBe("/Users/x/site/public/lab/network/network.mp4");
+    expect(plan.to).toBe("/Users/x/site/public/lab/videos/network.mp4");
     expect(plan.to).not.toContain("//");
   });
 });
@@ -118,11 +118,32 @@ describe("slugs", () => {
 describe("the embed snippet", () => {
   test("substitutes what it knows", () => {
     const out = embedSnippet(DEFAULT_EMBED_TEMPLATE,
-      { src: "/lab/network/network.mp4", slug: "network", width: 1920, height: 1080 });
-    expect(out).toContain('src="/lab/network/network.mp4"');
-    expect(out).toContain('width="1920"');
-    expect(out).toContain('height="1080"');
-    expect(out).not.toContain("{");
+      { src: "/lab/videos/network.mp4", slug: "network", width: 2464, height: 1386 });
+    expect(out).toContain("src: '/lab/videos/network.mp4'");
+    expect(out).toContain("width: 2464");
+    expect(out).toContain("height: 1386");
+    expect(out).toContain("network: {");
+    expect(out).toContain("published: true");
+  });
+
+  /**
+   * The default template is the site's DATA ENTRY, not an HTML tag, and the
+   * blanks only a person can fill stay visibly blank (STC-313).
+   *
+   * `label` and `caption` are prose about what the viewer is looking at. A
+   * template that invented them would paste plausible-looking wrong copy onto
+   * a portfolio page, which is the same failure as `width="0"` one layer up:
+   * a wrong answer wearing a right answer's clothes.
+   */
+  test("the default template leaves the prose blank rather than inventing it", () => {
+    const out = embedSnippet(DEFAULT_EMBED_TEMPLATE,
+      { src: "/lab/videos/network.mp4", slug: "network", width: 2464, height: 1386 });
+    expect(out).toContain("{label}");
+    expect(out).toContain("{caption}");
+    expect(out).toContain("{poster}");
+    // Not an HTML tag: pasting one into the page would be a second way to put
+    // a video there, bypassing the site's own check that the file exists.
+    expect(out).not.toContain("<video");
   });
 
   /**
@@ -137,8 +158,8 @@ describe("the embed snippet", () => {
     const out = embedSnippet(DEFAULT_EMBED_TEMPLATE, { src: "/x.mp4", slug: "x" });
     expect(out).toContain("{width}");
     expect(out).toContain("{height}");
-    expect(out).not.toContain('width="0"');
-    expect(out).toContain('src="/x.mp4"');
+    expect(out).not.toContain("width: 0");
+    expect(out).toContain("src: '/x.mp4'");
   });
 
   test("leaves a token it does not know alone", () => {
@@ -146,9 +167,31 @@ describe("the embed snippet", () => {
                         { src: "/x.mp4", slug: "x" })).toContain("{poster}");
   });
 
+  /**
+   * Checked against the real site (STC-313), which is how the old answer was
+   * found to be wrong.
+   *
+   * `publicSrc` used to nest the slug under itself — `/lab/network/network.mp4`
+   * — which needed a `public/lab/network/` directory on a site where
+   * `/lab/network` is a live SSR route, and named a path the copy never wrote.
+   * STC-242's runbook predicted exactly this symptom: a snippet whose `src`
+   * 404s while the file sits in the folder the user chose.
+   */
   test("the public src is built from the slug the file was published under", () => {
-    expect(publicSrc("network")).toBe("/lab/network/network.mp4");
-    expect(publicSrc("network", "/videos/")).toBe("/videos/network/network.mp4");
+    expect(publicSrc("network")).toBe("/lab/videos/network.mp4");
+    expect(publicSrc("network", "/lab/videos/")).toBe("/lab/videos/network.mp4");
+    expect(publicSrc("network", "/videos")).toBe("/videos/network.mp4");
+  });
+
+  /**
+   * The control. Without it the assertion above is satisfied by any function
+   * that happens to return that string, and the defect it replaced — the slug
+   * appearing twice — would read as fixed by coincidence.
+   */
+  test("the slug appears exactly once in the published path", () => {
+    const src = publicSrc("network");
+    expect(src.split("network").length - 1).toBe(1);
+    expect(src).not.toContain("/network/network");
   });
 });
 

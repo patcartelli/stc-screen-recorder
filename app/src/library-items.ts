@@ -12,6 +12,99 @@
  * beside `overlay-session.ts`, `thumbnail.ts` beside `thumbnail-window.ts`,
  * `still-decorate.ts` beside `still-render.ts`: the decisions live where they
  * can be tested with no filesystem, and the I/O lives next door.
+ *
+ * This is STC-345, the fourth and last study in STC-338's series (scrubber →
+ * selection overlay handles → floating thumbnail motion → take library).
+ * STC-294 already built and tested the library — one scan, a grid, delete
+ * with no orphans — so this study's job is the same as the second and third:
+ * write the vocabulary down, and do an adversarial pass over logic that
+ * shipped believing it correct. Rule 9 is what that pass found.
+ *
+ * ════════════════════════════════════════════════════════════════════════
+ * THE RULES
+ * ════════════════════════════════════════════════════════════════════════
+ *
+ * **1. No view branches on kind — that is the interface, not a convention
+ * kept by discipline.** The badge is TEXT this module wrote, the summary is a
+ * STRING it composed, and the actions are a LIST it chose; a view renders
+ * what it is handed and dispatches by action id. When a kind needs something
+ * the interface cannot express, the instruction is to WIDEN `LibraryItem`
+ * deliberately, never to special-case it at the call site. `library-view.ts`
+ * may not mention `kind` at all, and `library-seam.test.ts` greps for it.
+ *
+ * **2. A thumbnail's SOURCE is not its KIND, and the two must not share a
+ * name.** `LibraryThumbnail`'s discriminant is `source` on purpose — a view
+ * legitimately switches on where a picture comes from (cached file, render
+ * on demand, none), and if that field were also called `kind` no reader, and
+ * no grep, could tell the legitimate branch from the one rule 1 forbids.
+ *
+ * **3. One scan classifies every directory; nothing gets a second opinion.**
+ * `shot.json` present is a still, `anchors.json` present is a recording,
+ * neither is reported invalid — never thrown, never silently dropped. A take
+ * that silently disappears from the list is indistinguishable from one that
+ * was deleted, and a second scanner would be a second answer to "what is a
+ * take", which the ticket's one-index constraint forbids outright.
+ *
+ * **4. The directory name is identity AND the sort key; a label is neither.**
+ * Renaming a directory would scramble chronological order, break an open
+ * preview and invalidate a path already handed out for an export — so a
+ * label lives beside the take (`take.json`) and never touches the name a
+ * take is found by. Losing a label costs nothing but itself: a corrupt
+ * `take.json` degrades to "no label", never to an invalid take.
+ *
+ * **5. A cached thumbnail lives INSIDE the take directory, so an orphan is
+ * unreachable rather than merely unlikely.** Deleting a take deletes its
+ * directory, which is what makes "no orphaned thumbnail" true by
+ * construction; a cache anywhere else would need its own eviction, which is
+ * the orphan the criterion names.
+ *
+ * **6. An unknown filter shows everything, never nothing.** A stale stored
+ * preference — a filter id from a version that no longer exists — must not
+ * be how a library reads as empty. `applyFilter` falls back to "all" for
+ * anything it does not recognise, silently and without complaint.
+ *
+ * **7. Laziness must not be load-bearing.** 500 tiles cannot each read an
+ * IPC round trip and render a picture before the first frame, so a tile
+ * paints only once it is scrolled into view — except the first screenful,
+ * painted outright with no timer and no geometry sampled, because a laziness
+ * mechanism that can silently fail to fire (a missing `IntersectionObserver`
+ * under a test runner) must default to correct pictures rather than to
+ * empty boxes forever.
+ *
+ * **8. A version list this scanner reads must stay in step with the
+ * transform's, and neither file may assume the other.** `SUPPORTED_ANCHORS_
+ * VERSIONS` drifted from `transform/src/session.ts` once already — the
+ * transform widened to accept a new anchors version and the library did not,
+ * so a brand-new recording would have been UNSUPPORTED in the one place a
+ * person goes to find it while playing back perfectly everywhere else.
+ * `app/test/take-list.test.ts` pins the two lists together now.
+ *
+ * **9. A destination this scanner is about to CREATE must be claimed before
+ * anything async, not merely computed from a snapshot.** Found reviewing
+ * this module for the study: `still:duplicate` read the directory listing,
+ * derived a fresh timestamped name, and `mkdir`'d it — three steps with two
+ * gaps, and `mkdir(..., {recursive:true})` does not throw when the directory
+ * already exists. Two duplicates racing (a double-click, or two tiles
+ * duplicated inside the same second) could compute the SAME destination and
+ * both copy into it, interleaving two unrelated shots' files with nothing
+ * to say so — the result still parses as some shot. The same shape of defect
+ * as the scrubber's rubber-band sign bug, the selection overlay's resize
+ * floor and the thumbnail's discard race, one study each, and the same fix
+ * this repo has now reached for three times: claim the name in-process
+ * before the first `await`, release it in a `finally`. `duplicateTake` in
+ * `takes.ts` is where it lives now; `app/test/takes.test.ts` proves two
+ * concurrent duplicates — of the same take, and of two different ones —
+ * never share a destination.
+ *
+ * **10. This module owns PRESENTATION and must not read a raw, I/O-shaped
+ * document.** A second, byte-for-byte copy of `library.ts`'s `cameraSummary`
+ * sat here, unreachable, taking a raw `anchors.json` blob as its input — the
+ * exact thing this file's own header already forbids ("library.ts does the
+ * scanning and imports node; this file must not"). Nothing was wrong with
+ * the live behaviour, because nothing ever called the copy; the risk was a
+ * bug fixed in the real one tomorrow with no reason for anyone to know a
+ * second existed. Deleted; `library-seam.test.ts` now asserts `cameraSummary`
+ * lives in exactly one file.
  */
 
 import type { DecorationMode } from "@transform/shot.js";
@@ -177,26 +270,6 @@ export interface StillInfo {
   /** Whether a decorated thumbnail is already cached beside the document. */
   cached: boolean;
 }
-
-/**
- * Undefined when no camera was asked for; otherwise what it did.
- *
- * The helper always writes an `anchors.camera` block — `present: false` when
- * there is no camera — so "no block at all" and "a camera that produced
- * nothing" are different states and must not collapse into one.
- */
-function cameraSummary(anchors: any): TakeInfo["camera"] {
-  const c = anchors?.camera;
-  if (!c || typeof c !== "object") return undefined;
-  const gapNs = Number(c.firstFramePtsNs ?? 0) - Number(anchors?.capture?.firstFrameNs ?? 0);
-  return {
-    present: c.present === true,
-    device: typeof c.device === "string" ? c.device : undefined,
-    pipStartsAfterMs: c.present === true ? Math.max(0, Math.round(gapNs / 1e6)) : 0,
-  };
-}
-
-
 
 const fmtBytes = (n: number): string => {
   if (n >= 1e9) return `${(n / 1e9).toFixed(1)} GB`;

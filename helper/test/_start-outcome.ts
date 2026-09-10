@@ -41,11 +41,20 @@ export type StartRefusal =
    * permissions, and the honest no-grant signal is `no-displays` instead.
    */
   | { kind: "display-busy" }
+  /**
+   * STC-315: `CGEvent.tapCreate` returned nil, so the helper refused to make a
+   * take with no cursor track. A SECOND grant — Input Monitoring — and it is
+   * emphatically not the same one as `no-displays`: a machine can hold Screen
+   * Recording and still land here, which before this ticket recorded a
+   * cursorless take instead of saying anything a test could read.
+   */
+  | { kind: "no-input-monitoring" }
   /** Something else. Say so; do not reach for the familiar answer. */
   | { kind: "unclassified" };
 
 export function classifyStartRefusal(started: StartOutcome): StartRefusal {
   if (started.code === "no-displays") return { kind: "no-grant" };
+  if (started.code === "event-tap-unavailable") return { kind: "no-input-monitoring" };
   const detail = typeof started.detail === "string" ? started.detail : "";
   if (detail.includes("-3805") || detail.includes("connection being interrupted")) {
     return { kind: "display-busy" };
@@ -74,13 +83,39 @@ export function explainFailedStart(started: StartOutcome, what: string): Error {
         "unverified. Grant it to the process that runs the tests, or run from a " +
         `bundle that holds it (tools/test-host). ${said}`,
       );
+    case "no-input-monitoring":
+      // SKIP-GRANT, like the Screen Recording case: the runner and any
+      // log-scraping key on that string, and this IS a missing grant — just
+      // not the one everybody reaches for. Naming WHICH one is the whole
+      // reason this module exists.
+      return new Error(
+        `SKIP-GRANT: this environment has no Input Monitoring grant, so ${what} is ` +
+        "unverified. Since STC-315 the helper refuses to start a take it cannot record " +
+        "the cursor for, so this blocks every capture test, not only cursor ones. Grant " +
+        "Input Monitoring to the process that runs the tests (System Settings › Privacy " +
+        "& Security › Input Monitoring) — for `npm run test:capture` that is the TERMINAL, " +
+        "the same identity Screen Recording is keyed to, because the helper is " +
+        `spawned directly and inherits the launching process's grants. ${said}`,
+      );
     case "display-busy":
       return new Error(
         `DISPLAY-BUSY: another SCStream of this project's is holding the display, so ${what} ` +
         "could not be exercised. This is NOT a grant problem — check for a leftover app " +
         "before changing anything in System Settings:\n" +
-        "    ps -Ao pid,command | grep -i '[s]tc-screen-recorder\\|[E]lectron'\n" +
-        `Kill it and run again. A genuinely missing grant reports "no-displays" instead. ${said}`,
+        "    ps -Ao pid,command | grep '[s]tc-screen-recorder'\n" +
+        // Scoped to THIS project's path and nothing else. The pattern used to
+        // carry `\\|[E]lectron`, which matches every other Electron app's
+        // crashpad helper — on 2026-09-09 it returned nine lines of which five
+        // were Linear, Discord, Claude and Wispr Flow, and the two that
+        // mattered were in the middle. Both of ours (the app and the helper it
+        // spawned) have the repo path in argv, so the alternation bought
+        // nothing and cost the signal.
+        "Since STC-292 the app is MENU-BAR-FIRST: closing the window does not quit it, and the " +
+        "Dock icon goes with the last window — so it can hold the display while being invisible " +
+        "in both places you would look. Quit it from the MENU BAR rather than killing it, " +
+        "unless you know it is idle: `ps` cannot tell you whether a take is live, and killing " +
+        "one mid-recording loses it. " +
+        `A genuinely missing grant reports "no-displays" instead. ${said}`,
       );
     default:
       return new Error(

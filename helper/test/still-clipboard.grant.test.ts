@@ -4,6 +4,7 @@ import { mkdtempSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Readable } from "node:stream";
+import { runSwiftHarness } from "./_swift-harness.js";
 
 /**
  * STC-293: the pasteboard half of `export-still`.
@@ -24,10 +25,21 @@ import type { Readable } from "node:stream";
  * That the pasteboard ends up holding all three representations the ticket
  * asks for — "put both PNG and TIFF representations on the pasteboard so
  * Slack, Figma and Keynote each take the one they handle best", plus the file
- * URL — read back from the SYSTEM pasteboard with `osascript`, not from the
- * helper's own reply. A helper that reported three types and wrote none would
- * pass every reply-shaped assertion, and that is the failure a user would
- * experience as ⌘V doing nothing.
+ * URL — read back from the SYSTEM pasteboard, not from the helper's own reply.
+ * A helper that reported three types and wrote none would pass every
+ * reply-shaped assertion, and that is the failure a user would experience as
+ * ⌘V doing nothing.
+ *
+ * ## The instrument was wrong before it was this one
+ *
+ * That read used to go through `osascript -e "clipboard info"` and a regex over
+ * the `«class XXXX»` form. AppleScript names its well-known types in prose
+ * instead — "TIFF picture" — so the regex dropped them, and on 2026-09-09 this
+ * file reported a pasteboard as lacking TIFF while `TIFF picture, 3878` sat in
+ * the same line it had just parsed. Nothing was wrong with the product; the
+ * measurement could not express the answer. It reads real UTIs now, through
+ * `pasteboard-types/main.swift`, which is the vocabulary StillEncode.swift
+ * writes in.
  *
  * It cannot prove what Slack or Keynote then choose. That is the runbook.
  */
@@ -92,12 +104,30 @@ function rgba(w: number, h: number): Buffer {
   return b;
 }
 
-/** What the SYSTEM pasteboard says it holds, independent of the helper. */
-function pasteboardTypes(): string[] {
-  const out = execFileSync("osascript", ["-e", "clipboard info"], { encoding: "utf8" });
-  // "«class PNGf», 214, «class TIFF», 1044, ..." — the class names are what
-  // matter, the byte counts are not asserted on.
-  return [...out.matchAll(/«class ([^»]+)»/g)].map((m) => m[1]!.trim());
+/**
+ * What the SYSTEM pasteboard says it holds, as real UTIs, independent of the
+ * helper.
+ *
+ * Compiled and run through the shared harness rather than hand-rolled: it
+ * already bounds the compile and the run with a reason, and already resolves
+ * the SDK and target the way `helper/build.sh` does. A second copy of that
+ * invocation here is the "one value, two copies" drift this repo keeps paying
+ * for.
+ *
+ * The cost is one compile per call — three across this file, of a three-line
+ * source. Worst case per call is the harness's own 45 s compile plus 45 s run
+ * bounds, and no test below calls this more than once, so 90 s clears the grant
+ * config's 120 s `testTimeout` with room. Calling it twice in one test would
+ * not, which is why each test reads once into a local.
+ */
+async function pasteboardTypes(): Promise<string[]> {
+  const out = await runSwiftHarness({
+    label: "pbtypes",
+    sources: ["helper/test/pasteboard-types/main.swift"],
+  });
+  // One UTI per line. Unlike the regex this replaces, the parse cannot drop a
+  // type it does not recognise — every line survives.
+  return out.split("\n").map((l) => l.trim()).filter(Boolean);
 }
 
 describe("export-still puts a still on the pasteboard (STC-293)", () => {
@@ -121,14 +151,17 @@ describe("export-still puts a still on the pasteboard (STC-293)", () => {
     // path writes before it copies.
     expect(existsSync(file)).toBe(true);
 
-    // ...checked against what the system pasteboard actually holds.
-    const types = pasteboardTypes();
-    expect(types, `pasteboard held: ${types.join(", ")}`).toContain("PNGf");
-    expect(types, `pasteboard held: ${types.join(", ")}`).toContain("TIFF");
-    // `furl` is the file URL. Without it a drag into Finder and a Slack upload
-    // get nothing.
-    expect(types, `pasteboard held: ${types.join(", ")}`).toContain("furl");
-  });
+    // ...checked against what the system pasteboard actually holds. These are
+    // the UTIs StillEncode.swift's `.png`, `.tiff` and `.fileURL` resolve to,
+    // so the assertion and the code name the same three things.
+    const types = await pasteboardTypes();
+    const held = `pasteboard held: ${types.join(", ")}`;
+    expect(types, held).toContain("public.png");
+    expect(types, held).toContain("public.tiff");
+    // The file URL. Without it a drag into Finder and a Slack upload get
+    // nothing.
+    expect(types, held).toContain("public.file-url");
+  }, 120_000);
 
   test("a clipboard-only copy still leaves a real file for the URL", async () => {
     const h = spawnHelper();
@@ -144,8 +177,9 @@ describe("export-still puts a still on the pasteboard (STC-293)", () => {
     });
     expect(r.ev, JSON.stringify(r)).toBe("exported-still");
     expect(r.clipboard).toEqual(["png", "tiff"]);
-    expect(pasteboardTypes()).toContain("PNGf");
-  });
+    const types = await pasteboardTypes();
+    expect(types, `pasteboard held: ${types.join(", ")}`).toContain("public.png");
+  }, 120_000);
 
   test("the pasteboard is replaced, not appended to", async () => {
     // Two copies in a row must not leave the first one's representations
@@ -162,6 +196,27 @@ describe("export-still puts a still on the pasteboard (STC-293)", () => {
       cmd: "export-still", rgba: src, width: 16, height: 8,
       alpha: true, format: "png", clipboard: true,
     });
-    expect(pasteboardTypes()).not.toContain("utf8");
-  });
+    // The copy landed...
+    const types = await pasteboardTypes();
+    expect(types, `pasteboard held: ${types.join(", ")}`).toContain("public.png");
+
+    // ...and the sentinel is GONE. Asked as content rather than as a type on
+    // purpose: naming the UTI would mean guessing which spelling AppleScript's
+    // `set the clipboard to` writes, and a guess that is wrong makes
+    // `.not.toContain(...)` pass for a pasteboard the sentinel is still on —
+    // vacuous in exactly the direction this test exists to rule out. The read
+    // above already proved the sentinel WAS readable this way, so its
+    // disappearance here is a real difference rather than an absence that was
+    // always true.
+    //
+    // With no text on the pasteboard `the clipboard as text` errors rather
+    // than returning empty, and that throw IS the passing case.
+    let after: string | undefined;
+    try {
+      after = execFileSync("osascript", ["-e", "the clipboard as text"],
+                           { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+    } catch { after = undefined; }
+    expect(after, "the sentinel text survived a copy — the pasteboard was appended to")
+      .not.toBe("sentinel");
+  }, 120_000);
 });

@@ -1,4 +1,7 @@
-import type { Pip, Project, Trim } from "./types.js";
+import type { Pip, Project, Trim, Zoom } from "./types.js";
+import { DEFAULT_ZOOM_PRESET, ZOOM_PRESET_NAMES } from "./zoom.js";
+import { DEFAULT_TEXT_PT } from "./legibility.js";
+import { isProjectVersion } from "./project-version.js";
 import { TRANSFORM_VERSION } from "./transform-version.js";
 
 const NS_PER_S = 1_000_000_000;
@@ -76,6 +79,11 @@ export function defaultProject(
     output: { fps: 60, width, height },
     cursor: { style: "default", scale: 1 },
     transform: { version: TRANSFORM_VERSION },
+    // In the DEFAULT and not only in `parseProject`, so every path out of this
+    // file returns the same shape — `parseProject(null)` takes an early return
+    // that a field added in the parse body would never reach.
+    zoom: { ...DEFAULT_ZOOM },
+    textPt: DEFAULT_TEXT_PT,
   };
   // A recorded camera track is part of the take, so a take that has one shows
   // its PiP without needing an edit document to say so.
@@ -105,7 +113,7 @@ export function parseProject(
   // neither; v2 predates the transform stamp. Refusing an older version here
   // would discard every project written before the change and silently
   // replace it with a default.
-  if (doc.version !== 1 && doc.version !== 2 && doc.version !== 3) return fallback;
+  if (!isProjectVersion(doc.version)) return fallback;
 
   const outW = Number.isInteger(doc.output?.width) ? doc.output.width : width;
   const outH = Number.isInteger(doc.output?.height) ? doc.output.height : height;
@@ -131,12 +139,78 @@ export function parseProject(
   if (t && Number.isInteger(t.startNs) && Number.isInteger(t.endNs) && t.startNs >= 0 && t.endNs >= 0) {
     project.trim = clampTrim(t.startNs, t.endNs, durationNs, 60);
   }
+  project.zoom = cleanZoom(doc.zoom);
+  // A stored size out of range is a document with no opinion, not a crash —
+  // the rule every field in this parser follows.
+  project.textPt = typeof doc.textPt === "number" && doc.textPt > 0 && doc.textPt <= 144
+    ? doc.textPt : DEFAULT_TEXT_PT;
   return project;
 }
 
+/**
+ * What a take does when nobody has said otherwise: zoom ON, full intensity,
+ * standard easing.
+ *
+ * ON is safe TODAY and only today — stage 2 is stubbed, so the crop is the
+ * whole frame and `composite` keeps the same five-argument `drawImage`, which
+ * is why #108 could ship the derivation without moving a pixel. **STC-326 must
+ * revisit this**: the moment the crop has a target, this default decides
+ * whether every existing take suddenly zooms, and that is a product decision
+ * rather than a parser's.
+ */
+export const DEFAULT_ZOOM: Zoom = {
+  enabled: true, intensity: 1, preset: DEFAULT_ZOOM_PRESET,
+};
+
+/**
+ * Each field on its own terms, the rule every parser in this repo follows.
+ *
+ * A preset that is no longer one of `ZOOM_PRESET_NAMES` falls back rather than
+ * being repaired: a document naming an easing this build does not have is a
+ * document from a different build, and guessing which of the three it meant
+ * would render something nobody chose.
+ */
+function cleanZoom(v: unknown): Zoom {
+  const d = (v && typeof v === "object" && !Array.isArray(v) ? v : {}) as Record<string, unknown>;
+  const intensity = typeof d.intensity === "number" && d.intensity >= 0 && d.intensity <= 1
+    ? d.intensity : DEFAULT_ZOOM.intensity;
+  const preset = ZOOM_PRESET_NAMES.includes(d.preset as never)
+    ? d.preset as Zoom["preset"] : DEFAULT_ZOOM.preset;
+  return {
+    // `typeof === "boolean"`, and NOT `=== true`: the latter turns a nonsense
+    // `enabled: "yes"` into FALSE, which is a third answer — neither what the
+    // document said nor the default every other field here falls back to, and
+    // the only one of the three that silently disables a feature.
+    enabled: typeof d.enabled === "boolean" ? d.enabled : DEFAULT_ZOOM.enabled,
+    intensity, preset,
+  };
+}
+
+/**
+ * The MINIMUM version that can express the document — the shot-1/shot-2 rule
+ * (STC-295).
+ *
+ * A project whose zoom is exactly the default says nothing project-4 can say,
+ * so it stays v3 and a build without project-4 still reads it. Change any zoom
+ * field and it becomes v4; change it back and it returns.
+ */
+function isDefaultZoom(z: Zoom): boolean {
+  return z.enabled === DEFAULT_ZOOM.enabled && z.intensity === DEFAULT_ZOOM.intensity
+    && z.preset === DEFAULT_ZOOM.preset;
+}
+
+function versionFor(project: Project): 3 | 4 | 5 {
+  // Highest first: a document needing v5 needs it whatever its zoom says.
+  if (project.textPt !== undefined && project.textPt !== DEFAULT_TEXT_PT) return 5;
+  const z = project.zoom;
+  if (!z) return 3;
+  return isDefaultZoom(z) ? 3 : 4;
+}
+
 export function projectForWrite(project: Project, durationNs: number): Project {
+  const version = versionFor(project);
   const out: Project = {
-    version: 3,
+    version,
     output: project.output,
     cursor: project.cursor,
     // Re-stamped, not carried: what is written is what the CURRENT transform
@@ -148,5 +222,12 @@ export function projectForWrite(project: Project, durationNs: number): Project {
   // added since — so a take with a PiP would lose it on the next save.
   if (project.pip) out.pip = project.pip;
   if (!isFullTake(project, durationNs) && project.trim) out.trim = project.trim;
+  // Only when it says something v3 cannot: writing the default block into
+  // every document would push every take to v4 for a setting nobody touched.
+  // v5 is a superset of v4: a document that needs v5 for its text size must
+  // still carry a non-default zoom if it has one, or the setting is silently
+  // dropped by the very write that promoted the version.
+  if (version >= 4 && project.zoom && !isDefaultZoom(project.zoom)) out.zoom = project.zoom;
+  if (version === 5) out.textPt = project.textPt;
   return out;
 }
