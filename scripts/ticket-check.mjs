@@ -38,6 +38,19 @@
  * the gateway rejects the CONNECT, and GitHub appears to answer 403 — which
  * reads as "you cannot see this repository" and is nothing of the kind. It is
  * a no-op on a machine with no proxy set, which is every Mac this runs on.
+ * Running the file directly (`node scripts/ticket-check.mjs STC-325`) skips
+ * that, so the script checks for the combination itself rather than leaving
+ * the explanation in a comment nobody reads at 403 time.
+ *
+ * ## The one rule every change here must keep
+ *
+ * **Every failure mode must land on exit 3, never exit 0.** The only reason to
+ * run this is to believe the all-clear, so "I could not tell" and "there is
+ * nothing" must never be the same answer. That is why the page walk THROWS
+ * when it hits its ceiling instead of returning what it has: a truncated
+ * listing is indistinguishable from a clean one, and it truncates the
+ * alphabetically-last `claude/*` branches first — exactly where parallel
+ * agent work lives.
  */
 import { execFileSync } from "node:child_process";
 
@@ -56,11 +69,29 @@ if (!raw || !TICKET.test(raw)) {
 }
 const ticket = raw.toUpperCase();
 
+/**
+ * `gh` present AND logged in — the second half is not pedantry.
+ *
+ * Testing only that the binary exists (`gh --version`) means an installed but
+ * unauthenticated `gh` sends every query down a path that throws, so the check
+ * exits 3 forever while the REST fallback sitting in this same file — which
+ * needs no token, the repo being public — is never tried. That is this
+ * script's own headline bug one layer out: it was written because a check
+ * that could not run looked like a check that had found something.
+ *
+ * `gh auth status` covers both cases at once: a missing binary throws ENOENT,
+ * a logged-out one exits non-zero. Memoised because it is asked three times
+ * and each ask is a process.
+ */
+let ghState;
 function haveGh() {
-  try {
-    execFileSync("gh", ["--version"], { stdio: "ignore" });
-    return true;
-  } catch { return false; }
+  if (ghState === undefined) {
+    try {
+      execFileSync("gh", ["auth", "status"], { stdio: "ignore" });
+      ghState = true;
+    } catch { ghState = false; }
+  }
+  return ghState;
 }
 
 async function json(path) {
@@ -74,31 +105,86 @@ async function json(path) {
       "user-agent": `${REPO} ticket-check`,
     },
   });
-  if (!res.ok) throw new Error(`GitHub said ${res.status} for ${path}`);
+  if (!res.ok) throw new Error(`GitHub said ${res.status} for ${path}${res.status === 403 ? FORBIDDEN_HINT : ""}`);
   return res.json();
 }
 
-const gh = (...args) => JSON.parse(execFileSync("gh", args, { encoding: "utf8" }));
+/**
+ * A 403 here has two known causes and NEITHER is "you cannot see this repo",
+ * which is what it reads as. Both have cost a session already, so the message
+ * names them rather than leaving it to the comment above.
+ */
+const FORBIDDEN_HINT =
+  "\n  A 403 here is usually not a permission problem. Two known causes:\n" +
+  "    - a proxied session with NODE_USE_ENV_PROXY unset (use `npm run ticket --`,\n" +
+  "      which sets it; running this file directly does not)\n" +
+  "    - a missing User-Agent header (this script sends one)";
+
+// maxBuffer defaults to 1 MB and the 100-commit payload for this repo already
+// measures ~670 KB. Left alone, ordinary growth turns the `gh` path into a
+// permanent ENOBUFS — on exactly the machines the `gh` path exists for.
+const gh = (...args) =>
+  JSON.parse(execFileSync("gh", args, { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 }));
+
+const PER_PAGE = 100;
+/** 1000 refs. A repo past this has a different problem, and we say so rather than guess. */
+const MAX_PAGES = 10;
+
+/**
+ * One page of a repo endpoint, over whichever transport is available.
+ *
+ * `gh api` answers with the same JSON as the REST route, so both paths share
+ * one shape and one field mapping. The earlier version used `gh pr list
+ * --json headRefName` against REST's `head.ref`, which is two spellings of one
+ * fact and the drift this repo keeps paying for.
+ */
+async function page(path, n) {
+  const q = `${path}${path.includes("?") ? "&" : "?"}per_page=${PER_PAGE}&page=${n}`;
+  return haveGh() ? gh("api", `repos/${REPO}${q}`) : await json(q);
+}
+
+/**
+ * Every page, or an error — never a silent prefix.
+ *
+ * The unpaged version read 100 and stopped, which for branches is a false
+ * ALL-CLEAR: this repo already carries ~45 remote branches and the ones that
+ * truncate first are the alphabetically-last `claude/*` session branches, i.e.
+ * the parallel work this whole script exists to find.
+ */
+async function listAll(path) {
+  const out = [];
+  for (let n = 1; n <= MAX_PAGES; n++) {
+    const batch = await page(path, n);
+    out.push(...batch);
+    if (batch.length < PER_PAGE) return out;
+  }
+  throw new Error(
+    `${path} has more than ${MAX_PAGES * PER_PAGE} entries; this check would be reading a ` +
+    `prefix of them and a prefix cannot tell you nothing is there`);
+}
 
 /**
  * The ticket named as a WHOLE token.
  *
  * `STC-32` must not match `STC-325`, which a plain `includes` would do — and
- * would do silently, reporting a collision that is not one. A boundary either
- * side is the whole rule.
+ * would do silently, reporting a collision that is not one.
+ *
+ * That case is settled by the TRAILING `([^0-9]|$)` alone, and the leading
+ * class must not also exclude `-`. It used to, and the cost was false
+ * NEGATIVES on the branch names this repo actually produces:
+ * `claude/start-stc-325-abc` and "pre-STC-325 refactor" both read as no work
+ * found. A false negative here is the expensive direction — it is the answer
+ * that tells you to go ahead and write it again.
  */
 function mentions(text) {
-  return new RegExp(`(^|[^A-Za-z0-9-])${ticket}([^0-9]|$)`, "i").test(text ?? "");
+  return new RegExp(`(^|[^A-Za-z0-9])${ticket}([^0-9]|$)`, "i").test(text ?? "");
 }
 
 async function openPRs() {
-  const list = haveGh()
-    ? gh("pr", "list", "--repo", REPO, "--state", "open", "--limit", "100",
-         "--json", "number,title,headRefName,url")
-    : (await json("/pulls?state=open&per_page=100")).map((p) => ({
-        number: p.number, title: p.title, headRefName: p.head?.ref, url: p.html_url,
-      }));
-  return list.filter((p) => mentions(p.title) || mentions(p.headRefName));
+  const list = await listAll("/pulls?state=open");
+  return list
+    .filter((p) => mentions(p.title) || mentions(p.head?.ref))
+    .map((p) => ({ number: p.number, title: p.title, url: p.html_url }));
 }
 
 async function mergedCommits() {
@@ -106,18 +192,15 @@ async function mergedCommits() {
   // "all of history": a ticket mentioned in a commit from months ago is
   // context, not a collision, and reporting it would train people to ignore
   // this output.
-  const list = haveGh()
-    ? gh("api", `repos/${REPO}/commits?per_page=100`)
-    : await json("/commits?per_page=100");
+  // Deliberately ONE page, unlike the others: the horizon is the feature.
+  const list = await page("/commits", 1);
   return list
     .filter((c) => mentions(c.commit?.message?.split("\n")[0]))
     .map((c) => ({ sha: c.sha.slice(0, 7), title: c.commit.message.split("\n")[0] }));
 }
 
 async function branches() {
-  const list = haveGh()
-    ? gh("api", `repos/${REPO}/branches?per_page=100`)
-    : await json("/branches?per_page=100");
+  const list = await listAll("/branches");
   return list.filter((b) => mentions(b.name)).map((b) => b.name);
 }
 
@@ -132,6 +215,19 @@ async function branches() {
  * nothing, and this repo has paid for that shape four times.
  */
 const BROKE = 3;
+
+// The header promises this rather than only describing the hazard: on the REST
+// path a proxied environment whose Node was not told to use the proxy answers
+// 403, which reads as "you cannot see this repository". Saying so BEFORE the
+// request costs nothing; saying it afterwards is what already cost a session.
+if (!haveGh()) {
+  const proxied = process.env.HTTPS_PROXY ?? process.env.https_proxy;
+  if (proxied && !process.env.NODE_USE_ENV_PROXY) {
+    console.error(
+      `NOTE: a proxy is set but NODE_USE_ENV_PROXY is not, so Node's fetch will ignore\n` +
+      `      it and GitHub will answer 403. Run \`npm run ticket -- ${ticket}\`, which sets it.`);
+  }
+}
 
 let prs, commits, refs;
 try {

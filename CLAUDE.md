@@ -98,6 +98,7 @@ events → deterministic transform → CFR MP4 with cursor overlay.
 | `harness/` | vite-served browser harness hosting both sinks |
 | `scripts/gate.mjs` | increment-0 determinism gate (Playwright + real Chrome) |
 | `scripts/ticket-check.mjs` | `npm run ticket -- STC-NNN` — open PRs, merged commits and branches naming a ticket. Run it BEFORE starting one; two agents built STC-325 in parallel because nobody did |
+| `transform/test/ticket-check.test.ts` | drives that script with a stub `gh` on PATH, the way `merge-when-green.test.ts` does. Every test is a way the check could answer "nothing found" while something was there — CI has no `gh`, so without the stub the whole `gh` branch is ungated |
 | `scripts/gate-skip-rate.mjs` | how often each gate actually RAN on CI — run it before trusting a green tick |
 | `docs/STC-259-GATE-SKIP-RATE.md` | the 100%-skip finding, its evidence, and what to do |
 | `tools/test-host/` | signed bundle that spawns the helper for capture tests; `--probe` reports TCC state. **CFBundleIdentifier is load-bearing** — the grant is keyed to it |
@@ -164,6 +165,15 @@ nothing found, **1** something found, **3 the check could not run** — three an
 not one, because an exception falling through Node's default exit is the same
 code as a real finding, and a broken check that reads as a finding is the same
 family as a pass that means nothing.
+
+**Every failure mode lands on 3, and truncation is one of them.** The listings
+are paged and the walk THROWS when it hits its ceiling rather than returning
+what it has: a prefix is indistinguishable from a clean answer, and the entries
+that truncate first are the alphabetically-last `claude/*` session branches —
+exactly the parallel work being looked for. Same reason `gh` is tested with
+`auth status` and not `--version`: an installed but logged-out `gh` used to
+send every query down a path that throws, so the REST fallback in the same file
+was never tried and the check was permanently 3 on a machine it works fine on.
 
 ### Workflow — master is protected
 
