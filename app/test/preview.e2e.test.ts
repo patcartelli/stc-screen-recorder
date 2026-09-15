@@ -2,7 +2,9 @@ import { describe, test, expect, afterEach } from "vitest";
 import { type ElectronApplication } from "playwright";
 import { join } from "node:path";
 import { existsSync, readFileSync } from "node:fs";
-import { launchWithTakeInEditor, openEditorFromLibrary, inkiness } from "./_editor-fixture.js";
+import {
+  launchWithTakeInEditor, openEditorFromLibrary, inkiness, closeEditorWindow,
+} from "./_editor-fixture.js";
 
 let app: ElectronApplication | undefined;
 afterEach(async () => { await app?.close().catch(() => {}); app = undefined; });
@@ -128,9 +130,7 @@ describe("preview player in the editor window (STC-373)", () => {
     // Close the editor and re-open the same take from the library — the
     // trim must have been persisted, not just held in the closed window's
     // now-gone state.
-    const closed = editorWin.waitForEvent("close");
-    await editorWin.click("#closepreview");
-    await closed;
+    await closeEditorWindow(editorWin);
     const editorWin2 = await openEditorFromLibrary(app!, win);
     await expect.poll(() => editorWin2.textContent("#triminfo"), { timeout: 30_000 }).toMatch(/–/);
 

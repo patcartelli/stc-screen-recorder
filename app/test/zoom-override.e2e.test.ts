@@ -16,7 +16,7 @@ import { describe, test, expect, afterEach } from "vitest";
 import { type ElectronApplication } from "playwright";
 import { join } from "node:path";
 import { readFileSync, existsSync } from "node:fs";
-import { launchWithTakeInEditor } from "./_editor-fixture.js";
+import { launchWithTakeInEditor, closeEditorWindow } from "./_editor-fixture.js";
 
 let app: ElectronApplication | undefined;
 afterEach(async () => { await app?.close().catch(() => {}); app = undefined; });
@@ -250,7 +250,7 @@ describe("closing the whole window mid-edit", () => {
     await dragOnStage(win, { x: 0.1, y: 0.1 }, { x: 0.5, y: 0.5 });
     expect(await win.isVisible("#overridebox")).toBe(true);
     const before = app!.windows().length;
-    await win.click("#closepreview");
+    await closeEditorWindow(win);
     await expect.poll(() => app!.windows().length, { timeout: 10_000 }).toBeLessThan(before);
   }, 30_000);
 });

@@ -3,7 +3,9 @@ import { type ElectronApplication, type Page } from "playwright";
 import { join } from "node:path";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { makeTakeFolder } from "./_take-fixture.js";
-import { launchApp, openEditorFromLibrary, openExportDialog, inkiness } from "./_editor-fixture.js";
+import {
+  launchApp, openEditorFromLibrary, openExportDialog, inkiness, closeEditorWindow,
+} from "./_editor-fixture.js";
 
 const root = join(__dirname, "..", "..");
 let app: ElectronApplication | undefined;
@@ -237,10 +239,8 @@ describe("legibility at embed width (STC-318), inside the editor's export dialog
     // Closed with the toggle ON, which is the whole point — closing it with
     // the toggle off passes with no fix at all. `#closepreview` is outside
     // the (modal) export dialog, so the dialog has to close first.
-    const closed = editorWin.waitForEvent("close");
     await editorWin.click("#closeexport");
-    await editorWin.click("#closepreview");
-    await closed;
+    await closeEditorWindow(editorWin);
     editorWin = await openEditorFromLibrary(app, launched.win);
     await expect.poll(() => inkiness(editorWin), { timeout: 30_000 }).toBeGreaterThan(0.2);
     await openExportDialog(editorWin);

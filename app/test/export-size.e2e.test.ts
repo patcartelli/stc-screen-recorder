@@ -4,7 +4,9 @@ import { join } from "node:path";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { makeTakeFolder } from "./_take-fixture.js";
 import { exportManifestName } from "../src/share.js";
-import { launchApp, openEditorFromLibrary, openExportDialog, inkiness } from "./_editor-fixture.js";
+import {
+  launchApp, openEditorFromLibrary, openExportDialog, inkiness, closeEditorWindow,
+} from "./_editor-fixture.js";
 
 /** The committed fixture's take name — `makeTakeFolder`'s own default. */
 const TAKE_NAME = "2026-08-24_10-00-00";
@@ -126,10 +128,8 @@ describe("export size (STC-335), inside the editor's export dialog (STC-373)", (
     await win.selectOption("#outsize", "embed-1x");
     await expect.poll(() => readProject(takeDir).output.width, { timeout: 20_000 }).toBe(1232);
 
-    const closed = win.waitForEvent("close");
     await win.click("#closeexport");
-    await win.click("#closepreview");
-    await closed;
+    await closeEditorWindow(win);
     win = await openEditorFromLibrary(a, mainWin);
     await expect.poll(() => inkiness(win), { timeout: 30_000 }).toBeGreaterThan(0.2);
     await openExportDialog(win);

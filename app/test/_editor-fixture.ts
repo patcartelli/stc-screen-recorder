@@ -63,6 +63,46 @@ export async function inkiness(page: Page): Promise<number> {
   });
 }
 
+/**
+ * Click the editor's Close button and wait for the window to actually go away.
+ *
+ * `editor.ts`'s handler calls `window.close()` synchronously (`$("closepreview")
+ * .addEventListener("click", () => window.close())`), so the click destroys the
+ * very page Playwright is still doing its post-click bookkeeping on. When the
+ * window wins that race, `click()` REJECTS — "Target page, context or browser
+ * has been closed" — for a click that landed and did exactly what it was asked
+ * to do. That is how master run 418 went red on a working Close button
+ * (STC-386); the call log shows the element "visible, enabled and stable",
+ * "done scrolling", "performing click action", and then the target gone.
+ *
+ * The tolerance below is safe because it is NOT the assertion — `closed` is.
+ * Three outcomes, told apart rather than lumped together:
+ *
+ *   - the click resolves  -> still wait for the close, so a click that landed
+ *                            on a button that did nothing continues to fail;
+ *   - the click rejects and the window closes -> the race, and a pass: the
+ *                            only way to lose the page here is to have closed it;
+ *   - the click rejects and the window does NOT close -> a real failure, and
+ *                            the CLICK's own error is rethrown, because "could
+ *                            not find #closepreview" says more than a close
+ *                            that timed out waiting on a click that never was.
+ *
+ * So no error string is matched and no ordering between the rejection and the
+ * `close` event is assumed. `app/test/close-editor-window.test.ts` drives all
+ * four branches against a stub page — the race needs a real window to lose a
+ * real click at a real instant, which is the multi-way timing coincidence this
+ * repo has already paid for chasing live (STC-343's discard race).
+ */
+export async function closeEditorWindow(page: Page, timeout = 15_000): Promise<void> {
+  const closed = page.waitForEvent("close", { timeout });
+  const clickErr = await page.click("#closepreview").then(() => undefined, (e: unknown) => e);
+  if (clickErr !== undefined) {
+    await closed.catch(() => { throw clickErr; });
+    return;
+  }
+  await closed;
+}
+
 /** Open the export dialog (STC-373) — legibility, output size and share all live in it now. */
 export async function openExportDialog(page: Page): Promise<void> {
   await page.click("#openexport");
