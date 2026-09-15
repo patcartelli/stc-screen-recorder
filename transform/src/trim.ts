@@ -205,14 +205,39 @@ function isDefaultZoom(z: Zoom): boolean {
 }
 
 /**
+ * A rect's own fields, on their own terms. `undefined` is a real answer —
+ * the caller drops the whole entry, the same "one bad entry must not cost
+ * every other tuned window" rule `cleanOverrides` follows for its other
+ * fields.
+ */
+function cleanOverrideRect(r: unknown): ZoomOverride["rect"] | undefined {
+  if (!r || typeof r !== "object") return undefined;
+  const rd = r as Record<string, unknown>;
+  if (![rd.x, rd.y, rd.width, rd.height].every((n) => typeof n === "number" && Number.isFinite(n))) return undefined;
+  return { x: rd.x as number, y: rd.y as number, width: rd.width as number, height: rd.height as number };
+}
+
+/**
  * Each override's own fields, on their own terms — the same rule `cleanZoom`
- * follows. An entry missing `windowId`/`rect`, or naming a `kind` this build
+ * follows. An entry missing a required field, or naming a `kind` this build
  * does not know (a later phase's variant, read by an OLDER build than wrote
  * it), is dropped rather than crashing the whole array: one bad entry must
- * not cost every other tuned window. `easing`, if present, is validated
- * against `ZOOM_PRESET_NAMES` and dropped alone if it does not match —
- * exactly the same "a name this build does not have is a build nobody
- * chose" reasoning `zoom.preset` already follows.
+ * not cost every other tuned window.
+ *
+ * The two variants (STC-330's `geometry`, STC-331's `manual`) are cleaned on
+ * their own terms rather than sharing one code path: `easing`, on
+ * `geometry`, is OPTIONAL and validated against `ZOOM_PRESET_NAMES` (dropped
+ * alone, not the entry, if it does not match — the same "a name this build
+ * does not have is a build nobody chose" reasoning `zoom.preset` already
+ * follows); on `manual` it is REQUIRED — there is no derived window or
+ * project default for it to fall back to, so a `manual` entry naming a
+ * bogus or missing easing is dropped whole rather than silently defaulted,
+ * unlike every other field in this parser. `startNs`/`endNs` are validated
+ * like `trim`'s own (non-negative integers) but NOT ordered against each
+ * other here — `endNs <= startNs` produces a window `inWindow` never
+ * reports true for, which is a harmless no-op rather than a crash, so
+ * enforcing the order is not worth a third way for this parser to drop an
+ * otherwise well-formed entry.
  */
 function cleanOverrides(v: unknown): ZoomOverride[] {
   if (!Array.isArray(v)) return [];
@@ -220,16 +245,24 @@ function cleanOverrides(v: unknown): ZoomOverride[] {
   for (const raw of v) {
     if (!raw || typeof raw !== "object") continue;
     const d = raw as Record<string, unknown>;
-    if (d.kind !== "geometry") continue;
-    if (typeof d.windowId !== "string" || !d.windowId) continue;
-    const r = d.rect;
-    if (!r || typeof r !== "object") continue;
-    const rd = r as Record<string, unknown>;
-    if (![rd.x, rd.y, rd.width, rd.height].every((n) => typeof n === "number" && Number.isFinite(n))) continue;
-    const rect = { x: rd.x as number, y: rd.y as number, width: rd.width as number, height: rd.height as number };
-    const entry: ZoomOverride = { kind: "geometry", windowId: d.windowId, rect };
-    if (ZOOM_PRESET_NAMES.includes(d.easing as never)) entry.easing = d.easing as Zoom["preset"];
-    out.push(entry);
+    const rect = cleanOverrideRect(d.rect);
+    if (!rect) continue;
+    if (d.kind === "geometry") {
+      if (typeof d.windowId !== "string" || !d.windowId) continue;
+      const entry: ZoomOverride = { kind: "geometry", windowId: d.windowId, rect };
+      if (ZOOM_PRESET_NAMES.includes(d.easing as never)) entry.easing = d.easing as Zoom["preset"];
+      out.push(entry);
+    } else if (d.kind === "manual") {
+      if (typeof d.id !== "string" || !d.id) continue;
+      if (!Number.isInteger(d.startNs) || (d.startNs as number) < 0) continue;
+      if (!Number.isInteger(d.endNs) || (d.endNs as number) < 0) continue;
+      if (!ZOOM_PRESET_NAMES.includes(d.easing as never)) continue;
+      out.push({
+        kind: "manual", id: d.id, startNs: d.startNs as number, endNs: d.endNs as number,
+        rect, easing: d.easing as Zoom["preset"],
+      });
+    }
+    // any other kind: a later phase's variant, read by an older build — skipped.
   }
   return out;
 }

@@ -141,17 +141,22 @@ export function zoomWindows(events: readonly SessionEvent[]): ZoomWindow[] {
   return out;
 }
 
-/** Is tNs inside any window? Windows are sorted and disjoint, so this is a scan-free bisect. */
+/**
+ * Is tNs inside any window?
+ *
+ * A linear scan, not a bisect. `zoomWindows`'s OWN output is sorted and
+ * disjoint, and a bisect over that alone would be sound — but this is also
+ * called with windows a manual override table has contributed (STC-331: a
+ * user-authored window carries no promise of not overlapping a derived one,
+ * or another manual one, and the ticket that added them deliberately leaves
+ * that unsolved). A bisect keyed on start order alone answers WRONG, not
+ * just slowly, once an earlier window's end can outlast a later window's
+ * start — this function used to assume that never happens. Window counts
+ * here are bounded by how many the user actually created, nowhere near the
+ * cursor sim's tick counts, so the O(n) cost of always being right is cheap.
+ */
 export function inWindow(windows: readonly ZoomWindow[], tNs: number): boolean {
-  let lo = 0, hi = windows.length - 1;
-  while (lo <= hi) {
-    const mid = (lo + hi) >> 1;
-    const w = windows[mid]!;
-    if (tNs < w.startNs) hi = mid - 1;
-    else if (tNs > w.endNs) lo = mid + 1;
-    else return true;
-  }
-  return false;
+  return windows.some((w) => tNs >= w.startNs && tNs <= w.endNs);
 }
 
 // ---------------------------------------------------------------------------

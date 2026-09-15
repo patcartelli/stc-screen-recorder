@@ -7,7 +7,9 @@ import {
 import {
   ZOOM_PRESETS, createZoomSim, zoomWindows, type ZoomPreset, type ZoomSim, type ZoomWindow,
 } from "./zoom.js";
-import { groupByEasing, nearestWindow, resolvedCrop, windowId } from "./zoom-override.js";
+import {
+  groupByEasing, manualWindows, nearestWindow, resolvedCrop, windowId, type CombinedZoomWindow,
+} from "./zoom-override.js";
 import { deriveZoomCrop } from "./zoom-change.js";
 import { DEFAULT_ZOOM } from "./trim.js";
 import { createCursorSim, type CursorSim } from "./cursor.js";
@@ -39,7 +41,7 @@ export interface FrameState {
   cursor: CursorState & { pxPerPoint: number; style: CursorStyle };
   /** camera picture-in-picture, or null when there is none to draw */
   pip: PipState | null;
-  /** auto-zoom (STC-325/330). Always present; `crop` is the whole frame unless an override supplies a target */
+  /** auto-zoom (STC-325/330/331). Always present; `crop` is the whole frame unless an override supplies a target */
   zoom: ZoomState;
 }
 
@@ -61,6 +63,14 @@ export interface FrameState {
  * nothing here can run the browser pass that writes `changes.json`). Only a
  * window where NEITHER a manual override NOR stage 2 supplies a target
  * still crops to the whole frame at every amount.
+ *
+ * **A window can be entirely MANUAL now too (STC-331).** `overrides` may
+ * carry a `kind: "manual"` entry with no auto-zoom counterpart at all — for
+ * when stage 1 correctly decided not to open a window and the user wants
+ * one anyway. Such a window is spliced into the same list a derived one
+ * lives in (`zoom-override.ts`'s `manualWindows`/`CombinedZoomWindow`) and
+ * drives `amount` the same way; its crop is always its own rect, never
+ * stage 2's — see the three-tier comment below.
  */
 export interface ZoomState {
   amount: number;
@@ -172,7 +182,12 @@ export function render(project: Project, session: Session, tNs: number): FrameSt
   }
 
   const zoom = project.zoom ?? DEFAULT_ZOOM;
-  const windows = windowsFor(session);
+  const derived = windowsFor(session);
+  const manual = manualWindows(project.overrides);
+  // Manual windows (STC-331) splice in alongside the derived ones so a
+  // single `groupByEasing`/`nearestWindow` pass sees both — no second
+  // spring, no second "which window governs this instant" question.
+  const windows: CombinedZoomWindow[] = manual.length === 0 ? derived : [...derived, ...manual];
   const overridesKey = JSON.stringify({ preset: zoom.preset, overrides: project.overrides ?? [] });
   let byKey = zoomCache.get(session);
   if (!byKey) { byKey = new Map(); zoomCache.set(session, byKey); }
@@ -208,14 +223,19 @@ export function render(project: Project, session: Session, tNs: number): FrameSt
     for (const groupSim of groupSims.values()) zoomAmount = Math.max(zoomAmount, groupSim.amountAt(tick));
     zoomAmount *= zoom.intensity;
   }
-  // Three tiers, in order: a MANUAL override (STC-330) always wins; failing
-  // that, stage 2's DERIVED crop (STC-326) — itself possibly null, which is
-  // a TRUSTED "don't zoom" answer (everything changed, nothing did, or the
-  // union was barely tighter than the full frame) and must not fall through
-  // to the full frame by accident; failing both, the full frame. A window
-  // with neither a manual override nor a usable derived crop is therefore
-  // still a no-op on the pixels by construction: lerping the whole frame
-  // toward itself is the whole frame at every `zoomAmount`.
+  // Three tiers, in order: a TUNED crop always wins — either a geometry
+  // override on a derived window (STC-330) or a window with no derived
+  // counterpart at all (STC-331's `manual` windows, resolved the same way
+  // via `resolvedCrop`'s own `.manual` check); failing that, stage 2's
+  // DERIVED crop (STC-326) — itself possibly null, which is a TRUSTED
+  // "don't zoom" answer (everything changed, nothing did, or the union was
+  // barely tighter than the full frame) and must not fall through to the
+  // full frame by accident; failing both, the full frame. A manual window
+  // always resolves at the first tier (its rect is never undefined), so
+  // `derivedCropFor` — keyed on a DERIVED window's own startNs — is never
+  // asked about one. A window with no override at all and no usable
+  // derived crop is a no-op on the pixels by construction: lerping the
+  // whole frame toward itself is the whole frame at every `zoomAmount`.
   const nearWindow = nearestWindow(windows, tNs);
   const zoomTarget = nearWindow
     ? resolvedCrop(project.overrides, nearWindow) ?? derivedCropFor(session, nearWindow) ?? FULL_FRAME_UV

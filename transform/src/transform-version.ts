@@ -93,8 +93,26 @@ import {
  * lands" reasoning version 3's own note already gave for `ZOOM_PRESETS`, now
  * paid off, because THIS is the version those constants start reaching real
  * pixels for a take with no overrides.
+ *
+ * ## Version 7: a window with no auto-zoom counterpart at all (STC-331)
+ *
+ * `overrides` may now carry a `kind: "manual"` entry — a window authored
+ * from nothing, for when stage 1 correctly decided not to open one and the
+ * user wants one anyway. Before this version such an entry was already
+ * being WRITTEN by nothing (the UI did not exist) and would in any case
+ * have been silently dropped on read (`trim.ts`'s `cleanOverrides` only
+ * ever recognised `kind: "geometry"`) — a hand-authored `project.json`
+ * naming one rendered exactly as if it said nothing. Now it renders a real
+ * crop for a real span of time no derived window ever covered. No new
+ * constant reaches the pixels (`manualWindows`/`resolvedCrop`/
+ * `resolvedEasingName` in zoom-override.ts read the override's own
+ * startNs/endNs/rect/easing, not a tunable of the code), so the
+ * fingerprint below is UNCHANGED — this bump is the same kind version 5's
+ * own note already drew out: a document can render differently under the
+ * new code than under the old one, on the SAME session, which is the
+ * question this stamp exists to answer, not "did a constant move".
  */
-export const TRANSFORM_VERSION = 6;
+export const TRANSFORM_VERSION = 7;
 
 /** What each version rendered. The last entry is TRANSFORM_VERSION. */
 export const TRANSFORM_HISTORY: readonly { version: number; since: string; changed: string }[] = [
@@ -104,6 +122,7 @@ export const TRANSFORM_HISTORY: readonly { version: number; since: string; chang
   { version: 4, since: "2026-09-14", changed: "asymmetric zoom shoulders (STC-371): standard and snappy push in at omega×√2 and release at omega÷√2 instead of one symmetric spring; calm is unchanged. Still no export pixel moves — the crop is still the whole frame until STC-326 — but the editor's Zoom lane curve (which samples render()'s own zoom.amount) already shows the new shape, and the fingerprint moved because ZOOM_PRESETS did" },
   { version: 5, since: "2026-09-14", changed: "manual zoom override, phase 1 (STC-330): project-6's overrides table gives a derived window a tuned crop rect and/or easing preset; render() blends the crop toward that target as zoom.amount eases (spaces.ts's lerpRect). Windows sharing a resolved easing are grouped and simmed independently, composed by max (zoom-override.ts). The FIRST version where the picture actually moves for a real take — a window with no override still crops to the whole frame, but one with an override now renders different pixels than the same take without it" },
   { version: 6, since: "2026-09-14", changed: "auto-zoom stage 2 (STC-326): a window with no manual override now derives its own crop via zoom-change.ts's deriveZoomCrop — the change track (session.changes) when it covers the window, greedy dead-zone cursor clustering otherwise (the fallback every take hits today, since no changes.json exists yet). A trusted null (everything changed, nothing did, or the union was barely tighter than the full frame) still crops to the whole frame; anything else blends toward a real target the same way a manual override does. The FIRST version where a take with NO overrides at all can render different pixels than the same take with auto-zoom off" },
+  { version: 7, since: "2026-09-15", changed: "manual override, phase 2 (STC-331): project-6's overrides table gains a 'manual' variant — a window with no derived counterpart at all, authored with its own startNs/endNs/rect and a REQUIRED easing. Spliced into the same window list a derived window lives in (zoom-override.ts's manualWindows/CombinedZoomWindow) and resolved at the same first tier a geometry override is. nearestWindow (zoom-override.ts) and inWindow (zoom.ts) both moved from a sorted-disjoint bisect to a plain scan, since a manual window carries no promise of not overlapping a derived one or another manual one. No new constant reaches the pixels, so the fingerprint is unchanged; the bump records that a document can now render a span of time no derivation would ever have opened a window for" },
 ];
 
 /**

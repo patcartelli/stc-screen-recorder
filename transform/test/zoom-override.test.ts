@@ -1,13 +1,18 @@
 import { describe, test, expect } from "vitest";
 import {
   windowId, overrideFor, resolvedCrop, resolvedEasingName, groupByEasing, nearestWindow,
-  rectFromGesture, DEFAULT_OVERRIDE_RECT_FRACTION, MIN_DRAG_UV,
+  manualWindows, rectFromGesture, DEFAULT_OVERRIDE_RECT_FRACTION, MIN_DRAG_UV,
+  type CombinedZoomWindow,
 } from "../src/zoom-override.js";
-import { createZoomSim, ZOOM_PRESETS, type ZoomWindow } from "../src/zoom.js";
+import { createZoomSim, inWindow, ZOOM_PRESETS, type ZoomPreset, type ZoomWindow } from "../src/zoom.js";
 import type { ZoomOverride } from "../src/types.js";
 
 const MS = 1_000_000;
 const w = (startNs: number, endNs: number): ZoomWindow => ({ startNs, endNs, events: [] });
+const manual = (
+  id: string, startNs: number, endNs: number,
+  rect = { x: 0, y: 0, width: 1, height: 1 }, easing: ZoomPreset = "standard",
+): Extract<ZoomOverride, { kind: "manual" }> => ({ kind: "manual", id, startNs, endNs, rect, easing });
 
 describe("windowId / overrideFor", () => {
   test("windowId is the window's startNs, as a string", () => {
@@ -137,6 +142,29 @@ describe("nearestWindow", () => {
     expect(nearestWindow(one, 1500)).toBe(one[0]);
     expect(nearestWindow(one, 1_000_000)).toBe(one[0]);
   });
+
+  // STC-331: manual windows carry no promise of staying sorted or disjoint
+  // against a derived one. These are the cases the old sorted-bisect
+  // implementation could not have answered correctly even if handed them.
+  describe("overlapping windows (STC-331)", () => {
+    test("an EARLIER window that outlasts a LATER, smaller one is still found", () => {
+      // A pattern the old bisect got wrong: window A starts first and ends
+      // last; window B is fully nested inside it. tNs sits after B ends but
+      // still inside A — the old "tNs > mid.endNs => search right" branch
+      // would have skipped A here if B were probed first.
+      const a = w(0, 1000);
+      const b = w(100, 200);
+      expect(nearestWindow([a, b], 500)).toBe(a);
+      expect(nearestWindow([b, a], 500)).toBe(a); // order-independent
+    });
+
+    test("two windows both containing tNs resolve deterministically to the later-starting one", () => {
+      const a = w(0, 1000);
+      const b = w(400, 1400);
+      expect(nearestWindow([a, b], 500)).toBe(b);
+      expect(nearestWindow([b, a], 500)).toBe(b);
+    });
+  });
 });
 
 describe("rectFromGesture", () => {
@@ -184,5 +212,72 @@ describe("rectFromGesture", () => {
     const r = rectFromGesture({ x: 0.5, y: 0.5 }, { x: 0.5, y: 0.5 }, 9 / 16);
     expect(r.width).toBeCloseTo(DEFAULT_OVERRIDE_RECT_FRACTION, 10);
     expect(r.height).toBeCloseTo(DEFAULT_OVERRIDE_RECT_FRACTION * (9 / 16), 10);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// STC-331: a window with no derived counterpart at all
+// ---------------------------------------------------------------------------
+
+describe("manualWindows", () => {
+  test("undefined or empty overrides produce no windows", () => {
+    expect(manualWindows(undefined)).toEqual([]);
+    expect(manualWindows([])).toEqual([]);
+  });
+
+  test("a manual entry becomes a ZoomWindow-shaped window carrying the override", () => {
+    const o = manual("m1", 1000, 5000, { x: 0.1, y: 0.1, width: 0.2, height: 0.2 }, "snappy");
+    const [win] = manualWindows([o]);
+    expect(win).toEqual({ startNs: 1000, endNs: 5000, events: [], manual: o });
+  });
+
+  test("a geometry override contributes no manual window", () => {
+    const geometry: ZoomOverride = { kind: "geometry", windowId: "1000", rect: { x: 0, y: 0, width: 1, height: 1 } };
+    expect(manualWindows([geometry])).toEqual([]);
+  });
+
+  test("mixed overrides: only the manual entries come back, in order", () => {
+    const geometry: ZoomOverride = { kind: "geometry", windowId: "1000", rect: { x: 0, y: 0, width: 1, height: 1 } };
+    const m1 = manual("m1", 0, 100);
+    const m2 = manual("m2", 200, 300);
+    const windows = manualWindows([geometry, m1, geometry, m2]);
+    expect(windows.map((w) => w.manual!.id)).toEqual(["m1", "m2"]);
+  });
+});
+
+describe("resolvedCrop / resolvedEasingName with a manual window", () => {
+  test("a manual window's own rect and easing win outright, with no overrides-table lookup", () => {
+    const [win] = manualWindows([manual("m1", 0, 1000, { x: 0.3, y: 0.4, width: 0.1, height: 0.2 }, "calm")]);
+    // Overrides table has nothing matching windowId "0" — proves the crop
+    // came from `.manual`, not from an accidental geometry-style lookup.
+    expect(resolvedCrop(undefined, win!)).toEqual({ x: 0.3, y: 0.4, width: 0.1, height: 0.2 });
+    expect(resolvedEasingName(undefined, win!, "snappy")).toBe("calm");
+  });
+
+  test("a derived window (no .manual) is unaffected — falls through to the existing geometry lookup", () => {
+    const derived: CombinedZoomWindow = w(100, 200);
+    const overrides: ZoomOverride[] = [
+      { kind: "geometry", windowId: "100", rect: { x: 0.5, y: 0.5, width: 0.1, height: 0.1 } },
+    ];
+    expect(resolvedCrop(overrides, derived)).toEqual({ x: 0.5, y: 0.5, width: 0.1, height: 0.1 });
+    expect(resolvedEasingName(overrides, derived, "standard")).toBe("standard"); // no easing on the override
+  });
+});
+
+describe("groupByEasing mixes derived and manual windows", () => {
+  test("a manual window lands in the group its OWN easing names, never the project preset", () => {
+    const derived = [w(0, 100)];
+    const [m] = manualWindows([manual("m1", 5000, 6000, undefined, "snappy")]);
+    const groups = groupByEasing([...derived, m!], undefined, "calm");
+    expect(groups.get("calm")).toEqual(derived);
+    expect(groups.get("snappy")).toEqual([m]);
+  });
+});
+
+describe("inWindow (zoom.ts) under overlap — STC-331's own concern, exercised from here", () => {
+  test("an earlier, longer window still reports true past a nested later one's end", () => {
+    const windows = [w(0, 1000), w(100, 200)];
+    expect(inWindow(windows, 500)).toBe(true);
+    expect(inWindow([...windows].reverse(), 500)).toBe(true);
   });
 });

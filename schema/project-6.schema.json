@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "stc:project-6",
   "title": "stc project (edit document), v6",
-  "description": "Everything the user can change after recording. render(project, session, t) is a pure function of this document plus the session data. v6 adds `overrides`: manual zoom overrides (STC-330) — a discriminated union, one 'geometry' variant so far, keyed by a derived window's startNs (as a string). An override's rect is UV over the CAPTURE, the same space a redaction lives in; its easing, when present, replaces the project's own zoom.preset for just that window. Absent on every document written before project-6; parseProject fills []. Later manual-override phases (STC-329, STC-331) add union variants here, not migrations.",
+  "description": "Everything the user can change after recording. render(project, session, t) is a pure function of this document plus the session data. v6 adds `overrides`: manual zoom overrides — a discriminated union. The 'geometry' variant (STC-330) tunes a DERIVED window, keyed by its startNs (as a string). The 'manual' variant (STC-331) authors a window with no auto-zoom counterpart at all, carrying its own startNs/endNs and a REQUIRED easing, since there is no derived window or project default timing to fall back to. Both variants' rect is UV over the CAPTURE, the same space a redaction lives in. Absent on every document written before project-6; parseProject fills []. A later manual-override phase (STC-329) adds a union variant here, not a migration.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -11,6 +11,25 @@
     "cursor",
     "transform"
   ],
+  "definitions": {
+    "overrideRect": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "x",
+        "y",
+        "width",
+        "height"
+      ],
+      "description": "UV over the CAPTURE (0..1), not the output — the same space a redaction lives in.",
+      "properties": {
+        "x": { "type": "number", "minimum": 0, "maximum": 1 },
+        "y": { "type": "number", "minimum": 0, "maximum": 1 },
+        "width": { "type": "number", "exclusiveMinimum": 0, "maximum": 1 },
+        "height": { "type": "number", "exclusiveMinimum": 0, "maximum": 1 }
+      }
+    }
+  },
   "properties": {
     "version": {
       "const": 6
@@ -166,49 +185,76 @@
     },
     "overrides": {
       "type": "array",
-      "description": "Manual zoom overrides (STC-330). Absent means none. windowId matches a derived window's startNs (transform/src/zoom.ts's ZoomWindow), as a string — stage 1's merge rule guarantees uniqueness within one take. x+width and y+height must each be <= 1; that sum constraint is not expressible here and is the loader's job (transform/src/trim.ts's cleanOverrides), same as recording.ts's endNs > startNs.",
+      "description": "Manual zoom overrides. Absent means none. x+width and y+height must each be <= 1; that sum constraint is not expressible here and is the loader's job (transform/src/trim.ts's cleanOverrides), same as recording.ts's endNs > startNs.",
       "items": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": [
-          "kind",
-          "windowId",
-          "rect"
-        ],
-        "properties": {
-          "kind": {
-            "const": "geometry"
-          },
-          "windowId": {
-            "type": "string",
-            "minLength": 1
-          },
-          "rect": {
+        "oneOf": [
+          {
             "type": "object",
             "additionalProperties": false,
+            "description": "STC-330: tunes a DERIVED window. windowId matches that window's startNs (transform/src/zoom.ts's ZoomWindow), as a string — stage 1's merge rule guarantees uniqueness within one take.",
             "required": [
-              "x",
-              "y",
-              "width",
-              "height"
+              "kind",
+              "windowId",
+              "rect"
             ],
-            "description": "UV over the CAPTURE (0..1), not the output — the same space a redaction lives in.",
             "properties": {
-              "x": { "type": "number", "minimum": 0, "maximum": 1 },
-              "y": { "type": "number", "minimum": 0, "maximum": 1 },
-              "width": { "type": "number", "exclusiveMinimum": 0, "maximum": 1 },
-              "height": { "type": "number", "exclusiveMinimum": 0, "maximum": 1 }
+              "kind": {
+                "const": "geometry"
+              },
+              "windowId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "rect": { "$ref": "#/definitions/overrideRect" },
+              "easing": {
+                "enum": [
+                  "calm",
+                  "standard",
+                  "snappy"
+                ],
+                "description": "Replaces the project's own zoom.preset for JUST this window. Absent means this window plays at the project's preset."
+              }
             }
           },
-          "easing": {
-            "enum": [
-              "calm",
-              "standard",
-              "snappy"
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "description": "STC-331: authors a window with no auto-zoom counterpart at all. Carries its own timing, unlike the geometry variant, and easing is REQUIRED — there is no derived window or project default to fall back to.",
+            "required": [
+              "kind",
+              "id",
+              "startNs",
+              "endNs",
+              "rect",
+              "easing"
             ],
-            "description": "Replaces the project's own zoom.preset for JUST this window. Absent means this window plays at the project's preset."
+            "properties": {
+              "kind": {
+                "const": "manual"
+              },
+              "id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "startNs": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "endNs": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "rect": { "$ref": "#/definitions/overrideRect" },
+              "easing": {
+                "enum": [
+                  "calm",
+                  "standard",
+                  "snappy"
+                ]
+              }
+            }
           }
-        }
+        ]
       }
     }
   }

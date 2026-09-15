@@ -74,6 +74,24 @@
       position: absolute; left: 0; top: 0; width: 100%; height: 100%;
       transform-origin: 0 0;
     }
+    /* #override-blocks-dynamic holds every button layoutOverrideBlocks()
+       rebuilds (STC-330's derived blocks, STC-331's committed manual ones);
+       #manualdraft is a SEPARATE, never-rebuilt sibling for whichever manual
+       window is currently being created or edited, so its resize handles
+       keep pointer capture across a drag (editor.ts's updateManualDraftBlock
+       says why a rebuild there would break it). Both are plain 100% boxes —
+       #override-blocks itself is what receives the pan/zoom transform, and
+       CSS transforms apply to a whole subtree, so neither child needs its
+       own. */
+    #override-blocks-dynamic, #manualdraft { position: absolute; left: 0; top: 0; width: 100%; height: 100%; }
+    /* Transparent to the pointer itself (STC-331's create-on-empty-lane
+       click needs to reach #override-blocks, which this otherwise-empty
+       full-size div would sit in front of and swallow every event for) —
+       each .zoomblock child opts back IN, the same "pointer-events:none on
+       the wrapper, auto on the real target" idiom #rectoverlay's own
+       #overridebox uses. */
+    #override-blocks-dynamic { pointer-events: none; }
+    #override-blocks-dynamic .zoomblock { pointer-events: auto; }
     /* One invisible button per derived zoom window (STC-330), positioned as a
        fraction of FULL duration exactly like .kept/.cut-head — the shared
        transform on #override-blocks does the pan/zoom, so these percentages
@@ -87,6 +105,21 @@
     .zoomblock.selected { outline: 1.5px solid var(--zoom); outline-offset: -1.5px; }
     .zoomblock.overridden::after { content: ""; position: absolute; left: 2px; right: 2px;
                                     bottom: 1px; height: 2px; background: var(--zoom); border-radius: 1px; }
+    /* A window with no derived counterpart at all (STC-331) — dashed rather
+       than solid, the one visual cue distinguishing "authored from nothing"
+       from "tuning something auto-zoom already opened". #manualdraft reuses
+       this plus .selected, since it is only ever shown while being edited. */
+    .zoomblock.manual { border: 1px dashed var(--zoom); background: rgba(216,138,59,.08); }
+    #manualdraft[hidden] { display: none; }
+    /* The two edges a manual window's own timing is dragged from — pinned to
+       the block's edges via negative offsets (so they sit HALF outside a
+       narrow block rather than being squeezed inside it) exactly the way
+       .timeline .handle sits astride the trim lane's own edges. */
+    .manualhandle { position: absolute; top: 0; width: 8px; height: 100%; margin: 0; padding: 0;
+                    border: none; background: transparent; cursor: ew-resize; }
+    .manualhandle.start { left: -4px; }
+    .manualhandle.end { right: -4px; }
+    .manualhandle:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
     .timeline .bar { position: absolute; left: 0; right: 0; top: 12px; height: 4px;
                      background: var(--line); border-radius: 2px; pointer-events: none; }
     .timeline .kept { position: absolute; top: 0; height: 4px;
@@ -183,11 +216,15 @@
     the derived auto-zoom automation curve — still sampled straight from
     render()'s own zoom.amount (timeline-activity.ts's zoomCurve), drawn as a
     FILLED area now rather than a stroked line so it reads as one block per
-    derived window (STC-330). #override-blocks lays one invisible button over
-    each window for click-to-select and the selected/overridden rings;
-    #zoom-curve stays the only thing that draws a pixel. Pan lives on the
-    ruler; zoom anchors on the pointer; the trim handles own the Clip lane's
-    drag.
+    derived window (STC-330). #override-blocks-dynamic lays one invisible
+    button over each derived window, and one dashed one per committed manual
+    window (STC-331), for click-to-select and the selected/overridden rings;
+    #zoom-curve stays the only thing that draws a pixel. A click on the
+    lane's own EMPTY background — not on a block — authors a new manual
+    window there (editor.ts's createManualWindow); #manualdraft is that
+    window's own editing surface, dragged into shape from its edge handles.
+    Pan lives on the ruler; zoom anchors on the pointer; the trim handles own
+    the Clip lane's drag.
   -->
   <div class="timelinewrap">
     <div id="ruler"><div id="ruler-content"></div></div>
@@ -208,7 +245,20 @@
     <div class="laneviewport zoom">
       <span class="lanelabel">Zoom</span>
       <div id="zoom-canvas-wrap"><canvas id="zoom-curve"></canvas></div>
-      <div id="override-blocks"></div>
+      <div id="override-blocks">
+        <div id="override-blocks-dynamic"></div>
+        <!-- STC-331: the window currently being created or edited — see the
+             CSS comment above for why this is not rebuilt like the dynamic
+             blocks above it. No `zoomblock` class here: editor.ts's
+             updateManualDraftBlock applies it only while shown, since a
+             hidden element still matches a `.zoomblock` DOM query (a
+             visibility check is a separate question from a class match) and
+             every E2E count in this file relies on that NOT being true. -->
+        <div id="manualdraft" hidden>
+          <button type="button" id="manualhandle-start" class="manualhandle start" aria-label="Window start"></button>
+          <button type="button" id="manualhandle-end" class="manualhandle end" aria-label="Window end"></button>
+        </div>
+      </div>
     </div>
   </div>
 

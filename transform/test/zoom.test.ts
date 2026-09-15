@@ -128,6 +128,16 @@ describe("inWindow", () => {
   test("the gap between two windows is out", () => {
     expect(inWindow(w, (w[0]!.endNs + w[1]!.startNs) / 2)).toBe(false);
   });
+
+  // STC-331: `inWindow` moved from a sorted-disjoint bisect to a plain scan
+  // because a manually authored window carries no promise of staying
+  // disjoint from a derived one. These pin the case the bisect got wrong: an
+  // earlier window that OUTLASTS a later, shorter one nested inside it.
+  test("still finds an earlier window that outlasts a nested later one, regardless of array order", () => {
+    const overlapping = [{ startNs: 0, endNs: 1000, events: [] }, { startNs: 100, endNs: 200, events: [] }];
+    expect(inWindow(overlapping, 500)).toBe(true);
+    expect(inWindow([...overlapping].reverse(), 500)).toBe(true);
+  });
 });
 
 describe("the easing spring", () => {

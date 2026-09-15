@@ -22,7 +22,10 @@ export function windowId(window: Pick<ZoomWindow, "startNs">): string {
  * `overrides` may carry a `kind` this build does not implement (a later
  * phase's variant, read by an older build) — those are skipped rather than
  * throwing, the same "carry unread data forward" reasoning `pip`/`zoom`
- * already follow in trim.ts for a field a version does not fully own.
+ * already follow in trim.ts for a field a version does not fully own. This
+ * only ever matches the `geometry` variant, deliberately: a `manual` window
+ * (STC-331) IS its own override — see `CombinedZoomWindow` below — and is
+ * never looked up here.
  */
 export function overrideFor(
   overrides: readonly ZoomOverride[] | undefined,
@@ -33,18 +36,56 @@ export function overrideFor(
   return overrides.find((o) => o.kind === "geometry" && o.windowId === id);
 }
 
+type ManualOverride = Extract<ZoomOverride, { kind: "manual" }>;
+
+/**
+ * A window as `groupByEasing`/`nearestWindow`/`createZoomSim` see it, plus —
+ * for a manually authored one (STC-331) — the override it came from.
+ *
+ * A derived window (`zoomWindows`'s own output) never carries `manual`; a
+ * window built by `manualWindows` below always does. `resolvedCrop` and
+ * `resolvedEasingName` check `manual` FIRST, before ever consulting the
+ * overrides table, because a manual window's rect and easing are not
+ * something to look up by matching a key — they ARE the window.
+ */
+export interface CombinedZoomWindow extends ZoomWindow {
+  manual?: ManualOverride;
+}
+
+/**
+ * The take's manually authored windows (STC-331), reshaped as
+ * `CombinedZoomWindow`s so render.ts can splice them in alongside the
+ * derived ones and feed the combined list to the same `groupByEasing` /
+ * `nearestWindow` / `createZoomSim` machinery stage 1 already built.
+ *
+ * `events` is always empty: a manual window has no underlying trigger
+ * events, and nothing reads the field for one — STC-326's cursor-clustering
+ * fallback never runs for a window with its own crop (render.ts's
+ * three-tier comment), which every manual window has by construction.
+ */
+export function manualWindows(overrides: readonly ZoomOverride[] | undefined): CombinedZoomWindow[] {
+  if (!overrides) return [];
+  const out: CombinedZoomWindow[] = [];
+  for (const o of overrides) {
+    if (o.kind !== "manual") continue;
+    out.push({ startNs: o.startNs, endNs: o.endNs, events: [], manual: o });
+  }
+  return out;
+}
+
 /**
  * A window's crop, if an override supplies one — `undefined` otherwise, so
- * the caller decides what "no override" falls back to (render.ts: the whole
- * frame, `FULL_FRAME_UV`, until STC-326 supplies an automatic answer). Kept
- * as a separate question from `overrideFor` because a later phase's
- * variant (STC-331, STC-329) matches a window without necessarily carrying
- * geometry.
+ * the caller decides what "no override" falls back to (render.ts: stage 2,
+ * then the whole frame, `FULL_FRAME_UV`). A manual window's own rect wins
+ * outright and is never `undefined` — there is nothing else for it to fall
+ * back to, unlike a geometry override which may simply not exist for a
+ * given derived window.
  */
 export function resolvedCrop(
   overrides: readonly ZoomOverride[] | undefined,
-  window: Pick<ZoomWindow, "startNs">,
+  window: CombinedZoomWindow,
 ): Rect | undefined {
+  if (window.manual) return window.manual.rect;
   return overrideFor(overrides, window)?.rect;
 }
 
@@ -53,12 +94,19 @@ export function resolvedCrop(
  * project's own. Returns a name rather than the `{omega,zeta}` pair so
  * callers can GROUP windows by it (`groupByEasing` below) without comparing
  * objects.
+ *
+ * A manual window's easing is REQUIRED on the schema (types.ts's own note
+ * says why) and returned directly — it never falls back to the project
+ * preset, because "the project's own preset" is exactly the fallback a
+ * geometry override without an opinion uses, and a manual window always
+ * has one.
  */
 export function resolvedEasingName(
   overrides: readonly ZoomOverride[] | undefined,
-  window: Pick<ZoomWindow, "startNs">,
+  window: CombinedZoomWindow,
   projectPreset: ZoomPreset,
 ): ZoomPreset {
+  if (window.manual) return window.manual.easing;
   const o = overrideFor(overrides, window);
   return o?.easing && ZOOM_PRESET_NAMES.includes(o.easing) ? o.easing : projectPreset;
 }
@@ -70,24 +118,28 @@ export function resolvedEasingName(
  * Why grouping and not a per-tick easing lookup: `createZoomSim` steps ONE
  * spring across a whole window list with ONE easing, and that is correct
  * composition for any set of windows whose springs never overlap in time —
- * which stage 1's own merge rule already guarantees (`ZOOM_MERGE_GAP_NS`,
- * 2500 ms, is comfortably larger than the slowest preset's settling time,
- * about 780 ms for Calm). So rather than teaching the spring stepper to
- * change its own constants mid-flight — a real physics problem, since a
- * spring mid-transition has momentum a swapped omega/zeta would have to
- * either discard or carry incorrectly — each easing gets its OWN independent
+ * which stage 1's own merge rule guarantees for DERIVED windows alone
+ * (`ZOOM_MERGE_GAP_NS`, 2500 ms, is comfortably larger than the slowest
+ * preset's settling time, about 780 ms for Calm). A manual window (STC-331)
+ * carries no such guarantee against another manual window, or against a
+ * derived one, in the same group — the ticket that added them leaves
+ * overlap unsolved on purpose. Composing group sims by max (render.ts)
+ * still produces a well-defined answer either way: `inWindow` (zoom.ts) is
+ * now a plain scan rather than a sorted bisect, precisely so a group that
+ * turns out not to be disjoint is handled correctly rather than merely
+ * silently. So rather than teaching the spring stepper to change its own
+ * constants mid-flight — a real physics problem, since a spring
+ * mid-transition has momentum a swapped omega/zeta would have to either
+ * discard or carry incorrectly — each easing still gets its OWN independent
  * spring over just its own windows, unmodified from what STC-325 already
- * built and tested. Composing them (render.ts: the max of every group's
- * `amountAt`) is safe for the same reason splitting them is: at most one
- * group can be meaningfully non-zero at any tick, because the windows that
- * feed each group are drawn from one globally-ordered, non-overlapping list.
+ * built and tested.
  */
 export function groupByEasing(
-  windows: readonly ZoomWindow[],
+  windows: readonly CombinedZoomWindow[],
   overrides: readonly ZoomOverride[] | undefined,
   projectPreset: ZoomPreset,
-): Map<ZoomPreset, ZoomWindow[]> {
-  const groups = new Map<ZoomPreset, ZoomWindow[]>();
+): Map<ZoomPreset, CombinedZoomWindow[]> {
+  const groups = new Map<ZoomPreset, CombinedZoomWindow[]>();
   for (const w of windows) {
     const name = resolvedEasingName(overrides, w, projectPreset);
     const g = groups.get(name);
@@ -110,36 +162,33 @@ export function groupByEasing(
  * has no such edge: whichever window is closest in time is, by
  * construction, the only one that could be driving a non-negligible
  * `amount` right now (the merge-gap-vs-settling-time margin above is what
- * guarantees that), and when nothing is close the choice does not matter
- * because `amount` is ~0 anyway.
+ * guarantees that for DERIVED windows), and when nothing is close the
+ * choice does not matter because `amount` is ~0 anyway.
  *
- * Binary search over the sorted, disjoint window list — the same idiom
- * `inWindow` uses, extended to return a window instead of a boolean.
+ * A linear scan over every window, not a bisect — the same reasoning
+ * `inWindow` (zoom.ts) now gives for itself. `windows` may include manually
+ * authored ones (STC-331) that overlap a derived window or each other, so
+ * the old "sorted, disjoint" precondition this used to lean on no longer
+ * holds for the list render.ts actually passes. Ties (two windows
+ * equidistant, or both containing `tNs`) resolve to whichever starts LATER
+ * — matching the old neighbour-based rule's own "exactly equidistant leans
+ * to after" — which is an arbitrary but DETERMINISTIC choice for the
+ * overlapping case; getting overlap "right" is explicitly not this phase's
+ * job (STC-331's own ticket text).
  */
-export function nearestWindow(
-  windows: readonly ZoomWindow[], tNs: number,
-): ZoomWindow | null {
-  if (windows.length === 0) return null;
-  let lo = 0, hi = windows.length - 1;
-  while (lo <= hi) {
-    const mid = (lo + hi) >> 1;
-    const w = windows[mid]!;
-    if (tNs < w.startNs) hi = mid - 1;
-    else if (tNs > w.endNs) lo = mid + 1;
-    else return w;
+export function nearestWindow<T extends ZoomWindow>(
+  windows: readonly T[], tNs: number,
+): T | null {
+  let best: T | null = null;
+  let bestDist = Infinity;
+  for (const w of windows) {
+    const dist = tNs < w.startNs ? w.startNs - tNs : tNs > w.endNs ? tNs - w.endNs : 0;
+    if (best === null || dist < bestDist || (dist === bestDist && w.startNs > best.startNs)) {
+      best = w;
+      bestDist = dist;
+    }
   }
-  // Not inside any window: `lo` is the index of the first window starting
-  // AFTER tNs (or windows.length, if tNs is after all of them), and `hi`
-  // (= lo - 1) is the last window ending before tNs. Whichever of those two
-  // real neighbours is closer wins; there is always at least one, since
-  // the length-0 case already returned above.
-  const after = windows[lo];
-  const before = windows[hi];
-  if (!before) return after!;
-  if (!after) return before;
-  const dAfter = after.startNs - tNs;
-  const dBefore = tNs - before.endNs;
-  return dAfter <= dBefore ? after : before;
+  return best;
 }
 
 // ---------------------------------------------------------------------------

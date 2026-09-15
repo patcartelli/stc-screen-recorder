@@ -1,8 +1,9 @@
 /**
  * The editor window (STC-373) — preview, trim, export, legibility and share,
- * split out of the main window's in-page player. v1 is trim-only: the
- * timeline's two lanes (Clip, Zoom) are read-only visualisations over the
- * shared span; there is no manual override yet (STC-328/330/331).
+ * split out of the main window's in-page player. The timeline's two lanes
+ * (Clip, Zoom) sit over one shared span; Clip stays read-only, Zoom is now
+ * editable — tuning a derived window's crop and easing (STC-330), and
+ * authoring a window with no derived counterpart at all (STC-331).
  *
  * `editor.ts` inherits `app/src/scrubber.ts`'s vocabulary verbatim — see that
  * module's header for the ten rules a timeline control here is held to.
@@ -46,7 +47,7 @@ declare const editor: {
 import { loadSession, type LoadedSession } from "@transform/session";
 import { PreviewPlayer } from "@transform/preview";
 import { exportSession } from "@transform/export";
-import type { Project } from "@transform/types";
+import type { Project, ZoomOverride } from "@transform/types";
 import {
   parseProject, projectForWrite, exportWindow, estimateExportMs,
   clampTrim, isFullTake, minTrimNs,
@@ -58,7 +59,7 @@ import {
   DEFAULT_TEXT_PT, EMBED_TARGETS, legibility, legibilitySentence, zoomFactorForCrop,
 } from "@transform/legibility";
 import { TRANSFORM_VERSION } from "@transform/transform-version";
-import { zoomWindows, type ZoomPreset, type ZoomWindow } from "@transform/zoom";
+import { zoomWindows, ZOOM_LEAD_NS, ZOOM_HOLD_NS, type ZoomPreset, type ZoomWindow } from "@transform/zoom";
 import { windowId, overrideFor, rectFromGesture } from "@transform/zoom-override";
 import type { Rect } from "@transform/spaces";
 import {
@@ -132,6 +133,18 @@ function applySpanTransform(): void {
   ($("clip-canvas-wrap") as HTMLElement).style.transform = transform;
   ($("zoom-canvas-wrap") as HTMLElement).style.transform = transform;
   ($("ruler-content") as HTMLElement).style.transform = transform;
+  // STC-331, found fixing this file: editor.html's own comment already
+  // claimed "the shared transform on #override-blocks does the pan/zoom",
+  // but this function never actually set it here — the CSS rule that makes
+  // it a valid transform target was in place since STC-330, the line
+  // applying one was not. #zoom-curve (the sibling canvas .zoomblock is
+  // meant to overlay) WAS transformed, so any pan or zoom away from the
+  // default full view put every block's click target out of registration
+  // with the silhouette it is supposed to sit on. This phase's own
+  // creation/resize gestures read time from the same transformed box
+  // (frameAtClientX), so the misalignment would have reached further than
+  // phase 1's read-only blocks ever did.
+  ($("override-blocks") as HTMLElement).style.transform = transform;
   updateTicks();
 }
 
@@ -340,7 +353,7 @@ function drawZoomLane(): void {
 function redrawLanes(): void { drawClipLane(); drawZoomLane(); layoutOverrideBlocks(); }
 window.addEventListener("resize", redrawLanes);
 
-// ---- manual zoom override (STC-330) — the block lane's editing half -------
+// ---- manual zoom override (STC-330/331) — the block lane's editing half ---
 //
 // Selecting a block puts the preview into an EDIT mode: the player is made
 // to draw the UNZOOMED frame for as long as editing lasts (by temporarily
@@ -351,14 +364,63 @@ window.addEventListener("resize", redrawLanes);
 // The rect and preset are held in a DRAFT until committed, so entering edit
 // mode to just look and then leaving with no drag restores the original
 // override exactly rather than deleting it as a side effect.
+//
+// STC-331 adds a SECOND kind of editing target: a window with no derived
+// counterpart at all. `editingWindowId` (a derived window's own identity)
+// and `editingManualId` (a manual override's own `id`) are mutually
+// exclusive — never both set — and every shared piece of state below
+// (draftRect, draftEasing, the rect tool, the preset picker, Done/Remove/
+// Escape) works on whichever is currently open. What is NOT shared is
+// timing: a manual window carries its own startNs/endNs (draftManualStart/
+// End below), since there is no derived window to read them from.
 
 let editingWindowId: string | null = null;
+let editingManualId: string | null = null;
 let draftRect: Rect | null = null;
 let draftEasing: ZoomPreset | "" = "";
+let draftManualStart = 0;
+let draftManualEnd = 0;
 let dragAnchorUv: { x: number; y: number } | null = null;
+let resizingManualEdge: "start" | "end" | undefined;
 
-function overridesWithout(overrides: Project["overrides"], id: string): NonNullable<Project["overrides"]> {
-  return (overrides ?? []).filter((o) => o.windowId !== id);
+/**
+ * The floor under a manually authored window's own duration (STC-331).
+ * Reused from stage 1 rather than invented: a window narrower than the
+ * time its OWN spring needs just to arrive never finishes arriving, so the
+ * lead time is the natural floor rather than an arbitrary pixel or frame
+ * count.
+ */
+const MIN_MANUAL_WINDOW_NS = ZOOM_LEAD_NS;
+
+/** Every manually authored window currently on the LIVE project — never includes the one being edited (see selectManualWindow's own note). */
+function manualEntries(): Extract<ZoomOverride, { kind: "manual" }>[] {
+  return (openProject?.overrides ?? []).filter((o): o is Extract<ZoomOverride, { kind: "manual" }> => o.kind === "manual");
+}
+
+function overridesWithoutWindow(overrides: Project["overrides"], id: string): NonNullable<Project["overrides"]> {
+  return (overrides ?? []).filter((o) => !(o.kind === "geometry" && o.windowId === id));
+}
+
+function overridesWithoutManual(overrides: Project["overrides"], id: string): NonNullable<Project["overrides"]> {
+  return (overrides ?? []).filter((o) => !(o.kind === "manual" && o.id === id));
+}
+
+/**
+ * A click at `clickNs`, expanded into the locked stage-1 timing shape (300ms
+ * lead, 2500ms hold) as a STARTING size — the ticket's own words. Mirrors
+ * `zoom.ts`'s own derivation (`startNs = e.t - LEAD`, `endNs = e.t + HOLD`)
+ * exactly, treating the click the way a real trigger event would be
+ * treated, so the two ways a window can come to exist agree on what "300ms
+ * lead, 2500ms hold" means. Independently clamped into [0, duration] rather
+ * than clamped-then-shifted, matching `zoomWindows`'s own clamp — a click
+ * in the take's first 300ms opens a window that starts at 0, shorter than
+ * the shape, exactly as a real trigger there would.
+ */
+function defaultManualSpan(clickNs: number, durationNs: number): { startNs: number; endNs: number } {
+  let startNs = Math.max(0, clickNs - ZOOM_LEAD_NS);
+  let endNs = Math.min(durationNs, clickNs + ZOOM_HOLD_NS);
+  if (endNs - startNs < MIN_MANUAL_WINDOW_NS) startNs = Math.max(0, endNs - MIN_MANUAL_WINDOW_NS);
+  return { startNs, endNs };
 }
 
 function aspectWH(): number {
@@ -389,8 +451,12 @@ function drawOverrideBox(rect: Rect | null): void {
   box.style.height = `${rect.height * 100}%`;
 }
 
+/** The DYNAMIC blocks only — derived windows and committed manual ones. The
+ *  currently-edited manual window (new or existing) is NOT drawn here; it
+ *  lives on the static #manualdraft element so its resize handles survive a
+ *  rebuild mid-drag (updateManualDraftBlock's own note). */
 function layoutOverrideBlocks(): void {
-  const container = $("override-blocks") as HTMLElement;
+  const container = $("override-blocks-dynamic") as HTMLElement;
   container.replaceChildren();
   if (!player || !openSession) return;
   const d = player.durationNs || 1;
@@ -410,8 +476,26 @@ function layoutOverrideBlocks(): void {
     btn.style.width = `${Math.max(0, ((w.endNs - w.startNs) / d) * 100)}%`;
     btn.setAttribute("aria-label", `Zoom window at ${fmtClock(w.startNs)}`);
     btn.addEventListener("click", () => {
-      const p = id === editingWindowId ? closeOverrideEditor() : selectWindow(w);
+      const p = id === editingWindowId ? closeOverrideEditor() : selectDerivedWindow(w);
       void p.catch((e: any) => alertUser(String(e?.message ?? e)));
+    });
+    container.appendChild(btn);
+  }
+  // Manual windows (STC-331): the one being edited is never in this list —
+  // selectManualWindow strips it from project.overrides the same way a
+  // derived window's geometry override is stripped, and a brand new one was
+  // never in the array to begin with.
+  for (const o of manualEntries()) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    // Always "overridden": a manual window's existence IS its geometry, so
+    // there is no un-overridden state for the dot to distinguish.
+    btn.className = "zoomblock manual overridden";
+    btn.style.left = `${(o.startNs / d) * 100}%`;
+    btn.style.width = `${Math.max(0, ((o.endNs - o.startNs) / d) * 100)}%`;
+    btn.setAttribute("aria-label", `Manual zoom window at ${fmtClock(o.startNs)}`);
+    btn.addEventListener("click", () => {
+      void selectManualWindow(o).catch((e: any) => alertUser(String(e?.message ?? e)));
     });
     container.appendChild(btn);
   }
@@ -421,7 +505,7 @@ function layoutOverrideBlocks(): void {
  *  entry for this window) and persists — an empty draft means "no override". */
 async function commitDraft(): Promise<void> {
   if (!openProject || !editingWindowId) return;
-  const withoutThis = overridesWithout(openProject.overrides, editingWindowId);
+  const withoutThis = overridesWithoutWindow(openProject.overrides, editingWindowId);
   openProject.overrides = draftRect
     ? [...withoutThis, {
         kind: "geometry" as const, windowId: editingWindowId, rect: draftRect,
@@ -431,39 +515,192 @@ async function commitDraft(): Promise<void> {
   await persistProject();
 }
 
-async function closeOverrideEditor(): Promise<void> {
+/**
+ * Writes the current manual draft into project.overrides and persists.
+ * `easing` is REQUIRED on the schema (types.ts's own note says why), so an
+ * unresolved "Project default" picker selection is resolved to the
+ * project's CURRENT preset at commit time — a snapshot, not a live link;
+ * a manual window has no `undefined` to mean "whatever the project says",
+ * unlike a geometry override which does. An empty draft (Remove pressed)
+ * deletes the window outright — there is no "no override" state for a
+ * manual window to fall back to, since its rect and timing ARE the window.
+ */
+async function commitManualDraft(): Promise<void> {
+  if (!openProject || !editingManualId) return;
+  const withoutThis = overridesWithoutManual(openProject.overrides, editingManualId);
+  openProject.overrides = draftRect
+    ? [...withoutThis, {
+        kind: "manual" as const, id: editingManualId, startNs: draftManualStart, endNs: draftManualEnd,
+        rect: draftRect, easing: draftEasing || openProject.zoom?.preset || "standard",
+      }]
+    : withoutThis;
+  await persistProject();
+}
+
+/**
+ * Repositions the static #manualdraft block/handles from draft state, or
+ * hides it — called on every resize-drag tick, so it must never touch DOM
+ * STRUCTURE (a rebuild mid-drag would drop the pointer capture the handle
+ * currently being dragged holds).
+ *
+ * The `zoomblock` class is applied here, not in the HTML, and cleared
+ * while hidden: a `hidden` attribute stops an element being PAINTED, not
+ * matched by a class selector, so a `.zoomblock` element sitting `hidden`
+ * in the DOM would still count as one to any query that does not also
+ * check visibility — which is exactly how `.zoomblock` counts are read in
+ * this file's own E2E suite.
+ */
+function updateManualDraftBlock(): void {
+  const el = $("manualdraft") as HTMLElement;
+  if (!editingManualId || !player) {
+    el.setAttribute("hidden", "");
+    el.className = "";
+    return;
+  }
+  el.removeAttribute("hidden");
+  el.className = "zoomblock manual selected";
+  const d = player.durationNs || 1;
+  el.style.left = `${(draftManualStart / d) * 100}%`;
+  el.style.width = `${Math.max(0, ((draftManualEnd - draftManualStart) / d) * 100)}%`;
+}
+
+/** Shared tail of every way an editor can open: shows the rect tool and
+ *  override bar, seeds the preset picker and Remove/Delete button, and
+ *  refreshes both block layers. */
+function openOverrideEditorUI(): void {
+  ($("overridepreset") as HTMLSelectElement).value = draftEasing;
+  const clear = $("overrideclear") as HTMLButtonElement;
+  clear.disabled = !draftRect;
+  clear.textContent = editingManualId ? "Delete window" : "Remove override";
+  ($("overridehint") as HTMLElement).textContent = editingManualId
+    ? "Drag a rect on the preview to zoom into it · drag the block's edges to change its timing"
+    : "Drag a rect on the preview to zoom into it";
+  ($("overridebar") as HTMLElement).removeAttribute("hidden");
+  ($("rectoverlay") as HTMLElement).removeAttribute("hidden");
+  drawOverrideBox(draftRect);
+  layoutOverrideBlocks();
+  updateManualDraftBlock();
+}
+
+async function commitCurrentEdit(): Promise<void> {
   if (editingWindowId) await commitDraft();
+  else if (editingManualId) await commitManualDraft();
+}
+
+async function closeOverrideEditor(): Promise<void> {
+  await commitCurrentEdit();
   editingWindowId = null;
+  editingManualId = null;
   draftRect = null;
   draftEasing = "";
+  draftManualStart = 0;
+  draftManualEnd = 0;
   dragAnchorUv = null;
+  resizingManualEdge = undefined;
   ($("overridebar") as HTMLElement).setAttribute("hidden", "");
   ($("rectoverlay") as HTMLElement).setAttribute("hidden", "");
   drawOverrideBox(null);
   layoutOverrideBlocks();
+  updateManualDraftBlock();
 }
 
-async function selectWindow(w: ZoomWindow): Promise<void> {
+async function selectDerivedWindow(w: ZoomWindow): Promise<void> {
   if (!player || !openProject) return;
-  if (editingWindowId) await commitDraft(); // switching straight from one block to another
+  await commitCurrentEdit(); // switching straight from one block to another
   const id = windowId(w);
   editingWindowId = id;
   const existing = overrideFor(openProject.overrides, w);
   draftRect = existing?.rect ?? null;
   draftEasing = existing?.easing ?? "";
-  openProject.overrides = overridesWithout(openProject.overrides, id);
-  ($("overridepreset") as HTMLSelectElement).value = draftEasing;
-  ($("overrideclear") as HTMLButtonElement).disabled = !draftRect;
-  ($("overridebar") as HTMLElement).removeAttribute("hidden");
-  ($("rectoverlay") as HTMLElement).removeAttribute("hidden");
-  drawOverrideBox(draftRect);
-  layoutOverrideBlocks();
+  openProject.overrides = overridesWithoutWindow(openProject.overrides, id);
+  openOverrideEditorUI();
   const mid = Math.min(player.durationNs, Math.round((w.startNs + w.endNs) / 2));
   await player.seek(mid);
 }
 
+/** Opens an EXISTING manual window (STC-331) for editing — the block-lane
+ *  twin of selectDerivedWindow. Stripping its own entry from the live
+ *  project.overrides is what removes it from layoutOverrideBlocks' list
+ *  (manualEntries reads that same array), the same trick a geometry
+ *  override's removal already relies on for the "editing shows unzoomed"
+ *  behaviour. */
+async function selectManualWindow(o: Extract<ZoomOverride, { kind: "manual" }>): Promise<void> {
+  if (!player || !openProject) return;
+  await commitCurrentEdit();
+  editingManualId = o.id;
+  draftManualStart = o.startNs;
+  draftManualEnd = o.endNs;
+  draftRect = o.rect;
+  draftEasing = o.easing;
+  openProject.overrides = overridesWithoutManual(openProject.overrides, o.id);
+  openOverrideEditorUI();
+  const mid = Math.min(player.durationNs, Math.round((o.startNs + o.endNs) / 2));
+  await player.seek(mid);
+}
+
+/**
+ * Creates a brand new manual window (STC-331) — a drag into an empty
+ * stretch of the override lane, per the ticket. `clickNs` is where the
+ * gesture landed; the WINDOW is always the default stage-1 shape at that
+ * point (defaultManualSpan's own note) — a drag does not set a custom
+ * duration directly, only resizing the created block's edges afterward
+ * does, exactly as the ticket states it ("as a starting size, then
+ * resizable"). The rect defaults to the same centred square a bare click
+ * on the stage would give a geometry override (rectFromGesture's a === b
+ * case), since a manual window's rect is REQUIRED and there is no
+ * "nothing yet" state for it to start from.
+ */
+async function createManualWindow(clickNs: number): Promise<void> {
+  if (!player || !openProject) return;
+  await commitCurrentEdit();
+  const { startNs, endNs } = defaultManualSpan(clickNs, player.durationNs);
+  editingManualId = crypto.randomUUID();
+  draftManualStart = startNs;
+  draftManualEnd = endNs;
+  draftRect = rectFromGesture({ x: 0.5, y: 0.5 }, { x: 0.5, y: 0.5 }, aspectWH());
+  draftEasing = "";
+  openOverrideEditorUI();
+  const mid = Math.min(player.durationNs, Math.round((startNs + endNs) / 2));
+  await player.seek(mid);
+}
+
+$("override-blocks").addEventListener("click", (e) => {
+  // A block (derived, manual, or the draft block/its handles) owns its own
+  // click — this only fires for the lane's empty background, which is the
+  // "empty stretch" the ticket means.
+  if (e.target !== e.currentTarget || !player) return;
+  const clickNs = frameToNs(frameAtClientX((e as MouseEvent).clientX), player.durationNs);
+  void createManualWindow(clickNs).catch((err: any) => alertUser(String(err?.message ?? err)));
+});
+
+function onManualHandleDown(edge: "start" | "end", e: PointerEvent): void {
+  e.preventDefault();
+  e.stopPropagation();
+  resizingManualEdge = edge;
+  (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+}
+function onManualHandleMove(e: PointerEvent): void {
+  if (!resizingManualEdge || !player) return;
+  const wanted = frameToNs(frameAtClientX(e.clientX), player.durationNs);
+  if (resizingManualEdge === "start") {
+    draftManualStart = Math.max(0, Math.min(wanted, draftManualEnd - MIN_MANUAL_WINDOW_NS));
+  } else {
+    draftManualEnd = Math.min(player.durationNs, Math.max(wanted, draftManualStart + MIN_MANUAL_WINDOW_NS));
+  }
+  updateManualDraftBlock();
+}
+function onManualHandleUp(): void { resizingManualEdge = undefined; }
+$("manualhandle-start").addEventListener("pointerdown", (e) => onManualHandleDown("start", e as PointerEvent));
+$("manualhandle-end").addEventListener("pointerdown", (e) => onManualHandleDown("end", e as PointerEvent));
+$("manualhandle-start").addEventListener("pointermove", (e) => onManualHandleMove(e as PointerEvent));
+$("manualhandle-end").addEventListener("pointermove", (e) => onManualHandleMove(e as PointerEvent));
+$("manualhandle-start").addEventListener("pointerup", onManualHandleUp);
+$("manualhandle-end").addEventListener("pointerup", onManualHandleUp);
+$("manualhandle-start").addEventListener("pointercancel", onManualHandleUp);
+$("manualhandle-end").addEventListener("pointercancel", onManualHandleUp);
+
 $("rectoverlay").addEventListener("pointerdown", (e) => {
-  if (!editingWindowId) return;
+  if (!editingWindowId && !editingManualId) return;
   const pe = e as PointerEvent;
   (pe.currentTarget as HTMLElement).setPointerCapture(pe.pointerId);
   dragAnchorUv = stageUv(pe.clientX, pe.clientY);
@@ -499,7 +736,7 @@ $("overridedone").addEventListener("click", () => {
   void closeOverrideEditor().catch((e: any) => alertUser(String(e?.message ?? e)));
 });
 window.addEventListener("keydown", (e) => {
-  if (e.key !== "Escape" || !editingWindowId) return;
+  if (e.key !== "Escape" || (!editingWindowId && !editingManualId)) return;
   e.preventDefault();
   void closeOverrideEditor().catch((err: any) => alertUser(String(err?.message ?? err)));
 });

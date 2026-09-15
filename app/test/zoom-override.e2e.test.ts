@@ -16,7 +16,7 @@ import { describe, test, expect, afterEach } from "vitest";
 import { type ElectronApplication } from "playwright";
 import { join } from "node:path";
 import { readFileSync, existsSync } from "node:fs";
-import { launchWithTakeInEditor } from "./_editor-fixture.js";
+import { launchWithTakeInEditor, dragOnStage } from "./_editor-fixture.js";
 
 let app: ElectronApplication | undefined;
 afterEach(async () => { await app?.close().catch(() => {}); app = undefined; });
@@ -37,77 +37,6 @@ function readProject(takeDir: string): any {
 
 const blockClass = (win: any): Promise<string> =>
   win.evaluate(() => document.querySelector(".zoomblock")!.className);
-
-/**
- * The FIRST fix here settled `#stage`'s own box and it was not enough — the
- * same 6 tests failed identically on the next real-hardware run, which rules
- * out a plain reflow race (that fix already waits for `#rectoverlay` to be
- * visible and for the box to stop moving). The remaining suspect is the box
- * itself: `#rectoverlay` is `position: absolute; inset: 0` of `#stagewrap`,
- * not of `#stage` — editor.html's own comment claims "`#stage` always fills
- * `#stagewrap` at its own natural size, so `inset: 0` tracks it", which is
- * exactly the kind of invariant that can silently stop holding (a scrollbar,
- * a constrained window height on a real display this sandbox cannot
- * reproduce) without anything here noticing. Rather than trust that claim a
- * second time, measure the element pointer events actually land on —
- * `#rectoverlay` itself — so a click computed from it can never miss it,
- * whatever `#stage`'s own box turns out to be. Still settled the same way
- * `redaction.e2e.test.ts`'s `settledCanvasBox` is, since the reflow race is
- * real even if it was not the whole story.
- */
-async function settledRectoverlayBox(
-  win: any, ms = 10_000,
-): Promise<{ x: number; y: number; width: number; height: number }> {
-  const read = () => win.locator("#rectoverlay").boundingBox();
-  const start = Date.now();
-  let last = await read();
-  for (;;) {
-    await new Promise((r) => setTimeout(r, 120));
-    const now = await read();
-    if (last && now && now.x === last.x && now.y === last.y
-        && now.width === last.width && now.height === last.height && now.width > 0) {
-      return now;
-    }
-    if (Date.now() - start > ms) {
-      throw new Error(`#rectoverlay never settled: ${JSON.stringify({ last, now })}`);
-    }
-    last = now;
-  }
-}
-
-/**
- * FOUND (2026-09-14, real hardware, via pointer-event instrumentation this
- * function used to carry): `.zoomblock` is a `<button>`, clicking it moves
- * focus to it, and it sits at the BOTTOM of the editor's timeline while
- * `#stage` sits at the TOP — on a window whose content is taller than its
- * viewport (true on the real CI window size, not under this sandbox's Xvfb
- * display), Chromium scrolls the newly-focused button into view, which
- * scrolls #stage/#rectoverlay PARTLY OFF THE TOP (`getBoundingClientRect()`
- * returned `y: -150`). Every failing drag's start point landed at a
- * NEGATIVE viewport y — off-screen, so `mouse.down()` there hit nothing
- * (`pointerdown` count: 0, confirmed directly). The one gesture that kept
- * passing targeted dead centre (0.5, 0.5), which happened to still clear
- * zero. `scrollIntoViewIfNeeded` before measuring is the fix, and it is
- * unconditional rather than reasoned about, because the same trap applies
- * however layout got that way on a given machine.
- */
-async function dragOnStage(
-  win: any, from: { x: number; y: number }, to: { x: number; y: number },
-): Promise<void> {
-  await expect.poll(() => win.isVisible("#rectoverlay"), { timeout: 10_000 }).toBe(true);
-  await win.locator("#rectoverlay").scrollIntoViewIfNeeded();
-  const box = await settledRectoverlayBox(win);
-  const p = (f: { x: number; y: number }) => ({ x: box.x + f.x * box.width, y: box.y + f.y * box.height });
-  const a = p(from), b = p(to);
-  await win.mouse.move(a.x, a.y);
-  await win.mouse.down();
-  // Two moves, not one: a single move can be coalesced with the press
-  // (redaction.e2e.test.ts's own precedent for the same reason), and this is
-  // testing that a DRAG is followed rather than that a click lands.
-  await win.mouse.move((a.x + b.x) / 2, (a.y + b.y) / 2);
-  await win.mouse.move(b.x, b.y);
-  await win.mouse.up();
-}
 
 describe("selecting a block", () => {
   test("shows the rect tool and the override bar", async () => {

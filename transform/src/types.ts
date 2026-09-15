@@ -166,9 +166,22 @@ export interface Zoom {
  * than the canvas and needs no units of its own. `easing`, when present,
  * overrides the project's own `zoom.preset` for JUST this window; absent
  * means this window plays at the project's preset like every other one.
+ *
+ * The second variant (project-6, STC-331) is a window with NO auto-zoom
+ * counterpart: `kind: "manual"` authors one from nothing, for when stage 1
+ * correctly decided not to open a window and the user wants one anyway.
+ * It carries its own `startNs`/`endNs` — there is no derived window to
+ * inherit timing from — and `easing` is REQUIRED rather than optional,
+ * for the same reason: a geometry override falls back to the project's own
+ * `zoom.preset` when it names none, but a manual window has no derivation
+ * to fall back to either, so `zoom-override.ts` never has an "absent"
+ * case to resolve for it. `id` is take-local exactly like a derived
+ * window's `startNs`-as-`windowId`, just freshly minted rather than
+ * derived, since there is no natural value to match against.
  */
 export type ZoomOverride =
-  | { kind: "geometry"; windowId: string; rect: { x: number; y: number; width: number; height: number }; easing?: ZoomPreset };
+  | { kind: "geometry"; windowId: string; rect: { x: number; y: number; width: number; height: number }; easing?: ZoomPreset }
+  | { kind: "manual"; id: string; startNs: number; endNs: number; rect: { x: number; y: number; width: number; height: number }; easing: ZoomPreset };
 
 /** Mirrors schema/project-1.schema.json and schema/project-2.schema.json. */
 export interface Project {
