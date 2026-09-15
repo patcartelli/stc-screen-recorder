@@ -65,7 +65,7 @@ None of that proves the SCK calls themselves work. That is what is left.
 ```
 mkdir -p /tmp/stc-region && \
 (echo '{"cmd":"start","dir":"/tmp/stc-region","region":{"x":100,"y":100,"width":800,"height":600},"seq":1}'; \
- sleep 3; echo '{"cmd":"stop","seq":2}'; sleep 1) | helper/build/stc-helper 3>&1 | jq .
+ sleep 3; echo '{"cmd":"stop","seq":2}') | helper/build/stc-helper 3>&1 | jq .
 ```
 
 Expect `started` naming a `capture` roughly 800×600 (times the display's
@@ -81,13 +81,17 @@ machine's 2x backing scale, matching `captureSize`'s even-floor rule
 exactly), `scope`/`version` matched, and the video showed only that region,
 correctly positioned, no scaling artifacts. **Also found, unrelated to
 region/window scope itself:** the exact `(echo start; sleep N; echo stop) |
-helper` shell idiom this runbook uses loses the take entirely if the pipe
-closes right behind the `stop` line — the process can exit before the async
-teardown writes `anchors.json`/finalises `display.mp4` (confirmed: a
+helper` shell idiom this runbook uses lost the take entirely if the pipe
+closed right behind the `stop` line — the process could exit before the async
+teardown wrote `anchors.json`/finalised `display.mp4` (confirmed: a
 `display.mp4` existed on disk but QuickTime refused to open it — no `moov`
-atom, because `finishWriting()` never got to run). Filed as STC-376. Every
-command below adds `; sleep 1` after the `stop` line for exactly this
-reason — do not drop it when adapting these commands.
+atom, because `finishWriting()` never got to run). Filed and **FIXED as
+STC-376 (2026-09-14, PR #139, merged)**: `App.shutdown()` now joins a stop
+already in flight instead of exiting past it. The `; sleep 1` workaround this
+runbook carried after every `stop` line is removed below now that the actual
+race is closed — **still not hardware-verified**, since that fix landed from
+a Linux session with no way to run it; if a `stop`-then-pipe-close still
+loses a take on real hardware, that is a regression worth its own ticket.
 
 ## 2. Window scope, by hand
 
@@ -100,7 +104,7 @@ Pick an `id` for a real window (Finder, a browser, anything titled). Then:
 ```
 mkdir -p /tmp/stc-window && \
 (echo "{\"cmd\":\"start\",\"dir\":\"/tmp/stc-window\",\"windowId\":<ID>,\"seq\":1}"; \
- sleep 3; echo '{"cmd":"stop","seq":2}'; sleep 1) | helper/build/stc-helper 3>&1 | jq .
+ sleep 3; echo '{"cmd":"stop","seq":2}') | helper/build/stc-helper 3>&1 | jq .
 ```
 
 Expect `anchors.json`'s `scope.window.id` to match, `scope.window.bounds` to
